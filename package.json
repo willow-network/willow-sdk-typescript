@@ -50,7 +50,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/willow-network/willow-indexing.git",
+    "url": "https://github.com/willow-network/willow.git",
     "directory": "sdk/willow-sdk"
   }
 }
