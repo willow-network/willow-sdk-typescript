@@ -1,0 +1,202 @@
+// Core types for Willow SDK
+
+import { ProofVerificationOptions } from '../proof';
+
+export interface WillowConfig {
+  apiUrl: string;
+  did?: string;
+  privateKey?: string; // For signing
+  proofVerificationOptions?: ProofVerificationOptions; // Optional proof verification config
+}
+
+export interface ApiResponse<T = any> {
+  success: boolean;
+  data?: T;
+  error?: string;
+}
+
+// DID Types
+export interface PublicKey {
+  id: string;
+  type: string;
+  publicKeyHex?: string;
+  publicKeyBase64?: string;
+}
+
+export interface DidDocument {
+  id: string;
+  publicKeys: PublicKey[];
+  created: number;
+  updated: number;
+}
+
+export interface AuthenticationChallenge {
+  did: string;
+  challenge: string;
+  timestamp: number;
+  expires_at: number;
+}
+
+export interface AuthenticationResponse {
+  did: string;
+  challenge: string;
+  signature: string;
+  public_key_id: string;
+}
+
+export interface Session {
+  did: string;
+  token: string;
+  expires_at: number;
+}
+
+// App Registration Types
+export interface RegisterAppRequest {
+  app_id: string;
+  name: string;
+  description: string;
+  app_type: string;
+  owner_did: string;
+  admins: string[];
+}
+
+export interface AppRegistration {
+  app_id: string;
+  name: string;
+  description: string;
+  app_type: string;
+  owner_did: string;
+  admins: string[];
+  created_at: number;
+  updated_at: number;
+}
+
+// Dataset Types
+export interface FieldType {
+  type: 'string' | 'number' | 'boolean' | 'array' | 'object' | 'bytes';
+  indexed?: boolean;
+  required?: boolean;
+}
+
+export interface IndexDefinition {
+  name: string;
+  fields: string[];
+  unique: boolean;
+  type?: 'unique' | 'hash' | 'range' | 'fulltext' | 'compound';
+}
+
+export interface SchemaDefinition {
+  version: number;
+  fields: Record<string, FieldType>;
+  indexes?: IndexDefinition[];
+  required_fields?: string[];
+}
+
+export interface RegisterDatasetRequest {
+  dataset_id: string;
+  app_id: string;
+  name: string;
+  dataset_path: string[];
+  schema: SchemaDefinition;
+  owner_did: string;
+  writers: string[];
+  readers: string[];
+}
+
+export interface DatasetRegistration {
+  dataset_id: string;
+  app_id: string;
+  name: string;
+  schema: SchemaDefinition;
+  owner_did: string;
+  writers: string[];
+  readers: string[];
+  created_at: number;
+  updated_at: number;
+}
+
+// Data Operation Types
+export interface DataRecord {
+  [key: string]: any;
+}
+
+export interface ProofResponse {
+  proof: string; // Hex encoded proof
+}
+
+// Query Types
+export interface QueryFilter {
+  [field: string]: any | {
+    $eq?: any;
+    $ne?: any;
+    $gt?: any;
+    $gte?: any;
+    $lt?: any;
+    $lte?: any;
+    $in?: any[];
+    $contains?: string;
+  };
+}
+
+export interface QuerySort {
+  field: string;
+  order: 'asc' | 'desc';
+}
+
+export interface QuerySearch {
+  field: string;
+  query: string;
+}
+
+export interface QueryRequest {
+  filters?: QueryFilter;
+  search?: QuerySearch;
+  sort?: QuerySort;
+  limit?: number;
+  offset?: number;
+  include_proof?: boolean;
+}
+
+export interface QueryResponse {
+  documents: DataRecord[];
+  total?: number;
+  offset?: number;
+  limit?: number;
+  proof?: string;
+  verifiedRootHash?: string; // Added when proof is successfully verified
+}
+
+// Token Types
+export interface TokenInfo {
+  name: string;
+  symbol: string;
+  decimals: number;
+  total_supply: string;
+  minted_supply: string;
+}
+
+export interface Balance {
+  did: string;
+  available: string;
+  staked: string;
+  locked: string;
+}
+
+export interface TransferRequest {
+  from_did: string;
+  to_did: string;
+  amount: string;
+  memo?: string;
+}
+
+// Error types
+export class WillowError extends Error {
+  constructor(
+    message: string,
+    public code?: string,
+    public statusCode?: number
+  ) {
+    super(message);
+    this.name = 'WillowError';
+  }
+}
