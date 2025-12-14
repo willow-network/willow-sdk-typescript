@@ -7,7 +7,7 @@
  * 3. Query using various index types
  * 
  * Prerequisites:
- * - Run the three-node network: ./tests/execution/start_three_nodes_with_funding.sh
+ * - Run the three-node network: ./scripts/start_node.sh
  */
 
 import { WillowClient } from '../src/client';

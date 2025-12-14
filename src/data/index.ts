@@ -13,11 +13,14 @@ import {
 } from '../types';
 import { WillowAuth } from '../auth';
 import { verifyQueryProof, verifyItemProof } from '../proof';
+import { LightClient, LightClientConfig } from '../light-client';
 
 export class WillowData {
   private api: AxiosInstance;
   private auth: WillowAuth;
   private apiUrl: string;
+  private lightClient?: LightClient;
+  private lightClientInitPromise?: Promise<LightClient>;
 
   constructor(apiUrl: string, auth: WillowAuth) {
     this.apiUrl = apiUrl;
@@ -28,6 +31,60 @@ export class WillowData {
       },
     });
     this.auth = auth;
+  }
+
+  /**
+   * Get or create a light client for trustless verification.
+   *
+   * This auto-initializes a light client using trust-on-first-use:
+   * the first block received from validators is trusted, and all subsequent
+   * blocks are verified against it.
+   *
+   * @important TODO: When mainnet/testnet launches, replace trust-on-first-use
+   * with hardcoded checkpoint headers for true trustless initialization.
+   * Trust-on-first-use is secure for subsequent operations but trusts the
+   * initial block from the connected validators.
+   */
+  private async getOrCreateLightClient(): Promise<LightClient> {
+    if (this.lightClient) {
+      return this.lightClient;
+    }
+
+    // Prevent concurrent initialization
+    if (this.lightClientInitPromise) {
+      return this.lightClientInitPromise;
+    }
+
+    this.lightClientInitPromise = (async () => {
+      // TODO: When mainnet/testnet launches, use hardcoded checkpoint headers
+      // instead of trust-on-first-use for true trustless initialization from genesis.
+      const config: LightClientConfig = {
+        chainId: 'willow-chain',
+        // Derive CometBFT RPC endpoint from API URL (typically :3031 -> :26657)
+        validatorEndpoints: [this.apiUrl.replace(':3031', ':26657')],
+        trustThreshold: { numerator: 2, denominator: 3 },
+        trustingPeriodSecs: 86400, // 24 hours
+        maxClockDriftSecs: 30,
+        autoSync: false,
+        minValidatorsForConsensus: 1, // For single-node development
+        requestTimeoutSecs: 30,
+        syncIntervalSecs: 60
+      };
+
+      const lc = new LightClient(config);
+      await lc.initializeWithTrustOnFirstUse();
+      this.lightClient = lc;
+      return lc;
+    })();
+
+    try {
+      const lc = await this.lightClientInitPromise;
+      this.lightClientInitPromise = undefined;
+      return lc;
+    } catch (error) {
+      this.lightClientInitPromise = undefined;
+      throw error;
+    }
   }
 
   /**
@@ -341,22 +398,21 @@ export class WillowData {
   }
 
   /**
-   * Get the verified root hash from the blockchain consensus
+   * Get the verified root hash using the light client.
+   *
+   * This uses trustless verification through the light client instead of
+   * asking the node for the root hash.
+   *
+   * @important TODO: When mainnet/testnet launches, the light client will be
+   * initialized with hardcoded checkpoint headers instead of trust-on-first-use.
+   *
    * @private
    */
   private async getVerifiedRootHash(): Promise<string> {
-    const response = await this.api.get<ApiResponse<{ root_hash: string }>>(
-      '/state/root-hash/verified'
-    );
-
-    if (!response.data.success || !response.data.data?.root_hash) {
-      throw new WillowError(
-        'Failed to get verified root hash',
-        'ROOT_HASH_FAILED'
-      );
-    }
-
-    return response.data.data.root_hash;
+    // Always use light client for trustless verification
+    // This auto-initializes the light client on first use (trust-on-first-use)
+    const lightClient = await this.getOrCreateLightClient();
+    return lightClient.getVerifiedRootHash();
   }
 
   /**

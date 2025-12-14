@@ -57,8 +57,37 @@ export class LightClient {
   }
 
   /**
+   * Initialize the light client using trust-on-first-use.
+   *
+   * This fetches the latest block from validators and trusts it as the initial state.
+   * All subsequent blocks are verified against this initial trusted state.
+   *
+   * @important TODO: When mainnet/testnet launches, replace trust-on-first-use
+   * with hardcoded checkpoint headers for true trustless initialization.
+   * Trust-on-first-use is secure for subsequent operations but trusts the
+   * initial block from the connected validators.
+   */
+  async initializeWithTrustOnFirstUse(): Promise<void> {
+    // Fetch the latest block from validators
+    // TODO: When mainnet/testnet launches, use hardcoded checkpoint headers
+    // instead of trust-on-first-use for true trustless initialization from genesis.
+    const latestHeader = await this.fetchHeaderFromValidators(0); // 0 = latest
+    if (!latestHeader) {
+      throw new LightClientError('Could not fetch latest header from validators for trust-on-first-use initialization');
+    }
+
+    // Trust this header as our initial state
+    const height = latestHeader.header.height;
+    this.trustedHeaders.set(height, latestHeader);
+    this.latestHeight = height;
+    this.verifiedHeightRange = [height, height];
+
+    console.log(`Initialized with trust-on-first-use at height ${height}`);
+  }
+
+  /**
    * Initialize the light client with a trusted header
-   * 
+   *
    * This is the bootstrap process that establishes initial trust.
    * The trusted header should be obtained through a secure channel.
    */
@@ -289,6 +318,29 @@ export class LightClient {
   }
 
   /**
+   * Get the verified root hash (app_hash) from the latest trusted header.
+   *
+   * This is the cryptographically verified root hash that proofs should be
+   * verified against for trustless data verification.
+   */
+  async getVerifiedRootHash(): Promise<string> {
+    // Initialize with trust-on-first-use if not already initialized
+    if (this.trustedHeaders.size === 0) {
+      await this.initializeWithTrustOnFirstUse();
+    }
+
+    const latestHeader = await this.getLatestHeader();
+    if (!latestHeader) {
+      throw new LightClientError('No trusted header available');
+    }
+
+    // Convert app hash to hex string
+    return Array.from(latestHeader.header.appHash)
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+
+  /**
    * Get the latest verified height
    */
   async getLatestHeight(): Promise<number | undefined> {
@@ -406,7 +458,7 @@ export class LightClient {
       throw new Error(`HTTP ${response.status}`);
     }
 
-    const data = await response.json();
+    const data = await response.json() as { result?: { block?: any } };
 
     if (!data.result || !data.result.block) {
       throw new Error('Invalid response format');

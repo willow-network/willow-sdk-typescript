@@ -143,7 +143,7 @@ export class WillowClient {
     if (!response.ok) {
       throw new Error(`Failed to get verified root hash: ${response.statusText}`);
     }
-    const data = await response.json();
+    const data = await response.json() as { success: boolean; data?: { root_hash: string } };
     if (!data.success || !data.data?.root_hash) {
       throw new Error('No root hash in response');
     }
@@ -166,7 +166,7 @@ export class WillowClient {
     if (!response.ok) {
       throw new Error(`Failed to get local root hash: ${response.statusText}`);
     }
-    const data = await response.json();
+    const data = await response.json() as { success: boolean; data?: { root_hash: string } };
     if (!data.success || !data.data?.root_hash) {
       throw new Error('No root hash in response');
     }

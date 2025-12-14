@@ -2,7 +2,7 @@
  * Indexing tests for Willow TypeScript SDK
  * 
  * These tests require a running three-node network with funded DID.
- * Run: ./tests/execution/start_three_nodes_with_funding.sh
+ * Run: ./scripts/start_network.sh
  */
 
 import { WillowClient } from '../src/client';
@@ -28,7 +28,7 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 // Helper to read funded DID
 function getFundedDID(): string {
   try {
-    const didPath = path.join(__dirname, '../../../tests/execution/app_owner_did.txt');
+    const didPath = path.join(__dirname, '../../../devnet/app_owner_did.txt');
     return fs.readFileSync(didPath, 'utf-8').trim();
   } catch (error) {
     throw new Error('Funded DID file not found - ensure network is running with funding');

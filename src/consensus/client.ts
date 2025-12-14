@@ -285,7 +285,7 @@ export class ConsensusClient {
         });
 
         if (response.ok) {
-          const data = await response.json();
+          const data = await response.json() as { error?: any; result?: any };
 
           if (data.error) {
             throw new ConsensusError(`RPC error: ${JSON.stringify(data.error)}`);
@@ -328,23 +328,55 @@ export class ConsensusClient {
 
   /**
    * Get the next nonce for a DID
+   *
+   * Fetches the current nonce from the blockchain and returns the next value.
+   * Falls back to in-memory cache if API is unavailable.
    */
   private async getNextNonce(did: string): Promise<number> {
-    // For now, use a simple in-memory cache
-    // In a real implementation, you would query the blockchain state
-    const currentNonce = this.nonceCache.get(did) || 0;
-    const nextNonce = currentNonce + 1;
-    this.nonceCache.set(did, nextNonce);
-    return nextNonce;
+    try {
+      const currentNonce = await this.getAccountNonce(did);
+      const nextNonce = currentNonce + 1;
+      this.nonceCache.set(did, nextNonce);
+      return nextNonce;
+    } catch (error) {
+      // Fall back to cache if API unavailable
+      console.warn('Failed to fetch nonce from API, using cache:', error);
+      const currentNonce = this.nonceCache.get(did) || 0;
+      const nextNonce = currentNonce + 1;
+      this.nonceCache.set(did, nextNonce);
+      return nextNonce;
+    }
   }
 
   /**
    * Get the current nonce for an account from the blockchain
    */
   private async getAccountNonce(did: string): Promise<number> {
-    // TODO: Implement actual nonce querying from blockchain state
-    // This would require an ABCI query to get account information
-    return this.nonceCache.get(did) || 0;
+    if (!this.config.apiUrl) {
+      // No API URL configured, use cache
+      return this.nonceCache.get(did) || 0;
+    }
+
+    const response = await fetch(
+      `${this.config.apiUrl}/account/${encodeURIComponent(did)}/nonce`,
+      {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(this.config.requestTimeoutSecs! * 1000)
+      }
+    );
+
+    if (!response.ok) {
+      throw new ConsensusError(`Failed to fetch nonce: HTTP ${response.status}`);
+    }
+
+    const data = await response.json() as { success: boolean; data?: { nonce: number }; error?: string };
+
+    if (!data.success || data.data === undefined) {
+      throw new ConsensusError(data.error || 'Failed to fetch nonce');
+    }
+
+    return data.data.nonce;
   }
 
   /**

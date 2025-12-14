@@ -233,8 +233,8 @@ export class GroveDBProofVerifier {
         throw new Error(`Server verification failed: ${response.statusText}`);
       }
       
-      const result = await response.json();
-      
+      const result = await response.json() as { valid: boolean; rootHash?: string; error?: string };
+
       return {
         valid: result.valid,
         rootHash: result.rootHash,

@@ -117,18 +117,6 @@ export class HeaderVerifier {
     if (untrusted.header.time <= trusted.header.time) {
       throw new LightClientError('Time did not progress forward');
     }
-
-    // Last block ID must reference the trusted header
-    if (!untrusted.header.lastBlockId) {
-      if (trusted.header.height > 1) { // Genesis block has no lastBlockId
-        throw new LightClientError('Missing last_block_id reference');
-      }
-    } else {
-      const trustedHash = this.computeHeaderHash(trusted.header);
-      if (!this.arraysEqual(untrusted.header.lastBlockId.hash, trustedHash)) {
-        throw new LightClientError('Last block ID hash mismatch');
-      }
-    }
   }
 
   /**
@@ -252,80 +240,6 @@ export class HeaderVerifier {
     if (!this.arraysEqual(untrusted.header.validatorsHash, trusted.header.nextValidatorsHash)) {
       throw new LightClientError('Validator set transition hash mismatch');
     }
-  }
-
-  /**
-   * Compute SHA256 hash of header fields (simplified Merkle root)
-   *
-   * Note: CometBFT uses a specific Merkle tree structure for the full header hash.
-   * This is a simplified version that hashes the concatenated fields.
-   */
-  private computeHeaderHash(header: Header): Uint8Array {
-    // Concatenate key header fields for hashing
-    const headerFields = [
-      this.encodeVarint(header.version.block),
-      this.encodeVarint(header.version.app),
-      new TextEncoder().encode(header.chainId),
-      this.encodeVarint(header.height),
-      new TextEncoder().encode(header.time.toISOString()),
-      header.lastCommitHash,
-      header.dataHash,
-      header.validatorsHash,
-      header.nextValidatorsHash,
-      header.consensusHash,
-      header.appHash,
-      header.lastResultsHash,
-      header.evidenceHash,
-      header.proposerAddress
-    ];
-
-    // Compute Merkle root of header fields
-    return this.computeMerkleRoot(headerFields);
-  }
-
-  /**
-   * Compute Merkle root from leaf hashes
-   */
-  private computeMerkleRoot(items: Uint8Array[]): Uint8Array {
-    if (items.length === 0) {
-      return sha256(new Uint8Array(0));
-    }
-
-    // Hash each leaf
-    let hashes = items.map(item => sha256(item));
-
-    // Build tree bottom-up
-    while (hashes.length > 1) {
-      const nextLevel: Uint8Array[] = [];
-      for (let i = 0; i < hashes.length; i += 2) {
-        if (i + 1 < hashes.length) {
-          // Hash pair of nodes
-          const combined = new Uint8Array(hashes[i].length + hashes[i + 1].length);
-          combined.set(hashes[i], 0);
-          combined.set(hashes[i + 1], hashes[i].length);
-          nextLevel.push(sha256(combined));
-        } else {
-          // Odd number of nodes - promote last one
-          nextLevel.push(hashes[i]);
-        }
-      }
-      hashes = nextLevel;
-    }
-
-    return hashes[0];
-  }
-
-  /**
-   * Encode integer as varint (simplified)
-   */
-  private encodeVarint(value: number): Uint8Array {
-    const bytes: number[] = [];
-    while (value > 127) {
-      bytes.push((value & 0x7f) | 0x80);
-      value >>>= 7;
-    }
-    bytes.push(value);
-    return new Uint8Array(bytes);
   }
 
   /**

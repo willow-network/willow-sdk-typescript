@@ -11,6 +11,7 @@ import { ConsensusConfig, createConsensusConfig } from './types';
  */
 export class ConsensusConfigBuilder {
   private _consensusRpcUrl: string;
+  private _apiUrl?: string;
   private _chainId: string = 'willow-chain';
   private _requestTimeoutSecs: number = 30;
   private _maxRetries: number = 3;
@@ -21,6 +22,14 @@ export class ConsensusConfigBuilder {
    */
   constructor(consensusRpcUrl: string) {
     this._consensusRpcUrl = consensusRpcUrl;
+  }
+
+  /**
+   * Set the REST API URL for account queries (nonce, etc.)
+   */
+  apiUrl(apiUrl: string): ConsensusConfigBuilder {
+    this._apiUrl = apiUrl;
+    return this;
   }
 
   /**
@@ -61,6 +70,7 @@ export class ConsensusConfigBuilder {
   build(): ConsensusConfig {
     return createConsensusConfig({
       consensusRpcUrl: this._consensusRpcUrl,
+      apiUrl: this._apiUrl,
       chainId: this._chainId,
       requestTimeoutSecs: this._requestTimeoutSecs,
       maxRetries: this._maxRetries,
@@ -75,29 +85,48 @@ export class ConsensusConfigBuilder {
 
 /**
  * Create configuration for local testing
+ * @param rpcPort - CometBFT RPC port (default: 26657)
+ * @param apiPort - REST API port (default: 3031)
  */
-export function localConfig(port: number = 26657): ConsensusConfigBuilder {
-  return new ConsensusConfigBuilder(`http://localhost:${port}`);
+export function localConfig(rpcPort: number = 26657, apiPort: number = 3031): ConsensusConfigBuilder {
+  return new ConsensusConfigBuilder(`http://localhost:${rpcPort}`)
+    .apiUrl(`http://localhost:${apiPort}`);
 }
 
 /**
  * Create configuration for testnet deployment
+ * @param rpcUrl - CometBFT RPC URL
+ * @param apiUrl - REST API URL (optional)
  */
-export function testnetConfig(rpcUrl: string): ConsensusConfigBuilder {
-  return new ConsensusConfigBuilder(rpcUrl)
+export function testnetConfig(rpcUrl: string, apiUrl?: string): ConsensusConfigBuilder {
+  const builder = new ConsensusConfigBuilder(rpcUrl)
     .chainId('willow-testnet')
     .requestTimeoutSecs(30)
     .maxRetries(3)
     .retryDelaySecs(2.0);
+
+  if (apiUrl) {
+    builder.apiUrl(apiUrl);
+  }
+
+  return builder;
 }
 
 /**
  * Create configuration for mainnet deployment
+ * @param rpcUrl - CometBFT RPC URL
+ * @param apiUrl - REST API URL (optional)
  */
-export function mainnetConfig(rpcUrl: string): ConsensusConfigBuilder {
-  return new ConsensusConfigBuilder(rpcUrl)
+export function mainnetConfig(rpcUrl: string, apiUrl?: string): ConsensusConfigBuilder {
+  const builder = new ConsensusConfigBuilder(rpcUrl)
     .chainId('willow-mainnet')
     .requestTimeoutSecs(60)
     .maxRetries(5)
     .retryDelaySecs(3.0);
+
+  if (apiUrl) {
+    builder.apiUrl(apiUrl);
+  }
+
+  return builder;
 }

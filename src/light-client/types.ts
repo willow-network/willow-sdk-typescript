@@ -79,9 +79,9 @@ export interface ValidatorSet {
 export function createValidatorSet(data: any): ValidatorSet {
   const validators = data.validators.map(createValidator);
   const proposer = data.proposer ? createValidator(data.proposer) : undefined;
-  const totalVotingPower = data.total_voting_power 
+  const totalVotingPower = data.total_voting_power
     ? parseInt(data.total_voting_power)
-    : validators.reduce((sum, v) => sum + v.votingPower, 0);
+    : validators.reduce((sum: number, v: Validator) => sum + v.votingPower, 0);
   
   return {
     validators,

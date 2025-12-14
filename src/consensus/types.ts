@@ -29,6 +29,7 @@ export enum TransactionStatus {
  */
 export interface ConsensusConfig {
   consensusRpcUrl: string;
+  apiUrl?: string; // REST API URL for account queries (nonce, etc.)
   chainId?: string;
   requestTimeoutSecs?: number;
   maxRetries?: number;
