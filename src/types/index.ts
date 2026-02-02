@@ -189,6 +189,56 @@ export interface TransferRequest {
   memo?: string;
 }
 
+// Historical Query Types (for checkpoint data)
+export interface HistoricalQueryRequest {
+  /** GroveDB path to query */
+  path: number[][];
+  /** Key to query (for single-key queries) */
+  key?: number[];
+  /** Query type: "get", "get_range", "get_path" */
+  query_type?: string;
+  /** Whether to include proof */
+  include_proof?: boolean;
+}
+
+export interface HistoricalQueryResponse {
+  /** Whether the query was successful */
+  success: boolean;
+  /** Provider DID that served this query */
+  provider_did?: string;
+  /** Provider endpoint */
+  provider_endpoint?: string;
+  /** Checkpoint state root for proof verification */
+  state_root: string;
+  /** Block range covered by the checkpoint */
+  block_range: [number, number];
+  /** Query results from the indexer */
+  data: any;
+  /** Merkle proof (hex-encoded) when include_proof was true */
+  proof?: string;
+  /** Whether this data can be re-indexed (only set on error) */
+  can_reindex?: boolean;
+  /** Error message if any */
+  error?: string;
+}
+
+export interface CheckpointInfo {
+  /** Checkpoint ID (hex) */
+  checkpoint_id: string;
+  /** Subgrove ID */
+  subgrove_id: string;
+  /** State root hash (hex) */
+  state_root: string;
+  /** Block range [start, end] */
+  block_range: [number, number];
+  /** DID of the indexer who submitted this checkpoint */
+  indexer_did: string;
+  /** Unix timestamp when the checkpoint was submitted */
+  submitted_at: number;
+  /** Whether the checkpoint is trusted */
+  is_trusted: boolean;
+}
+
 // Error types
 export class WillowError extends Error {
   constructor(

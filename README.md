@@ -129,6 +129,57 @@ await client.update('app-id', 'dataset-id', 'key', { field: 'new value' });
 await client.delete('app-id', 'dataset-id', 'key');
 ```
 
+### Historical Data Queries
+
+Query data from verified checkpoints. Historical queries are routed to indexers who have declared availability for the checkpoint:
+
+```typescript
+// Get checkpoint state root for verification
+const checkpoint = await client.data.getCheckpointStateRoot(
+  'uniswap-v3',
+  'a1b2c3d4...'
+);
+console.log('State root:', checkpoint.state_root);
+console.log('Block range:', checkpoint.block_range);
+
+// Query historical data (routed through consensus to indexer)
+const result = await client.data.queryHistorical(
+  'uniswap-v3',
+  'a1b2c3d4...',
+  {
+    path: [[97, 112, 112, 115], [117, 115, 101, 114, 115]],
+    key: [117, 115, 101, 114, 49, 50, 51],
+    include_proof: true,
+  }
+);
+
+console.log('Provider:', result.provider_did);
+console.log('Data:', result.data);
+console.log('State root:', result.state_root);
+
+// Query with automatic proof verification against checkpoint state root
+const verified = await client.data.queryHistoricalVerified(
+  'uniswap-v3',
+  'a1b2c3d4...',
+  { path: [...], key: [...] }
+);
+// Throws if proof verification fails
+```
+
+**Error Handling for Unavailable Data:**
+
+```typescript
+try {
+  const result = await client.data.queryHistorical(...);
+} catch (error) {
+  if (error.can_reindex) {
+    // No providers currently have this data
+    // A new indexer can re-index the block range
+    console.log('Data currently unavailable, can be re-indexed');
+  }
+}
+```
+
 ## Collection Helper
 
 For easier data management with a specific app/dataset:
@@ -427,6 +478,14 @@ try {
 | `getRootHashLocal()` | Get local node's root hash |
 | `collection(appId, datasetId)` | Create collection helper |
 | `getSession()` | Get current session |
+
+### Data Client Historical Methods
+
+| Method | Description |
+|--------|-------------|
+| `data.getCheckpointStateRoot(subgroveId, checkpointId)` | Get checkpoint state root for verification |
+| `data.queryHistorical(subgroveId, checkpointId, query)` | Query historical checkpoint data |
+| `data.queryHistoricalVerified(subgroveId, checkpointId, query)` | Query with automatic proof verification |
 
 ### Proof Verification Functions
 

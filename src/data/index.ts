@@ -10,6 +10,9 @@ import {
   DatasetRegistration,
   QueryRequest,
   QueryResponse,
+  HistoricalQueryRequest,
+  HistoricalQueryResponse,
+  CheckpointInfo,
 } from '../types';
 import { WillowAuth } from '../auth';
 import { verifyQueryProof, verifyItemProof } from '../proof';
@@ -510,6 +513,166 @@ export class WillowData {
     }
 
     return response.data.data!;
+  }
+
+  // ============================================================================
+  // Historical Data Queries (Checkpoint-based)
+  // ============================================================================
+
+  /**
+   * Get checkpoint state root for proof verification.
+   *
+   * @param subgroveId - The subgrove ID
+   * @param checkpointId - The checkpoint ID (hex string)
+   * @returns Checkpoint info including state root
+   */
+  async getCheckpointStateRoot(
+    subgroveId: string,
+    checkpointId: string
+  ): Promise<CheckpointInfo> {
+    const response = await this.api.get<ApiResponse<CheckpointInfo>>(
+      `/checkpoints/${subgroveId}/${checkpointId}/state-root`
+    );
+
+    if (!response.data.success) {
+      throw new WillowError(
+        response.data.error || 'Checkpoint not found',
+        'CHECKPOINT_NOT_FOUND',
+        404
+      );
+    }
+
+    return response.data.data!;
+  }
+
+  /**
+   * Query historical indexed data from a verified checkpoint.
+   *
+   * This method queries historical data from indexer nodes that have preserved
+   * checkpoint data. The response includes proof information that can be
+   * verified against the checkpoint's state root.
+   *
+   * @param subgroveId - The subgrove ID
+   * @param checkpointId - The checkpoint ID (hex string)
+   * @param query - The query parameters
+   * @returns Historical query response with provider info and verification data
+   *
+   * @example
+   * ```typescript
+   * // Query historical data
+   * const response = await client.data.queryHistorical(
+   *   'my-subgrove',
+   *   '0abc...', // checkpoint ID
+   *   {
+   *     path: [[97, 112, 112], [100, 97, 116, 97]], // UTF-8 bytes for path segments
+   *     key: [107, 101, 121], // UTF-8 bytes for key
+   *     include_proof: true
+   *   }
+   * );
+   *
+   * // Verify the response
+   * if (response.success) {
+   *   // Use response.state_root to verify the proof client-side
+   *   console.log('Provider:', response.provider_did);
+   *   console.log('State root:', response.state_root);
+   * } else if (response.can_reindex) {
+   *   console.log('Data unavailable, can request re-indexing');
+   * }
+   * ```
+   */
+  async queryHistorical(
+    subgroveId: string,
+    checkpointId: string,
+    query: HistoricalQueryRequest
+  ): Promise<HistoricalQueryResponse> {
+    // First, verify the checkpoint exists and get its state root
+    const checkpoint = await this.getCheckpointStateRoot(subgroveId, checkpointId);
+
+    // Make the historical query
+    const response = await this.api.post<HistoricalQueryResponse>(
+      `/historical/query/${subgroveId}/${checkpointId}`,
+      query
+    );
+
+    const result = response.data;
+
+    // If query failed due to no providers, throw with can_reindex info
+    if (!result.success) {
+      const error = new WillowError(
+        result.error || 'Historical query failed',
+        result.can_reindex ? 'HISTORICAL_DATA_UNAVAILABLE' : 'HISTORICAL_QUERY_FAILED',
+        result.can_reindex ? 503 : 400
+      );
+      (error as any).can_reindex = result.can_reindex;
+      throw error;
+    }
+
+    // Verify the returned state root matches the checkpoint
+    if (result.state_root !== checkpoint.state_root) {
+      throw new WillowError(
+        'State root mismatch: query response does not match checkpoint',
+        'STATE_ROOT_MISMATCH'
+      );
+    }
+
+    return result;
+  }
+
+  /**
+   * Query historical data and verify the proof against checkpoint state root.
+   *
+   * This is the fully secure method for historical queries. It:
+   * 1. Gets the checkpoint state root from consensus
+   * 2. Executes the query through an indexer
+   * 3. Verifies the returned proof against the checkpoint state root
+   *
+   * @param subgroveId - The subgrove ID
+   * @param checkpointId - The checkpoint ID (hex string)
+   * @param query - The query parameters (include_proof is forced to true)
+   * @returns Verified historical data
+   *
+   * @throws {WillowError} If proof verification fails
+   */
+  async queryHistoricalVerified(
+    subgroveId: string,
+    checkpointId: string,
+    query: HistoricalQueryRequest
+  ): Promise<HistoricalQueryResponse> {
+    // Force proof inclusion for verification
+    const queryWithProof: HistoricalQueryRequest = {
+      ...query,
+      include_proof: true
+    };
+
+    const result = await this.queryHistorical(subgroveId, checkpointId, queryWithProof);
+
+    // Verify the proof against the checkpoint state root
+    if (result.proof) {
+      // Convert data to DataRecord[] format for verification
+      const documents = Array.isArray(result.data) ? result.data : [result.data];
+
+      // Verify proof and get computed root hash
+      const computedRoot = await verifyQueryProof(result.proof, documents);
+
+      // Compare with the checkpoint's state root (both should be hex strings)
+      const normalizedComputed = computedRoot.toLowerCase().replace(/^0x/, '');
+      const normalizedExpected = result.state_root.toLowerCase().replace(/^0x/, '');
+
+      if (normalizedComputed !== normalizedExpected) {
+        throw new WillowError(
+          `Historical proof verification failed: computed root ${computedRoot} does not match checkpoint state root ${result.state_root}`,
+          'PROOF_VERIFICATION_FAILED'
+        );
+      }
+    } else {
+      // Proof was requested but not returned
+      throw new WillowError(
+        'Historical query did not return proof data despite include_proof=true',
+        'MISSING_PROOF'
+      );
+    }
+
+    return result;
   }
 }
 
