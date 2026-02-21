@@ -1,4 +1,4 @@
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosInstance } from "axios";
 import {
   ApiResponse,
   WillowError,
@@ -13,10 +13,15 @@ import {
   HistoricalQueryRequest,
   HistoricalQueryResponse,
   CheckpointInfo,
-} from '../types';
-import { WillowAuth } from '../auth';
-import { verifyQueryProof, verifyItemProof } from '../proof';
-import { LightClient, LightClientConfig } from '../light-client';
+} from "../types";
+import { WillowAuth } from "../auth";
+import { verifyQueryProof, verifyItemProof } from "../proof";
+import { LightClient, LightClientConfig } from "../light-client";
+import {
+  ComputedFieldRegistry,
+  ComputedFieldSet,
+  applyComputedFieldsToResponse,
+} from "../computed-fields";
 
 export class WillowData {
   private api: AxiosInstance;
@@ -24,16 +29,51 @@ export class WillowData {
   private apiUrl: string;
   private lightClient?: LightClient;
   private lightClientInitPromise?: Promise<LightClient>;
+  private computedFieldRegistry: ComputedFieldRegistry;
 
   constructor(apiUrl: string, auth: WillowAuth) {
     this.apiUrl = apiUrl;
     this.api = axios.create({
       baseURL: apiUrl,
       headers: {
-        'Content-Type': 'application/json',
+        "Content-Type": "application/json",
       },
     });
     this.auth = auth;
+    this.computedFieldRegistry = new ComputedFieldRegistry();
+  }
+
+  /**
+   * Register computed fields for a specific app/dataset.
+   *
+   * Computed fields are derived client-side from proven data. This enables
+   * drop-in compatibility with The Graph's query interfaces by computing
+   * values like price ratios from cryptographically proven reserves.
+   *
+   * @param appId - The application ID
+   * @param datasetId - The dataset ID
+   * @param fields - The computed field definitions
+   *
+   * @example
+   * ```typescript
+   * import { UNISWAP_V2_PAIR_FIELDS } from '@willow/sdk';
+   *
+   * client.data.registerComputedFields('uniswap-v2', 'pairs', UNISWAP_V2_PAIR_FIELDS);
+   * ```
+   */
+  registerComputedFields(
+    appId: string,
+    datasetId: string,
+    fields: ComputedFieldSet,
+  ): void {
+    this.computedFieldRegistry.register(appId, datasetId, fields);
+  }
+
+  /**
+   * Get the computed field registry for direct manipulation.
+   */
+  getComputedFieldRegistry(): ComputedFieldRegistry {
+    return this.computedFieldRegistry;
   }
 
   /**
@@ -62,16 +102,16 @@ export class WillowData {
       // TODO: When mainnet/testnet launches, use hardcoded checkpoint headers
       // instead of trust-on-first-use for true trustless initialization from genesis.
       const config: LightClientConfig = {
-        chainId: 'willow-chain',
+        chainId: "willow-chain",
         // Derive CometBFT RPC endpoint from API URL (typically :3031 -> :26657)
-        validatorEndpoints: [this.apiUrl.replace(':3031', ':26657')],
+        validatorEndpoints: [this.apiUrl.replace(":3031", ":26657")],
         trustThreshold: { numerator: 2, denominator: 3 },
         trustingPeriodSecs: 86400, // 24 hours
         maxClockDriftSecs: 30,
         autoSync: false,
         minValidatorsForConsensus: 1, // For single-node development
         requestTimeoutSecs: 30,
-        syncIntervalSecs: 60
+        syncIntervalSecs: 60,
       };
 
       const lc = new LightClient(config);
@@ -96,15 +136,15 @@ export class WillowData {
   async registerApp(request: RegisterAppRequest): Promise<AppRegistration> {
     const params = this.auth.getAuthParams();
     const response = await this.api.post<ApiResponse<AppRegistration>>(
-      '/register/app',
+      "/register/app",
       request,
-      { params }
+      { params },
     );
 
     if (!response.data.success) {
       throw new WillowError(
-        response.data.error || 'Failed to register app',
-        'APP_REGISTRATION_FAILED'
+        response.data.error || "Failed to register app",
+        "APP_REGISTRATION_FAILED",
       );
     }
 
@@ -114,7 +154,9 @@ export class WillowData {
   /**
    * Register a dataset/subgrove
    */
-  async registerDataset(request: RegisterDatasetRequest): Promise<DatasetRegistration> {
+  async registerDataset(
+    request: RegisterDatasetRequest,
+  ): Promise<DatasetRegistration> {
     const params = this.auth.getAuthParams();
 
     // Convert to the API's expected format (subgrove endpoint for compatibility)
@@ -129,15 +171,15 @@ export class WillowData {
     };
 
     const response = await this.api.post<ApiResponse<DatasetRegistration>>(
-      '/register/subgrove',
+      "/register/subgrove",
       subgroveRequest,
-      { params }
+      { params },
     );
 
     if (!response.data.success) {
       throw new WillowError(
-        response.data.error || 'Failed to register dataset',
-        'DATASET_REGISTRATION_FAILED'
+        response.data.error || "Failed to register dataset",
+        "DATASET_REGISTRATION_FAILED",
       );
     }
 
@@ -150,19 +192,19 @@ export class WillowData {
   async storeData(
     appId: string,
     datasetId: string,
-    data: Record<string, any>
+    data: Record<string, any>,
   ): Promise<void> {
     const params = this.auth.getAuthParams();
     const response = await this.api.post<ApiResponse>(
       `/data/${appId}/${datasetId}`,
       data,
-      { params }
+      { params },
     );
 
     if (!response.data.success) {
       throw new WillowError(
-        response.data.error || 'Failed to store data',
-        'STORE_FAILED'
+        response.data.error || "Failed to store data",
+        "STORE_FAILED",
       );
     }
   }
@@ -173,21 +215,21 @@ export class WillowData {
   async getData(
     appId: string,
     datasetId: string,
-    key: string
+    key: string,
   ): Promise<DataRecord> {
     const params = this.auth.getAuthParams();
 
     // First get the data
     const response = await this.api.get<ApiResponse<DataRecord>>(
       `/data/${appId}/${datasetId}/${key}`,
-      { params }
+      { params },
     );
 
     if (!response.data.success) {
       throw new WillowError(
-        response.data.error || 'Data not found',
-        'DATA_NOT_FOUND',
-        404
+        response.data.error || "Data not found",
+        "DATA_NOT_FOUND",
+        404,
       );
     }
 
@@ -196,7 +238,7 @@ export class WillowData {
     // Now get the proof for verification
     try {
       const proofResponse = await this.api.get<ApiResponse<ProofResponse>>(
-        `/proof/${appId}/${datasetId}/${key}`
+        `/proof/${appId}/${datasetId}/${key}`,
       );
 
       if (proofResponse.data.success && proofResponse.data.data?.proof) {
@@ -205,31 +247,39 @@ export class WillowData {
 
         // Verify the proof and compute root hash
         // Pass the path for proper verification
-        const path = ['apps', appId, 'subgroves', datasetId, 'data'];
+        const path = ["apps", appId, "subgroves", datasetId, "data"];
         const computedRootHash = await verifyItemProof(
           proofResponse.data.data.proof,
           key,
           data,
-          path
+          path,
         );
 
         // Compare computed root with verified root
         if (computedRootHash.toLowerCase() !== verifiedRootHash.toLowerCase()) {
-          console.error(`Root hash mismatch: computed=${computedRootHash}, verified=${verifiedRootHash}`);
+          console.error(
+            `Root hash mismatch: computed=${computedRootHash}, verified=${verifiedRootHash}`,
+          );
           throw new WillowError(
-            'Proof verification failed: root hash mismatch',
-            'PROOF_VERIFICATION_FAILED'
+            "Proof verification failed: root hash mismatch",
+            "PROOF_VERIFICATION_FAILED",
           );
         }
       } else {
         console.warn(`No proof available for key: ${key}`);
       }
     } catch (error) {
-      if (error instanceof WillowError && error.code === 'PROOF_VERIFICATION_FAILED') {
+      if (
+        error instanceof WillowError &&
+        error.code === "PROOF_VERIFICATION_FAILED"
+      ) {
         throw error;
       }
       // Log but don't fail if we can't get proof
-      console.warn(`Could not verify proof for key ${key}:`, error instanceof Error ? error.message : String(error));
+      console.warn(
+        `Could not verify proof for key ${key}:`,
+        error instanceof Error ? error.message : String(error),
+      );
     }
 
     return data;
@@ -241,19 +291,19 @@ export class WillowData {
   async getDataUnverified(
     appId: string,
     datasetId: string,
-    key: string
+    key: string,
   ): Promise<DataRecord> {
     const params = this.auth.getAuthParams();
     const response = await this.api.get<ApiResponse<DataRecord>>(
       `/data/${appId}/${datasetId}/${key}`,
-      { params }
+      { params },
     );
 
     if (!response.data.success) {
       throw new WillowError(
-        response.data.error || 'Data not found',
-        'DATA_NOT_FOUND',
-        404
+        response.data.error || "Data not found",
+        "DATA_NOT_FOUND",
+        404,
       );
     }
 
@@ -267,19 +317,19 @@ export class WillowData {
     appId: string,
     datasetId: string,
     key: string,
-    data: any
+    data: any,
   ): Promise<void> {
     const params = this.auth.getAuthParams();
     const response = await this.api.put<ApiResponse>(
       `/data/${appId}/${datasetId}/${key}`,
       data,
-      { params }
+      { params },
     );
 
     if (!response.data.success) {
       throw new WillowError(
-        response.data.error || 'Failed to update data',
-        'UPDATE_FAILED'
+        response.data.error || "Failed to update data",
+        "UPDATE_FAILED",
       );
     }
   }
@@ -290,18 +340,18 @@ export class WillowData {
   async deleteData(
     appId: string,
     datasetId: string,
-    key: string
+    key: string,
   ): Promise<void> {
     const params = this.auth.getAuthParams();
     const response = await this.api.delete<ApiResponse>(
       `/data/${appId}/${datasetId}/${key}`,
-      { params }
+      { params },
     );
 
     if (!response.data.success) {
       throw new WillowError(
-        response.data.error || 'Failed to delete data',
-        'DELETE_FAILED'
+        response.data.error || "Failed to delete data",
+        "DELETE_FAILED",
       );
     }
   }
@@ -312,16 +362,16 @@ export class WillowData {
   async getProof(
     appId: string,
     datasetId: string,
-    key: string
+    key: string,
   ): Promise<string> {
     const response = await this.api.get<ApiResponse<ProofResponse>>(
-      `/proof/${appId}/${datasetId}/${key}`
+      `/proof/${appId}/${datasetId}/${key}`,
     );
 
     if (!response.data.success) {
       throw new WillowError(
-        response.data.error || 'Failed to get proof',
-        'PROOF_FAILED'
+        response.data.error || "Failed to get proof",
+        "PROOF_FAILED",
       );
     }
 
@@ -334,7 +384,7 @@ export class WillowData {
   async batchStore(
     appId: string,
     datasetId: string,
-    records: Array<{ key: string; value: any }>
+    records: Array<{ key: string; value: any }>,
   ): Promise<void> {
     const data: Record<string, any> = {};
     records.forEach(({ key, value }) => {
@@ -350,7 +400,7 @@ export class WillowData {
   async getMultiple(
     appId: string,
     datasetId: string,
-    keys: string[]
+    keys: string[],
   ): Promise<Record<string, DataRecord>> {
     const results: Record<string, DataRecord> = {};
 
@@ -366,7 +416,7 @@ export class WillowData {
           }
           throw error;
         }
-      })
+      }),
     );
 
     return results;
@@ -378,7 +428,7 @@ export class WillowData {
   async getMultipleUnverified(
     appId: string,
     datasetId: string,
-    keys: string[]
+    keys: string[],
   ): Promise<Record<string, DataRecord>> {
     const results: Record<string, DataRecord> = {};
 
@@ -394,7 +444,7 @@ export class WillowData {
           }
           throw error;
         }
-      })
+      }),
     );
 
     return results;
@@ -424,25 +474,25 @@ export class WillowData {
   async query(
     appId: string,
     datasetId: string,
-    query: QueryRequest
+    query: QueryRequest,
   ): Promise<QueryResponse> {
     // Always include proof by default for security
     const queryWithProof: QueryRequest = {
       ...query,
-      include_proof: true
+      include_proof: true,
     };
 
     const params = this.auth.getAuthParams();
     const response = await this.api.post<ApiResponse<QueryResponse>>(
       `/query/${appId}/${datasetId}`,
       queryWithProof,
-      { params }
+      { params },
     );
 
     if (!response.data.success) {
       throw new WillowError(
-        response.data.error || 'Query failed',
-        'QUERY_FAILED'
+        response.data.error || "Query failed",
+        "QUERY_FAILED",
       );
     }
 
@@ -457,14 +507,14 @@ export class WillowData {
         // Verify the proof and compute root hash
         const computedRootHash = await verifyQueryProof(
           result.proof,
-          result.documents
+          result.documents,
         );
 
         // Compare computed root with verified root
         if (computedRootHash !== verifiedRootHash) {
           throw new WillowError(
-            'Proof verification failed: root hash mismatch',
-            'PROOF_VERIFICATION_FAILED'
+            "Proof verification failed: root hash mismatch",
+            "PROOF_VERIFICATION_FAILED",
           );
         }
 
@@ -476,9 +526,15 @@ export class WillowData {
         }
         throw new WillowError(
           `Proof verification failed: ${error instanceof Error ? error.message : String(error)}`,
-          'PROOF_VERIFICATION_FAILED'
+          "PROOF_VERIFICATION_FAILED",
         );
       }
+    }
+
+    // Apply computed fields if registered for this app/dataset
+    const computedFields = this.computedFieldRegistry.get(appId, datasetId);
+    if (computedFields) {
+      return applyComputedFieldsToResponse(result, computedFields);
     }
 
     return result;
@@ -490,29 +546,37 @@ export class WillowData {
   async queryUnverified(
     appId: string,
     datasetId: string,
-    query: QueryRequest
+    query: QueryRequest,
   ): Promise<QueryResponse> {
     // Explicitly disable proof for performance
     const queryWithoutProof: QueryRequest = {
       ...query,
-      include_proof: false
+      include_proof: false,
     };
 
     const params = this.auth.getAuthParams();
     const response = await this.api.post<ApiResponse<QueryResponse>>(
       `/query/${appId}/${datasetId}`,
       queryWithoutProof,
-      { params }
+      { params },
     );
 
     if (!response.data.success) {
       throw new WillowError(
-        response.data.error || 'Query failed',
-        'QUERY_FAILED'
+        response.data.error || "Query failed",
+        "QUERY_FAILED",
       );
     }
 
-    return response.data.data!;
+    let result = response.data.data!;
+
+    // Apply computed fields if registered for this app/dataset
+    const computedFields = this.computedFieldRegistry.get(appId, datasetId);
+    if (computedFields) {
+      result = applyComputedFieldsToResponse(result, computedFields);
+    }
+
+    return result;
   }
 
   // ============================================================================
@@ -528,17 +592,17 @@ export class WillowData {
    */
   async getCheckpointStateRoot(
     subgroveId: string,
-    checkpointId: string
+    checkpointId: string,
   ): Promise<CheckpointInfo> {
     const response = await this.api.get<ApiResponse<CheckpointInfo>>(
-      `/checkpoints/${subgroveId}/${checkpointId}/state-root`
+      `/checkpoints/${subgroveId}/${checkpointId}/state-root`,
     );
 
     if (!response.data.success) {
       throw new WillowError(
-        response.data.error || 'Checkpoint not found',
-        'CHECKPOINT_NOT_FOUND',
-        404
+        response.data.error || "Checkpoint not found",
+        "CHECKPOINT_NOT_FOUND",
+        404,
       );
     }
 
@@ -583,15 +647,18 @@ export class WillowData {
   async queryHistorical(
     subgroveId: string,
     checkpointId: string,
-    query: HistoricalQueryRequest
+    query: HistoricalQueryRequest,
   ): Promise<HistoricalQueryResponse> {
     // First, verify the checkpoint exists and get its state root
-    const checkpoint = await this.getCheckpointStateRoot(subgroveId, checkpointId);
+    const checkpoint = await this.getCheckpointStateRoot(
+      subgroveId,
+      checkpointId,
+    );
 
     // Make the historical query
     const response = await this.api.post<HistoricalQueryResponse>(
       `/historical/query/${subgroveId}/${checkpointId}`,
-      query
+      query,
     );
 
     const result = response.data;
@@ -599,9 +666,11 @@ export class WillowData {
     // If query failed due to no providers, throw with can_reindex info
     if (!result.success) {
       const error = new WillowError(
-        result.error || 'Historical query failed',
-        result.can_reindex ? 'HISTORICAL_DATA_UNAVAILABLE' : 'HISTORICAL_QUERY_FAILED',
-        result.can_reindex ? 503 : 400
+        result.error || "Historical query failed",
+        result.can_reindex
+          ? "HISTORICAL_DATA_UNAVAILABLE"
+          : "HISTORICAL_QUERY_FAILED",
+        result.can_reindex ? 503 : 400,
       );
       (error as any).can_reindex = result.can_reindex;
       throw error;
@@ -610,8 +679,8 @@ export class WillowData {
     // Verify the returned state root matches the checkpoint
     if (result.state_root !== checkpoint.state_root) {
       throw new WillowError(
-        'State root mismatch: query response does not match checkpoint',
-        'STATE_ROOT_MISMATCH'
+        "State root mismatch: query response does not match checkpoint",
+        "STATE_ROOT_MISMATCH",
       );
     }
 
@@ -636,39 +705,47 @@ export class WillowData {
   async queryHistoricalVerified(
     subgroveId: string,
     checkpointId: string,
-    query: HistoricalQueryRequest
+    query: HistoricalQueryRequest,
   ): Promise<HistoricalQueryResponse> {
     // Force proof inclusion for verification
     const queryWithProof: HistoricalQueryRequest = {
       ...query,
-      include_proof: true
+      include_proof: true,
     };
 
-    const result = await this.queryHistorical(subgroveId, checkpointId, queryWithProof);
+    const result = await this.queryHistorical(
+      subgroveId,
+      checkpointId,
+      queryWithProof,
+    );
 
     // Verify the proof against the checkpoint state root
     if (result.proof) {
       // Convert data to DataRecord[] format for verification
-      const documents = Array.isArray(result.data) ? result.data : [result.data];
+      const documents = Array.isArray(result.data)
+        ? result.data
+        : [result.data];
 
       // Verify proof and get computed root hash
       const computedRoot = await verifyQueryProof(result.proof, documents);
 
       // Compare with the checkpoint's state root (both should be hex strings)
-      const normalizedComputed = computedRoot.toLowerCase().replace(/^0x/, '');
-      const normalizedExpected = result.state_root.toLowerCase().replace(/^0x/, '');
+      const normalizedComputed = computedRoot.toLowerCase().replace(/^0x/, "");
+      const normalizedExpected = result.state_root
+        .toLowerCase()
+        .replace(/^0x/, "");
 
       if (normalizedComputed !== normalizedExpected) {
         throw new WillowError(
           `Historical proof verification failed: computed root ${computedRoot} does not match checkpoint state root ${result.state_root}`,
-          'PROOF_VERIFICATION_FAILED'
+          "PROOF_VERIFICATION_FAILED",
         );
       }
     } else {
       // Proof was requested but not returned
       throw new WillowError(
-        'Historical query did not return proof data despite include_proof=true',
-        'MISSING_PROOF'
+        "Historical query did not return proof data despite include_proof=true",
+        "MISSING_PROOF",
       );
     }
 
@@ -691,9 +768,12 @@ export function extendQueryResponse(response: QueryResponse): QueryResponseExt {
     ...response,
     async verifyProof(): Promise<string> {
       if (!response.proof) {
-        throw new WillowError('Query response does not contain proof data', 'NO_PROOF');
+        throw new WillowError(
+          "Query response does not contain proof data",
+          "NO_PROOF",
+        );
       }
       return verifyQueryProof(response.proof, response.documents);
-    }
+    },
   };
 }
