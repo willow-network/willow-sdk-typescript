@@ -22,6 +22,11 @@ import * as path from 'path';
 const PRIVATE_KEY_HEX = '4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb';
 const PUBLIC_KEY_HEX = '3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c';
 
+// Helper to derive the public key ID from a funded DID
+function getPublicKeyId(did: string): string {
+  return `${did}#key-1`;
+}
+
 // Helper to wait for transaction propagation
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -52,10 +57,11 @@ describe('Willow Tests', () => {
     client2 = new WillowClient({ apiUrl: 'http://localhost:3032' });
     client3 = new WillowClient({ apiUrl: 'http://localhost:3033' });
 
-    // Authenticate with all nodes
-    await client1.authenticate(fundedDID, PRIVATE_KEY_HEX);
-    await client2.authenticate(fundedDID, PRIVATE_KEY_HEX);
-    await client3.authenticate(fundedDID, PRIVATE_KEY_HEX);
+    // Set identity for per-request signing on all nodes
+    const publicKeyId = getPublicKeyId(fundedDID);
+    client1.auth.setIdentity(fundedDID, PRIVATE_KEY_HEX, publicKeyId);
+    client2.auth.setIdentity(fundedDID, PRIVATE_KEY_HEX, publicKeyId);
+    client3.auth.setIdentity(fundedDID, PRIVATE_KEY_HEX, publicKeyId);
   });
 
   describe('Schema and Index Registration', () => {
@@ -335,7 +341,7 @@ describe('Performance Tests', () => {
   beforeAll(async () => {
     fundedDID = getFundedDID();
     client = new WillowClient({ apiUrl: 'http://localhost:3031' });
-    await client.authenticate(fundedDID, PRIVATE_KEY_HEX);
+    client.auth.setIdentity(fundedDID, PRIVATE_KEY_HEX, getPublicKeyId(fundedDID));
   });
 
   it('should handle bulk indexing efficiently', async () => {

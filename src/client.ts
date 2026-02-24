@@ -3,7 +3,6 @@ import { WillowData } from "./data";
 import {
   WillowConfig,
   DidDocument,
-  Session,
   RegisterAppRequest,
   AppRegistration,
   RegisterDatasetRequest,
@@ -48,15 +47,14 @@ export class WillowClient {
     }
 
     if (!publicKeyId) {
-      // Try to guess the public key ID from the DID document
-      const didDoc = await this.auth.getDid(this.config.did);
+      const didDoc = await this.auth.getDid_(this.config.did);
       if (didDoc.publicKeys.length === 0) {
         throw new Error("No public keys found in DID document");
       }
       publicKeyId = didDoc.publicKeys[0].id;
     }
 
-    await this.auth.login(this.config.did, key, publicKeyId);
+    this.auth.setIdentity(this.config.did, key, publicKeyId);
   }
 
   /**
@@ -64,13 +62,6 @@ export class WillowClient {
    */
   async registerDid(didDocument: DidDocument): Promise<DidDocument> {
     return this.auth.registerDid(didDocument);
-  }
-
-  /**
-   * Get current session
-   */
-  getSession(): Session | undefined {
-    return this.auth.getSession();
   }
 
   /**

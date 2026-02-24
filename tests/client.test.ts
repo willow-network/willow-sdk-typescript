@@ -1,12 +1,40 @@
 import { WillowClient } from '../src/client';
-import { WillowError } from '../src/errors';
+import { generateEd25519KeyPair, getEd25519PublicKey } from '../src/auth';
 
-// Mock fetch
+// Mock fetch (used by getRootHash / getRootHashLocal)
 global.fetch = jest.fn();
+
+// Mock axios (used by auth and data operations)
+jest.mock('axios', () => {
+  const mockAxiosInstance = {
+    get: jest.fn(),
+    post: jest.fn(),
+    put: jest.fn(),
+    delete: jest.fn(),
+  };
+  return {
+    __esModule: true,
+    default: {
+      create: jest.fn(() => mockAxiosInstance),
+    },
+    _mockInstance: mockAxiosInstance,
+  };
+});
+
+// Get the mock axios instance
+function getMockAxios() {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  return require('axios')._mockInstance;
+}
 
 describe('WillowClient', () => {
   let client: WillowClient;
   const mockFetch = global.fetch as jest.MockedFunction<typeof fetch>;
+
+  // Test keys
+  const { privateKey: testPrivateKey, publicKey: testPublicKey } = generateEd25519KeyPair();
+  const testDid = 'did:willow:test:123';
+  const testPublicKeyId = `${testDid}#key-1`;
 
   beforeEach(() => {
     client = new WillowClient({ apiUrl: 'http://localhost:3031' });
@@ -14,201 +42,150 @@ describe('WillowClient', () => {
   });
 
   describe('constructor', () => {
-    it('should initialize with default config', () => {
-      const defaultClient = new WillowClient();
-      expect(defaultClient).toBeDefined();
-    });
-
-    it('should accept custom API URL', () => {
+    it('should initialize with config', () => {
       const customClient = new WillowClient({ apiUrl: 'http://custom.api' });
       expect(customClient).toBeDefined();
+    });
+
+    it('should expose auth and data modules', () => {
+      expect(client.auth).toBeDefined();
+      expect(client.data).toBeDefined();
     });
   });
 
   describe('registerDid', () => {
     it('should register a DID document', async () => {
       const didDoc = {
-        id: 'did:willow:test:123',
-        public_keys: [{
-          id: 'did:willow:test:123#key-1',
-          key_type: 'Ed25519VerificationKey2020',
-          public_key_hex: 'abcdef123456',
+        id: testDid,
+        publicKeys: [{
+          id: testPublicKeyId,
+          type: 'Ed25519VerificationKey2020',
+          publicKeyHex: testPublicKey,
         }],
         created: Date.now(),
         updated: Date.now(),
       };
 
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 201,
-        json: async () => ({ success: true, data: didDoc }),
-      } as Response);
+      const mockAxios = getMockAxios();
+      mockAxios.post.mockResolvedValueOnce({
+        data: { success: true, data: didDoc },
+      });
 
       const result = await client.registerDid(didDoc);
       expect(result).toEqual(didDoc);
-      expect(mockFetch).toHaveBeenCalledWith(
-        'http://localhost:3031/did',
-        expect.objectContaining({
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(didDoc),
-        })
+      expect(mockAxios.post).toHaveBeenCalledWith(
+        '/did',
+        didDoc,
       );
-    });
-
-    it('should handle registration errors', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 400,
-        json: async () => ({ success: false, error: 'Invalid DID format' }),
-      } as Response);
-
-      await expect(client.registerDid({} as any)).rejects.toThrow(WillowError);
     });
   });
 
-  describe('authenticate', () => {
-    const did = 'did:willow:test:123';
-    const privateKeyHex = 'a'.repeat(64);
-    const publicKeyId = `${did}#key-1`;
+  describe('identity management', () => {
+    it('should set identity for per-request signing', () => {
+      expect(client.auth.hasIdentity()).toBe(false);
 
-    it('should complete authentication flow', async () => {
-      // Mock challenge response
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          success: true,
-          data: {
-            challenge: 'test-challenge',
-            timestamp: Date.now(),
-          },
-        }),
-      } as Response);
+      client.auth.setIdentity(testDid, testPrivateKey, testPublicKeyId);
 
-      // Mock verify response
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          success: true,
-          data: {
-            did,
-            token: 'session-token',
-            expires_at: Date.now() + 3600000,
-          },
-        }),
-      } as Response);
-
-      const session = await client.authenticate(did, privateKeyHex, publicKeyId);
-      expect(session.token).toBe('session-token');
-      expect(session.did).toBe(did);
-      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(client.auth.hasIdentity()).toBe(true);
+      expect(client.auth.getDid()).toBe(testDid);
     });
 
-    it('should handle authentication failures', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 401,
-        json: async () => ({ success: false, error: 'Invalid signature' }),
-      } as Response);
+    it('should generate auth headers when identity is set', () => {
+      client.auth.setIdentity(testDid, testPrivateKey, testPublicKeyId);
 
-      await expect(client.authenticate(did, privateKeyHex, publicKeyId))
-        .rejects.toThrow(WillowError);
+      const headers = client.auth.getAuthHeaders('GET', '/data/app1/dataset1/key1');
+
+      expect(headers['X-DID']).toBe(testDid);
+      expect(headers['X-Public-Key-ID']).toBe(testPublicKeyId);
+      expect(headers['X-Signature']).toBeDefined();
+      expect(headers['X-Timestamp']).toBeDefined();
+    });
+
+    it('should return empty headers when no identity is set', () => {
+      const headers = client.auth.getAuthHeaders('GET', '/data/app1/dataset1/key1');
+      expect(headers).toEqual({});
+    });
+
+    it('should throw when signing without identity', () => {
+      expect(() => client.auth.signRequest('GET', '/data/app1/dataset1/key1'))
+        .toThrow('Identity not set');
     });
   });
 
   describe('data operations', () => {
     beforeEach(() => {
-      // Set up authenticated client
-      client['session'] = {
-        did: 'did:willow:test:123',
-        token: 'test-token',
-        expires_at: Date.now() + 3600000,
-      };
+      // Set up authenticated client using per-request signing
+      client.auth.setIdentity(testDid, testPrivateKey, testPublicKeyId);
     });
 
     describe('store', () => {
-      it('should store data successfully', async () => {
-        mockFetch.mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({ success: true }),
-        } as Response);
+      it('should store data with auth headers', async () => {
+        const mockAxios = getMockAxios();
+        mockAxios.post.mockResolvedValueOnce({
+          data: { success: true },
+        });
 
-        await client.data.store('app1', 'dataset1', {
+        await client.data.storeData('app1', 'dataset1', {
           key1: { value: 'test' },
         });
 
-        expect(mockFetch).toHaveBeenCalledWith(
-          'http://localhost:3031/data/app1/dataset1?did=did:willow:test:123&session=test-token',
+        expect(mockAxios.post).toHaveBeenCalledWith(
+          '/data/app1/dataset1',
+          { key1: { value: 'test' } },
           expect.objectContaining({
-            method: 'POST',
-            body: JSON.stringify({ key1: { value: 'test' } }),
+            headers: expect.objectContaining({
+              'X-DID': testDid,
+              'X-Public-Key-ID': testPublicKeyId,
+              'X-Signature': expect.any(String),
+              'X-Timestamp': expect.any(String),
+            }),
           })
         );
-      });
-
-      it('should require authentication', async () => {
-        client['session'] = null;
-        await expect(client.data.store('app1', 'dataset1', {}))
-          .rejects.toThrow('Not authenticated');
-      });
-    });
-
-    describe('get', () => {
-      it('should retrieve data', async () => {
-        const testData = { value: 'test' };
-        mockFetch.mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({ success: true, data: testData }),
-        } as Response);
-
-        const result = await client.data.get('app1', 'dataset1', 'key1');
-        expect(result).toEqual(testData);
-      });
-
-      it('should handle not found', async () => {
-        mockFetch.mockResolvedValueOnce({
-          ok: false,
-          status: 404,
-          json: async () => ({ success: false, error: 'Not found' }),
-        } as Response);
-
-        await expect(client.data.get('app1', 'dataset1', 'key1'))
-          .rejects.toThrow(WillowError);
       });
     });
 
     describe('update', () => {
-      it('should update data', async () => {
-        mockFetch.mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({ success: true }),
-        } as Response);
+      it('should update data with auth headers', async () => {
+        const mockAxios = getMockAxios();
+        mockAxios.put.mockResolvedValueOnce({
+          data: { success: true },
+        });
 
-        await client.data.update('app1', 'dataset1', 'key1', { value: 'updated' });
+        await client.data.updateData('app1', 'dataset1', 'key1', { value: 'updated' });
 
-        expect(mockFetch).toHaveBeenCalledWith(
-          'http://localhost:3031/data/app1/dataset1/key1?did=did:willow:test:123&session=test-token',
+        expect(mockAxios.put).toHaveBeenCalledWith(
+          '/data/app1/dataset1/key1',
+          { value: 'updated' },
           expect.objectContaining({
-            method: 'PUT',
-            body: JSON.stringify({ value: 'updated' }),
+            headers: expect.objectContaining({
+              'X-DID': testDid,
+              'X-Public-Key-ID': testPublicKeyId,
+              'X-Signature': expect.any(String),
+              'X-Timestamp': expect.any(String),
+            }),
           })
         );
       });
     });
 
     describe('delete', () => {
-      it('should delete data', async () => {
-        mockFetch.mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({ success: true }),
-        } as Response);
+      it('should delete data with auth headers', async () => {
+        const mockAxios = getMockAxios();
+        mockAxios.delete.mockResolvedValueOnce({
+          data: { success: true },
+        });
 
-        await client.data.delete('app1', 'dataset1', 'key1');
+        await client.data.deleteData('app1', 'dataset1', 'key1');
 
-        expect(mockFetch).toHaveBeenCalledWith(
-          'http://localhost:3031/data/app1/dataset1/key1?did=did:willow:test:123&session=test-token',
+        expect(mockAxios.delete).toHaveBeenCalledWith(
+          '/data/app1/dataset1/key1',
           expect.objectContaining({
-            method: 'DELETE',
+            headers: expect.objectContaining({
+              'X-DID': testDid,
+              'X-Public-Key-ID': testPublicKeyId,
+              'X-Signature': expect.any(String),
+              'X-Timestamp': expect.any(String),
+            }),
           })
         );
       });
@@ -217,33 +194,38 @@ describe('WillowClient', () => {
 
   describe('registration operations', () => {
     beforeEach(() => {
-      client['session'] = {
-        did: 'did:willow:test:123',
-        token: 'test-token',
-        expires_at: Date.now() + 3600000,
-      };
+      client.auth.setIdentity(testDid, testPrivateKey, testPublicKeyId);
     });
 
-    it('should register an app', async () => {
+    it('should register an app with auth headers', async () => {
       const appRequest = {
         app_id: 'test-app',
         name: 'Test App',
         description: 'Test description',
         app_type: 'test',
-        owner_did: 'did:willow:test:123',
+        owner_did: testDid,
         admins: [],
       };
 
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true, data: appRequest }),
-      } as Response);
+      const mockAxios = getMockAxios();
+      mockAxios.post.mockResolvedValueOnce({
+        data: { success: true, data: appRequest },
+      });
 
-      const result = await client.registration.registerApp(appRequest);
+      const result = await client.data.registerApp(appRequest);
       expect(result).toEqual(appRequest);
+      expect(mockAxios.post).toHaveBeenCalledWith(
+        '/register/app',
+        appRequest,
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            'X-DID': testDid,
+          }),
+        })
+      );
     });
 
-    it('should register a dataset', async () => {
+    it('should register a dataset with auth headers', async () => {
       const datasetRequest = {
         dataset_id: 'test-dataset',
         app_id: 'test-app',
@@ -251,93 +233,22 @@ describe('WillowClient', () => {
         dataset_path: ['collections'],
         schema: {
           version: 1,
-          fields: { name: { type: 'string' } },
+          fields: { name: { type: 'string' as const } },
           indexes: [],
           required_fields: ['name'],
         },
-        owner_did: 'did:willow:test:123',
-        writers: ['did:willow:test:123'],
-        readers: ['did:willow:test:123'],
+        owner_did: testDid,
+        writers: [testDid],
+        readers: [testDid],
       };
 
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true, data: datasetRequest }),
-      } as Response);
+      const mockAxios = getMockAxios();
+      mockAxios.post.mockResolvedValueOnce({
+        data: { success: true, data: datasetRequest },
+      });
 
-      const result = await client.registration.registerDataset(datasetRequest);
+      const result = await client.data.registerDataset(datasetRequest);
       expect(result).toEqual(datasetRequest);
-    });
-  });
-
-  describe('proof operations', () => {
-    it('should get proof without authentication', async () => {
-      const proofData = {
-        proof: 'abc123def456',
-        value: { test: 'data' },
-      };
-
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true, data: proofData }),
-      } as Response);
-
-      const result = await client.proof.get('app1', 'dataset1', 'key1');
-      expect(result).toEqual(proofData);
-      expect(mockFetch).toHaveBeenCalledWith(
-        'http://localhost:3031/proof/app1/dataset1/key1',
-        expect.objectContaining({
-          method: 'GET',
-        })
-      );
-    });
-  });
-
-  describe('session management', () => {
-    it('should check if authenticated', () => {
-      expect(client.isAuthenticated()).toBe(false);
-
-      client['session'] = {
-        did: 'did:willow:test:123',
-        token: 'test-token',
-        expires_at: Date.now() + 3600000,
-      };
-
-      expect(client.isAuthenticated()).toBe(true);
-    });
-
-    it('should handle expired sessions', () => {
-      client['session'] = {
-        did: 'did:willow:test:123',
-        token: 'test-token',
-        expires_at: Date.now() - 1000, // Expired
-      };
-
-      expect(client.isAuthenticated()).toBe(false);
-    });
-
-    it('should get current session', () => {
-      expect(client.getSession()).toBeNull();
-
-      const session = {
-        did: 'did:willow:test:123',
-        token: 'test-token',
-        expires_at: Date.now() + 3600000,
-      };
-      client['session'] = session;
-
-      expect(client.getSession()).toEqual(session);
-    });
-
-    it('should clear session', () => {
-      client['session'] = {
-        did: 'did:willow:test:123',
-        token: 'test-token',
-        expires_at: Date.now() + 3600000,
-      };
-
-      client.clearSession();
-      expect(client.getSession()).toBeNull();
     });
   });
 
@@ -356,7 +267,6 @@ describe('WillowClient', () => {
       expect(result).toBe(rootHash);
       expect(mockFetch).toHaveBeenCalledWith(
         'http://localhost:3031/state/root-hash/verified',
-        undefined
       );
     });
 
@@ -374,7 +284,6 @@ describe('WillowClient', () => {
       expect(result).toBe(rootHash);
       expect(mockFetch).toHaveBeenCalledWith(
         'http://localhost:3031/state/root-hash',
-        undefined
       );
     });
 

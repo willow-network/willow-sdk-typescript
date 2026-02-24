@@ -3,11 +3,8 @@ import { ethers } from 'ethers';
 import { ed25519 } from '@noble/curves/ed25519';
 import {
   ApiResponse,
-  AuthenticationChallenge,
-  AuthenticationResponse,
   WillowError,
   DidDocument,
-  Session,
 } from '../types';
 
 /**
@@ -135,9 +132,23 @@ export function getEd25519PublicKey(privateKeyHex: string): string {
   }
 }
 
+/**
+ * Per-request signature headers
+ */
+export interface SignedRequestHeaders {
+  [key: string]: string;
+  'X-DID': string;
+  'X-Public-Key-ID': string;
+  'X-Signature': string;
+  'X-Timestamp': string;
+}
+
 export class WillowAuth {
   private api: AxiosInstance;
-  private session?: Session;
+  private did?: string;
+  private privateKey?: string;
+  private publicKeyId?: string;
+  private algorithm?: SignatureAlgorithm;
 
   constructor(apiUrl: string) {
     this.api = axios.create({
@@ -146,6 +157,31 @@ export class WillowAuth {
         'Content-Type': 'application/json',
       },
     });
+  }
+
+  /**
+   * Set identity for per-request signing.
+   * Call this once; all subsequent requests will be signed automatically.
+   */
+  setIdentity(did: string, privateKey: string, publicKeyId: string): void {
+    this.did = did;
+    this.privateKey = privateKey;
+    this.publicKeyId = publicKeyId;
+    this.algorithm = detectAlgorithm(did, privateKey);
+  }
+
+  /**
+   * Check if an identity is configured for signing
+   */
+  hasIdentity(): boolean {
+    return !!(this.did && this.privateKey && this.publicKeyId);
+  }
+
+  /**
+   * Get the current DID
+   */
+  getDid(): string | undefined {
+    return this.did;
   }
 
   /**
@@ -164,7 +200,7 @@ export class WillowAuth {
   /**
    * Get DID document
    */
-  async getDid(did: string): Promise<DidDocument> {
+  async getDid_(did: string): Promise<DidDocument> {
     const response = await this.api.get<ApiResponse<DidDocument>>(`/did/${did}`);
 
     if (!response.data.success) {
@@ -175,148 +211,59 @@ export class WillowAuth {
   }
 
   /**
-   * Create an authentication challenge
+   * Sign a request and return the authentication headers.
+   *
+   * Message format: `{METHOD}:{PATH}:{TIMESTAMP}`
    */
-  async createChallenge(did: string): Promise<AuthenticationChallenge> {
-    const response = await this.api.get<ApiResponse<AuthenticationChallenge>>(
-      `/auth/challenge/${did}`
-    );
-
-    if (!response.data.success) {
+  signRequest(method: string, path: string): SignedRequestHeaders {
+    if (!this.did || !this.privateKey || !this.publicKeyId) {
       throw new WillowError(
-        response.data.error || 'Failed to create challenge',
-        'CHALLENGE_FAILED'
+        'Identity not set. Call setIdentity() first.',
+        'NO_IDENTITY'
       );
     }
 
-    return response.data.data!;
-  }
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const message = `${method}:${path}:${timestamp}`;
 
-  /**
-   * Sign a challenge with a private key
-   * Supports both Ed25519 and secp256k1 (Ethereum) keys
-   */
-  async signChallenge(
-    challenge: AuthenticationChallenge,
-    privateKey: string,
-    publicKeyId: string
-  ): Promise<AuthenticationResponse> {
-    // Build the message to sign - must match server's expected format
-    const messageToSign = `DID Authentication\nChallenge: ${challenge.challenge}\nNonce: ${(challenge as any).nonce || ''}\nDID: ${challenge.did}\nExpires: ${challenge.expires_at}`;
-
-    // Detect algorithm from key format
-    const algorithm = detectAlgorithm(challenge.did, privateKey);
     let signature: string;
-
-    if (algorithm === 'secp256k1') {
-      // Ethereum-style signing with ethers.js
-      const wallet = new ethers.Wallet(privateKey);
-      const messageBytes = ethers.toUtf8Bytes(messageToSign);
+    if (this.algorithm === 'secp256k1') {
+      const wallet = new ethers.Wallet(this.privateKey);
+      const messageBytes = ethers.toUtf8Bytes(message);
       const messageHash = ethers.keccak256(messageBytes);
-      const sig = await wallet.signMessage(ethers.getBytes(messageHash));
+      // signMessageSync returns a hex string with 0x prefix
+      const sig = wallet.signMessageSync(ethers.getBytes(messageHash));
       signature = sig.replace('0x', '');
     } else {
-      // Ed25519 signing with @noble/curves
-      signature = signEd25519(messageToSign, privateKey);
+      signature = signEd25519(message, this.privateKey);
     }
 
     return {
-      did: challenge.did,
-      challenge: challenge.challenge,
-      signature,
-      public_key_id: publicKeyId,
+      'X-DID': this.did,
+      'X-Public-Key-ID': this.publicKeyId,
+      'X-Signature': signature,
+      'X-Timestamp': timestamp,
     };
   }
 
   /**
-   * Authenticate with a signed challenge
+   * Get authentication headers for an API request.
+   * Returns signature headers if identity is set, empty object otherwise.
    */
-  async authenticate(
-    challenge: AuthenticationChallenge,
-    response: AuthenticationResponse
-  ): Promise<Session> {
-    const result = await this.api.post<ApiResponse<Session>>(
-      '/auth/verify',
-      [challenge, response]
-    );
-
-    if (!result.data.success) {
-      throw new WillowError(
-        result.data.error || 'Authentication failed',
-        'AUTH_FAILED',
-        401
-      );
-    }
-
-    this.session = result.data.data!;
-    return this.session;
-  }
-
-  /**
-   * Full authentication flow
-   */
-  async login(did: string, privateKey: string, publicKeyId: string): Promise<Session> {
-    // Get challenge
-    const challenge = await this.createChallenge(did);
-
-    // Sign challenge
-    const response = await this.signChallenge(challenge, privateKey, publicKeyId);
-
-    // Authenticate
-    return await this.authenticate(challenge, response);
-  }
-
-  /**
-   * Get current session
-   */
-  getSession(): Session | undefined {
-    if (this.session && this.session.expires_at > Date.now() / 1000) {
-      return this.session;
-    }
-    return undefined;
-  }
-
-  /**
-   * Clear session (logout)
-   */
-  clearSession(): void {
-    this.session = undefined;
-  }
-
-  /**
-   * Check if currently authenticated
-   */
-  isAuthenticated(): boolean {
-    return this.getSession() !== undefined;
-  }
-
-  /**
-   * Get authentication headers for API requests
-   */
-  getAuthHeaders(): Record<string, string> {
-    const session = this.getSession();
-    if (!session) {
+  getAuthHeaders(method: string, path: string): Record<string, string> {
+    if (!this.hasIdentity()) {
       return {};
     }
-
-    return {
-      'X-DID': session.did,
-      'X-Session': session.token,
-    };
+    return this.signRequest(method, path);
   }
 
   /**
-   * Get query parameters for authentication
+   * Get query parameters for authentication (DID only, for pay-per-read fallback)
    */
   getAuthParams(): Record<string, string> {
-    const session = this.getSession();
-    if (!session) {
+    if (!this.did) {
       return {};
     }
-
-    return {
-      did: session.did,
-      session: session.token,
-    };
+    return { did: this.did };
   }
 }

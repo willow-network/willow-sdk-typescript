@@ -98,7 +98,7 @@ export const VERSION = "0.1.0";
  * import { WillowClient, DEVNET_TEST_ACCOUNT } from '@willow/sdk';
  *
  * const client = new WillowClient({ apiUrl: 'http://localhost:3031' });
- * await client.authenticate(
+ * client.auth.setIdentity(
  *   DEVNET_TEST_ACCOUNT.did,
  *   DEVNET_TEST_ACCOUNT.privateKey,
  *   DEVNET_TEST_ACCOUNT.publicKeyId

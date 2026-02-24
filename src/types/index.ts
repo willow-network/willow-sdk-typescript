@@ -30,26 +30,6 @@ export interface DidDocument {
   updated: number;
 }
 
-export interface AuthenticationChallenge {
-  did: string;
-  challenge: string;
-  timestamp: number;
-  expires_at: number;
-}
-
-export interface AuthenticationResponse {
-  did: string;
-  challenge: string;
-  signature: string;
-  public_key_id: string;
-}
-
-export interface Session {
-  did: string;
-  token: string;
-  expires_at: number;
-}
-
 // App Registration Types
 export interface RegisterAppRequest {
   app_id: string;

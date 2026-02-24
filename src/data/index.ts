@@ -134,11 +134,11 @@ export class WillowData {
    * Register a new app
    */
   async registerApp(request: RegisterAppRequest): Promise<AppRegistration> {
-    const params = this.auth.getAuthParams();
+    const headers = this.auth.getAuthHeaders('POST', '/register/app');
     const response = await this.api.post<ApiResponse<AppRegistration>>(
       "/register/app",
       request,
-      { params },
+      { headers },
     );
 
     if (!response.data.success) {
@@ -157,7 +157,7 @@ export class WillowData {
   async registerDataset(
     request: RegisterDatasetRequest,
   ): Promise<DatasetRegistration> {
-    const params = this.auth.getAuthParams();
+    const headers = this.auth.getAuthHeaders('POST', '/register/subgrove');
 
     // Convert to the API's expected format (subgrove endpoint for compatibility)
     const subgroveRequest = {
@@ -173,7 +173,7 @@ export class WillowData {
     const response = await this.api.post<ApiResponse<DatasetRegistration>>(
       "/register/subgrove",
       subgroveRequest,
-      { params },
+      { headers },
     );
 
     if (!response.data.success) {
@@ -194,11 +194,11 @@ export class WillowData {
     datasetId: string,
     data: Record<string, any>,
   ): Promise<void> {
-    const params = this.auth.getAuthParams();
+    const headers = this.auth.getAuthHeaders('POST', `/data/${appId}/${datasetId}`);
     const response = await this.api.post<ApiResponse>(
       `/data/${appId}/${datasetId}`,
       data,
-      { params },
+      { headers },
     );
 
     if (!response.data.success) {
@@ -217,12 +217,12 @@ export class WillowData {
     datasetId: string,
     key: string,
   ): Promise<DataRecord> {
-    const params = this.auth.getAuthParams();
+    const headers = this.auth.getAuthHeaders('GET', `/data/${appId}/${datasetId}/${key}`);
 
     // First get the data
     const response = await this.api.get<ApiResponse<DataRecord>>(
       `/data/${appId}/${datasetId}/${key}`,
-      { params },
+      { headers },
     );
 
     if (!response.data.success) {
@@ -293,10 +293,10 @@ export class WillowData {
     datasetId: string,
     key: string,
   ): Promise<DataRecord> {
-    const params = this.auth.getAuthParams();
+    const headers = this.auth.getAuthHeaders('GET', `/data/${appId}/${datasetId}/${key}`);
     const response = await this.api.get<ApiResponse<DataRecord>>(
       `/data/${appId}/${datasetId}/${key}`,
-      { params },
+      { headers },
     );
 
     if (!response.data.success) {
@@ -319,11 +319,11 @@ export class WillowData {
     key: string,
     data: any,
   ): Promise<void> {
-    const params = this.auth.getAuthParams();
+    const headers = this.auth.getAuthHeaders('PUT', `/data/${appId}/${datasetId}/${key}`);
     const response = await this.api.put<ApiResponse>(
       `/data/${appId}/${datasetId}/${key}`,
       data,
-      { params },
+      { headers },
     );
 
     if (!response.data.success) {
@@ -342,10 +342,10 @@ export class WillowData {
     datasetId: string,
     key: string,
   ): Promise<void> {
-    const params = this.auth.getAuthParams();
+    const headers = this.auth.getAuthHeaders('DELETE', `/data/${appId}/${datasetId}/${key}`);
     const response = await this.api.delete<ApiResponse>(
       `/data/${appId}/${datasetId}/${key}`,
-      { params },
+      { headers },
     );
 
     if (!response.data.success) {
@@ -482,11 +482,11 @@ export class WillowData {
       include_proof: true,
     };
 
-    const params = this.auth.getAuthParams();
+    const headers = this.auth.getAuthHeaders('POST', `/query/${appId}/${datasetId}`);
     const response = await this.api.post<ApiResponse<QueryResponse>>(
       `/query/${appId}/${datasetId}`,
       queryWithProof,
-      { params },
+      { headers },
     );
 
     if (!response.data.success) {
@@ -554,11 +554,11 @@ export class WillowData {
       include_proof: false,
     };
 
-    const params = this.auth.getAuthParams();
+    const headers = this.auth.getAuthHeaders('POST', `/query/${appId}/${datasetId}`);
     const response = await this.api.post<ApiResponse<QueryResponse>>(
       `/query/${appId}/${datasetId}`,
       queryWithoutProof,
-      { params },
+      { headers },
     );
 
     if (!response.data.success) {
