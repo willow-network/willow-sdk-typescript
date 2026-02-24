@@ -115,16 +115,22 @@ export interface RegisterAppTx {
 }
 
 /**
+ * Subgrove mode: DataStorage or BlockchainIndexing.
+ * When omitted, defaults to DataStorage with empty values.
+ */
+export type SubgroveMode =
+  | { DataStorage: { name: string; writers?: string[]; free_readers?: string[]; read_pricing?: any; required_verifications?: number } }
+  | { BlockchainIndexing: { manifest_ipfs: string; manifest_content?: number[]; wasm_modules?: any[]; execution_mode?: any; indexer_config?: any } };
+
+/**
  * Subgrove registration transaction
  */
 export interface RegisterSubgroveTx {
   subgroveId: string;
   appId: string;
-  name: string;
   schema: string; // JSON schema as string
   ownerDid: string;
-  writers?: string[];
-  readers?: string[];
+  mode?: SubgroveMode;
   signature?: string; // hex-encoded
   publicKeyId?: string;
   nonce?: number;
@@ -196,15 +202,30 @@ export function createSignMessage(txType: string, transaction: Transaction): str
 
     case 'RegisterSubgrove': {
       const tx = transaction as RegisterSubgroveTx;
+      const mode = tx.mode;
+      if (mode && 'BlockchainIndexing' in mode) {
+        return [
+          'RegisterSubgrove',
+          `Subgrove ID: ${tx.subgroveId}`,
+          `App ID: ${tx.appId}`,
+          `Mode: BlockchainIndexing`,
+          `Schema: ${tx.schema}`,
+          `ManifestIPFS: ${mode.BlockchainIndexing.manifest_ipfs}`,
+          `Owner: ${tx.ownerDid}`,
+          `Nonce: ${tx.nonce || 0}`
+        ].join('\n');
+      }
+      // DataStorage mode (default)
+      const ds = mode && 'DataStorage' in mode ? mode.DataStorage : { name: '', writers: [], free_readers: [] };
       return [
         'RegisterSubgrove',
         `Subgrove ID: ${tx.subgroveId}`,
         `App ID: ${tx.appId}`,
-        `Name: ${tx.name}`,
+        `Name: ${ds.name || ''}`,
         `Schema: ${tx.schema}`,
         `Owner: ${tx.ownerDid}`,
-        `Writers: ${(tx.writers || []).join(',')}`,
-        `Readers: ${(tx.readers || []).join(',')}`,
+        `Writers: ${(ds.writers || []).join(',')}`,
+        `Readers: ${(ds.free_readers || []).join(',')}`,
         `Nonce: ${tx.nonce || 0}`
       ].join('\n');
     }
