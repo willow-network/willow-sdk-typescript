@@ -43,6 +43,9 @@ export function detectAlgorithm(did: string, privateKey?: string): SignatureAlgo
  */
 function hexToBytes(hex: string): Uint8Array {
   const clean = hex.replace(/^0x/, '');
+  if (clean.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(clean)) {
+    throw new Error('Invalid hex string');
+  }
   const bytes = new Uint8Array(clean.length / 2);
   for (let i = 0; i < clean.length; i += 2) {
     bytes[i / 2] = parseInt(clean.substr(i, 2), 16);
