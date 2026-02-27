@@ -109,6 +109,7 @@ export interface RegisterAppTx {
   appType: string;
   ownerDid: string;
   admins?: string[];
+  initialFunding?: number;
   signature?: string; // hex-encoded
   publicKeyId?: string;
   nonce?: number;
@@ -188,7 +189,7 @@ export function createSignMessage(txType: string, transaction: Transaction): str
 
     case 'RegisterApp': {
       const tx = transaction as RegisterAppTx;
-      return [
+      const parts = [
         'RegisterApp',
         `App ID: ${tx.appId}`,
         `Name: ${tx.name}`,
@@ -197,7 +198,11 @@ export function createSignMessage(txType: string, transaction: Transaction): str
         `Owner: ${tx.ownerDid}`,
         `Admins: ${(tx.admins || []).join(',')}`,
         `Nonce: ${tx.nonce || 0}`
-      ].join('\n');
+      ];
+      if (tx.initialFunding && tx.initialFunding > 0) {
+        parts.push(`Funding: ${tx.initialFunding}`);
+      }
+      return parts.join('\n');
     }
 
     case 'RegisterSubgrove': {
