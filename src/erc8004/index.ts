@@ -187,7 +187,7 @@ export class Erc8004Client {
     if (options?.tier !== undefined) params.push(`tier=${encodeURIComponent(options.tier)}`);
     const qs = params.length > 0 ? `?${params.join('&')}` : '';
     const resp = await fetch(`${this.apiUrl}/agents${qs}`);
-    const body = await resp.json();
+    const body = await resp.json() as any;
     if (body.success === false) {
       throw new Error(body.error || 'Failed to list agents');
     }
@@ -199,7 +199,7 @@ export class Erc8004Client {
     const resp = await fetch(
       `${this.apiUrl}/agent/${encodeURIComponent(did)}/registration.json`,
     );
-    const body = await resp.json();
+    const body = await resp.json() as any;
     if (body.success === false) {
       throw new Error(body.error || 'Failed to fetch agent registration');
     }
@@ -212,7 +212,7 @@ export class Erc8004Client {
       `${this.apiUrl}/did/${encodeURIComponent(did)}/eth-address`,
     );
     if (resp.status === 404) return null;
-    const body = await resp.json();
+    const body = await resp.json() as any;
     if (body.success === false) {
       throw new Error(body.error || 'Failed to fetch ETH address');
     }
@@ -225,7 +225,7 @@ export class Erc8004Client {
       `${this.apiUrl}/eth-address/${encodeURIComponent(ethAddress)}/did`,
     );
     if (resp.status === 404) return null;
-    const body = await resp.json();
+    const body = await resp.json() as any;
     if (body.success === false) {
       throw new Error(body.error || 'Failed to fetch DID');
     }
@@ -238,7 +238,7 @@ export class Erc8004Client {
       `${this.apiUrl}/did/${encodeURIComponent(did)}/erc8004`,
     );
     if (resp.status === 404) return null;
-    const body = await resp.json();
+    const body = await resp.json() as any;
     if (body.success === false) {
       throw new Error(body.error || 'Failed to fetch ERC-8004 details');
     }
@@ -252,7 +252,7 @@ export class Erc8004Client {
     const resp = await fetch(
       `${this.apiUrl}/agent/${encodeURIComponent(did)}/reputation-attestation`,
     );
-    const body = await resp.json();
+    const body = await resp.json() as any;
     if (body.success === false) {
       throw new Error(
         body.error || 'Failed to fetch reputation attestation',
@@ -270,7 +270,7 @@ export class Erc8004Client {
     const resp = await fetch(
       `${this.apiUrl}/agent/${encodeURIComponent(did)}/reputation-history${params}`,
     );
-    const body = await resp.json();
+    const body = await resp.json() as any;
     if (body.success === false) {
       throw new Error(
         body.error || 'Failed to fetch reputation history',
@@ -292,7 +292,7 @@ export class Erc8004Client {
     const resp = await fetch(
       `${this.apiUrl}/agent/${encodeURIComponent(did)}/validation-status${qs}`,
     );
-    const body = await resp.json();
+    const body = await resp.json() as any;
     if (body.success === false) {
       throw new Error(
         body.error || 'Failed to fetch validation status',
@@ -312,7 +312,7 @@ export class Erc8004Client {
     const resp = await fetch(
       `${this.apiUrl}/agent/${encodeURIComponent(did)}/validation-summary${qs}`,
     );
-    const body = await resp.json();
+    const body = await resp.json() as any;
     if (body.success === false) {
       throw new Error(
         body.error || 'Failed to fetch validation summary',
