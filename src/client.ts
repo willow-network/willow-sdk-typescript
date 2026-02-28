@@ -10,6 +10,7 @@ import {
   DataRecord,
   QueryRequest,
   QueryResponse,
+  SqlQueryResponse,
 } from "./types";
 import { configureProofVerification, ProofVerificationOptions } from "./proof";
 import { ComputedFieldSet } from "./computed-fields";
@@ -219,6 +220,18 @@ export class WillowClient {
     query: QueryRequest,
   ): Promise<QueryResponse> {
     return this.data.queryUnverified(appId, datasetId, query);
+  }
+
+  /**
+   * Execute a SQL query against a subgrove.
+   */
+  async sqlQuery(
+    appId: string,
+    subgroveId: string,
+    sql: string,
+    options?: { includeProof?: boolean },
+  ): Promise<SqlQueryResponse> {
+    return this.data.sqlQuery(appId, subgroveId, sql, options);
   }
 
   /**

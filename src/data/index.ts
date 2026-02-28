@@ -13,6 +13,7 @@ import {
   HistoricalQueryRequest,
   HistoricalQueryResponse,
   CheckpointInfo,
+  SqlQueryResponse,
 } from "../types";
 import { WillowAuth } from "../auth";
 import { verifyQueryProof, verifyItemProof } from "../proof";
@@ -750,6 +751,32 @@ export class WillowData {
     }
 
     return result;
+  }
+
+  /**
+   * Execute a SQL query against a subgrove with optional Merkle proof.
+   *
+   * @param appId - Application ID
+   * @param subgroveId - Subgrove ID to query
+   * @param sql - SQL SELECT query string
+   * @param options - Query options
+   * @returns SQL query response with columns, rows, and optional proof
+   */
+  async sqlQuery(
+    appId: string,
+    subgroveId: string,
+    sql: string,
+    options?: { includeProof?: boolean },
+  ): Promise<SqlQueryResponse> {
+    const response = await this.api.post<SqlQueryResponse>(
+      `/sql/${subgroveId}`,
+      {
+        query: sql,
+        include_proof: options?.includeProof ?? false,
+      },
+    );
+
+    return response.data;
   }
 }
 

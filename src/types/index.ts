@@ -219,6 +219,40 @@ export interface CheckpointInfo {
   is_trusted: boolean;
 }
 
+// SQL Query Types
+export interface SqlQueryRequest {
+  query: string;
+  include_proof?: boolean;
+}
+
+export interface SqlQueryResponse {
+  columns: string[];
+  rows: any[][];
+  total?: number;
+  warnings?: string[];
+  proof?: QueryProof;
+}
+
+export interface QueryProof {
+  merkle_proofs: MerkleProof[];
+  state_root: number[];
+  block_height: number;
+  ethereum_anchor?: EthereumAnchor;
+}
+
+export interface MerkleProof {
+  key: string;
+  value_hash: number[];
+  siblings: number[][];
+  path: string;
+}
+
+export interface EthereumAnchor {
+  block_number: number;
+  tx_hash: number[];
+  contract: string;
+}
+
 // Error types
 export class WillowError extends Error {
   constructor(
