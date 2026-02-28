@@ -138,6 +138,32 @@ export interface Erc8004ValidationSummary {
   dispute_stats: DisputeStats;
 }
 
+// ── Agent Discovery types ─────────────────────────────────────────────
+
+export interface AgentReputationBrief {
+  score: number;
+  tier: string;
+}
+
+export interface Erc8004AgentListItem {
+  did: string;
+  eth_address: string | null;
+  agent_uri: string;
+  chain_id: number;
+  agent_id: number;
+  reputation: AgentReputationBrief;
+  validation_count: number;
+  average_validation_score: number;
+  registered_at: number;
+}
+
+export interface Erc8004AgentListResponse {
+  agents: Erc8004AgentListItem[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
 // ── Client ─────────────────────────────────────────────────────────────
 
 export class Erc8004Client {
@@ -145,6 +171,27 @@ export class Erc8004Client {
 
   constructor(apiUrl: string) {
     this.apiUrl = apiUrl.replace(/\/+$/, '');
+  }
+
+  /** List/search ERC-8004 registered agents with optional filters. */
+  async listAgents(options?: {
+    limit?: number;
+    offset?: number;
+    minScore?: number;
+    tier?: string;
+  }): Promise<Erc8004AgentListResponse> {
+    const params: string[] = [];
+    if (options?.limit !== undefined) params.push(`limit=${options.limit}`);
+    if (options?.offset !== undefined) params.push(`offset=${options.offset}`);
+    if (options?.minScore !== undefined) params.push(`min_score=${options.minScore}`);
+    if (options?.tier !== undefined) params.push(`tier=${encodeURIComponent(options.tier)}`);
+    const qs = params.length > 0 ? `?${params.join('&')}` : '';
+    const resp = await fetch(`${this.apiUrl}/agents${qs}`);
+    const body = await resp.json();
+    if (body.success === false) {
+      throw new Error(body.error || 'Failed to list agents');
+    }
+    return body.data;
   }
 
   /** Fetch the ERC-8004 registration JSON for an agent DID. */
