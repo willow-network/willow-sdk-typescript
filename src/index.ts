@@ -84,6 +84,28 @@ export type {
   Transaction,
 } from "./consensus";
 
+// Export ERC-8004 agent identity
+export {
+  Erc8004Client,
+} from "./erc8004";
+export type {
+  LinkEthAddressTx,
+  RegisterErc8004AgentTx,
+  AgentRegistrationJson,
+  AgentReputationSummary,
+  AgentService,
+  AgentChainRegistration,
+  Erc8004Registration,
+  ReputationAttestation,
+  ReputationHistoryEvent,
+  ReputationHistoryResponse,
+  Erc8004ValidationRecord,
+  Erc8004ValidationStatusResponse,
+  ValidationStatusBreakdown,
+  DisputeStats,
+  Erc8004ValidationSummary,
+} from "./erc8004";
+
 // Export version
 export const VERSION = "0.1.0";
 
