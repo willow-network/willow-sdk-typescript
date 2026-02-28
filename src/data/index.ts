@@ -769,7 +769,7 @@ export class WillowData {
     options?: { includeProof?: boolean },
   ): Promise<SqlQueryResponse> {
     const response = await this.api.post<SqlQueryResponse>(
-      `/sql/${subgroveId}`,
+      `/sql/${appId}/${subgroveId}`,
       {
         query: sql,
         include_proof: options?.includeProof ?? false,
