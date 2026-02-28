@@ -121,7 +121,7 @@ export interface RegisterAppTx {
  */
 export type SubgroveMode =
   | { DataStorage: { name: string; writers?: string[]; free_readers?: string[]; read_pricing?: any; required_verifications?: number } }
-  | { BlockchainIndexing: { manifest_ipfs: string; manifest_content?: number[]; wasm_modules?: any[]; execution_mode?: any; indexer_config?: any } };
+  | { BlockchainIndexing: { manifest_content?: number[]; wasm_modules?: any[]; execution_mode?: any; indexer_config?: any } };
 
 /**
  * Subgrove registration transaction
@@ -215,7 +215,6 @@ export function createSignMessage(txType: string, transaction: Transaction): str
           `App ID: ${tx.appId}`,
           `Mode: BlockchainIndexing`,
           `Schema: ${tx.schema}`,
-          `ManifestIPFS: ${mode.BlockchainIndexing.manifest_ipfs}`,
           `Owner: ${tx.ownerDid}`,
           `Nonce: ${tx.nonce || 0}`
         ].join('\n');
