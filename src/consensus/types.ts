@@ -120,7 +120,7 @@ export interface RegisterAppTx {
  * When omitted, defaults to DataStorage with empty values.
  */
 export type SubgroveMode =
-  | { DataStorage: { name: string; writers?: string[]; free_readers?: string[]; read_pricing?: any; required_verifications?: number } }
+  | { DataStorage: { name: string; writers?: string[]; free_readers?: string[]; read_pricing?: any } }
   | { BlockchainIndexing: { manifest_content?: number[]; wasm_modules?: any[]; execution_mode?: any; indexer_config?: any } };
 
 /**
