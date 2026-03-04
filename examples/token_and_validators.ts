@@ -61,7 +61,6 @@ interface Validator {
   status: string;
   stake: number;
   voting_power: number;
-  commission_rate: number;
 }
 
 interface ValidatorSet {
@@ -210,7 +209,6 @@ async function main() {
       console.log(`   Address: ${validator.address || 'N/A'}`);
       console.log(`   Status: ${validator.status}`);
       console.log(`   Stake: ${validator.stake?.toLocaleString() || 0} WILL`);
-      console.log(`   Commission: ${validator.commission_rate || 0}%`);
       console.log(`   Voting Power: ${validator.voting_power || 0}%\n`);
     } catch (error) {
       console.log(`   Note: ${error}\n`);
