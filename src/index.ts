@@ -84,6 +84,17 @@ export type {
   Transaction,
 } from "./consensus";
 
+// Export privacy / key grant management
+export {
+  PrivacyOperations,
+  CommitmentFrequency,
+} from "./privacy";
+export type {
+  PrivacyConfig,
+  EncryptedKeyGrant,
+  KeyGrantProofResponse,
+} from "./privacy";
+
 // Export ERC-8004 agent identity
 export {
   Erc8004Client,

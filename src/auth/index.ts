@@ -188,6 +188,20 @@ export class WillowAuth {
   }
 
   /**
+   * Get the current private key (hex-encoded)
+   */
+  getPrivateKey(): string | undefined {
+    return this.privateKey;
+  }
+
+  /**
+   * Get the current public key ID
+   */
+  getPublicKeyId(): string | undefined {
+    return this.publicKeyId;
+  }
+
+  /**
    * Register a new DID document
    */
   async registerDid(didDocument: DidDocument): Promise<DidDocument> {
