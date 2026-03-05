@@ -40,7 +40,10 @@ interface TokenInfo {
   name: string;
   symbol: string;
   decimals: number;
-  total_supply: number;
+  genesis_supply: string;
+  minted_supply: string;
+  max_supply: string;
+  circulating_supply: string;
 }
 
 interface Balance {
@@ -127,7 +130,8 @@ async function main() {
     console.log(`   Name: ${tokenInfo.name}`);
     console.log(`   Symbol: ${tokenInfo.symbol}`);
     console.log(`   Decimals: ${tokenInfo.decimals}`);
-    console.log(`   Total Supply: ${tokenInfo.total_supply?.toLocaleString() || 'N/A'}\n`);
+    console.log(`   Max Supply: ${tokenInfo.max_supply || 'N/A'}`);
+    console.log(`   Circulating Supply: ${tokenInfo.circulating_supply || 'N/A'}\n`);
   } catch (error) {
     console.log(`   Note: ${error}\n`);
   }

@@ -151,8 +151,10 @@ export interface TokenInfo {
   name: string;
   symbol: string;
   decimals: number;
-  total_supply: string;
+  genesis_supply: string;
   minted_supply: string;
+  max_supply: string;
+  circulating_supply: string;
 }
 
 export interface Balance {
