@@ -53,9 +53,15 @@ interface Balance {
 }
 
 interface FeeSchedule {
-  storage_per_byte: number;
-  query_fee: number;
-  transaction_fee: number;
+  did_registration: string;
+  app_registration: string;
+  subgrove_registration: string;
+  base_tx_cost: string;
+  cost_per_byte: string;
+  query_fee: string;
+  transfer_fee_percentage: number;
+  max_tx_size_bytes: number;
+  max_data_payload_bytes: number;
 }
 
 interface Validator {
@@ -165,9 +171,12 @@ async function main() {
   console.log('---------------');
   try {
     const fees = await fetchApi<FeeSchedule>(apiUrl, '/token/fees');
-    console.log(`   Storage per byte: ${fees.storage_per_byte || 'N/A'} WILL`);
-    console.log(`   Query fee: ${fees.query_fee || 'N/A'} WILL`);
-    console.log(`   Transaction fee: ${fees.transaction_fee || 'N/A'} WILL\n`);
+    console.log(`   Base TX Cost: ${fees.base_tx_cost || 'N/A'} wei`);
+    console.log(`   Cost Per Byte: ${fees.cost_per_byte || 'N/A'} wei`);
+    console.log(`   Query Fee: ${fees.query_fee || 'N/A'} wei`);
+    console.log(`   Transfer Fee: ${fees.transfer_fee_percentage || 'N/A'} bps`);
+    console.log(`   Max TX Size: ${fees.max_tx_size_bytes || 'N/A'} bytes`);
+    console.log(`   Max Data Payload: ${fees.max_data_payload_bytes || 'N/A'} bytes\n`);
   } catch (error) {
     console.log(`   Note: ${error}\n`);
   }
