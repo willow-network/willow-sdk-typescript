@@ -104,7 +104,6 @@ export type {
   RegisterErc8004AgentTx,
   AgentRegistrationJson,
   AgentReputationSummary,
-  AgentReputationBrief,
   AgentService,
   AgentChainRegistration,
   Erc8004Registration,
