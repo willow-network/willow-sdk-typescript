@@ -115,13 +115,19 @@ export interface RegisterAppTx {
   nonce?: number;
 }
 
+/** How long real-time indexed data is retained on consensus nodes. */
+export type RetentionWindow =
+  | { type: 'Blocks'; value: number }
+  | { type: 'Seconds'; value: number }
+  | { type: 'Indefinite' };
+
 /**
  * Subgrove mode: DataStorage or BlockchainIndexing.
  * When omitted, defaults to DataStorage with empty values.
  */
 export type SubgroveMode =
   | { DataStorage: { name: string; writers?: string[]; free_readers?: string[]; read_pricing?: any } }
-  | { BlockchainIndexing: { manifest_content?: number[]; wasm_modules?: any[]; execution_mode?: any; indexer_config?: any } };
+  | { BlockchainIndexing: { manifest_content?: number[]; wasm_modules?: any[]; execution_mode?: any; indexer_config?: any; retention_window?: RetentionWindow } };
 
 /**
  * Subgrove registration transaction
@@ -132,6 +138,7 @@ export interface RegisterSubgroveTx {
   schema: string; // JSON schema as string
   ownerDid: string;
   mode?: SubgroveMode;
+  retention_window?: RetentionWindow;
   signature?: string; // hex-encoded
   publicKeyId?: string;
   nonce?: number;

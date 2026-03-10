@@ -4,7 +4,7 @@
  * Provides direct transaction broadcasting to CometBFT consensus layer.
  */
 
-import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, RegisterDidTx, RegisterAppTx, RegisterSubgroveTx, SubgroveMode, TransferTx, DataStoreTx, Transaction, createTransactionWrapper, createSignMessage, createBroadcastResult, stringToBase64 } from './types';
+import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, RegisterDidTx, RegisterAppTx, RegisterSubgroveTx, SubgroveMode, RetentionWindow, TransferTx, DataStoreTx, Transaction, createTransactionWrapper, createSignMessage, createBroadcastResult, stringToBase64 } from './types';
 
 /**
  * CometBFT consensus client for direct transaction broadcasting
@@ -80,7 +80,8 @@ export class ConsensusClient {
     privateKey: string,
     publicKeyId: string,
     signFunction: (message: string, privateKey: string) => string,
-    mode?: SubgroveMode
+    mode?: SubgroveMode,
+    retentionWindow?: RetentionWindow
   ): Promise<BroadcastResult> {
     const tx: RegisterSubgroveTx = {
       subgroveId,
@@ -88,6 +89,7 @@ export class ConsensusClient {
       schema,
       ownerDid,
       mode,
+      retention_window: retentionWindow,
       signature: '',
       publicKeyId,
       nonce: await this.getNextNonce(ownerDid)
