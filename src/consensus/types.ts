@@ -119,7 +119,8 @@ export interface RegisterAppTx {
 export type RetentionWindow =
   | { type: 'Blocks'; value: number }
   | { type: 'Seconds'; value: number }
-  | { type: 'Indefinite' };
+  | { type: 'Indefinite' }
+  | { type: 'VerifyOnly' };
 
 /**
  * Subgrove mode: DataStorage or BlockchainIndexing.
