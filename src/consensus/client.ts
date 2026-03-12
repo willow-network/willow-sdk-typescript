@@ -4,7 +4,7 @@
  * Provides direct transaction broadcasting to CometBFT consensus layer.
  */
 
-import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, RegisterDidTx, RegisterAppTx, RegisterSubgroveTx, SubgroveMode, RetentionWindow, TransferTx, DataStoreTx, Transaction, createTransactionWrapper, createSignMessage, createBroadcastResult, stringToBase64 } from './types';
+import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, RegisterDidTx, RegisterAppTx, RegisterSubgroveTx, SubgroveMode, RetentionWindow, TransferTx, DataStoreTx, StoreFileManifestTx, DeleteFileManifestTx, Transaction, createTransactionWrapper, createSignMessage, createBroadcastResult, stringToBase64 } from './types';
 
 /**
  * CometBFT consensus client for direct transaction broadcasting
@@ -148,6 +148,70 @@ export class ConsensusClient {
     };
 
     return this.signAndBroadcast('DataStore', tx, privateKey, signFunction);
+  }
+
+  /**
+   * Store a file manifest on the blockchain
+   */
+  async storeFileManifest(
+    appId: string,
+    subgroveId: string,
+    fileKey: string,
+    filename: string,
+    contentType: string,
+    totalSize: number,
+    contentHash: string,
+    chunkCount: number,
+    chunkSize: number,
+    chunkMerkleRoot: string,
+    ownerDid: string,
+    privateKey: string,
+    publicKeyId: string,
+    signFunction: (message: string, privateKey: string) => string
+  ): Promise<BroadcastResult> {
+    const tx: StoreFileManifestTx = {
+      appId,
+      subgroveId,
+      fileKey,
+      filename,
+      contentType,
+      totalSize,
+      contentHash,
+      chunkCount,
+      chunkSize,
+      chunkMerkleRoot,
+      ownerDid,
+      signature: '',
+      publicKeyId,
+      nonce: await this.getNextNonce(ownerDid)
+    };
+
+    return this.signAndBroadcast('StoreFileManifest', tx, privateKey, signFunction);
+  }
+
+  /**
+   * Delete a file manifest from the blockchain
+   */
+  async deleteFileManifest(
+    appId: string,
+    subgroveId: string,
+    fileKey: string,
+    ownerDid: string,
+    privateKey: string,
+    publicKeyId: string,
+    signFunction: (message: string, privateKey: string) => string
+  ): Promise<BroadcastResult> {
+    const tx: DeleteFileManifestTx = {
+      appId,
+      subgroveId,
+      fileKey,
+      ownerDid,
+      signature: '',
+      publicKeyId,
+      nonce: await this.getNextNonce(ownerDid)
+    };
+
+    return this.signAndBroadcast('DeleteFileManifest', tx, privateKey, signFunction);
   }
 
   /**

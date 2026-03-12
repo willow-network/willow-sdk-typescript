@@ -172,10 +172,37 @@ export interface DataStoreTx {
   nonce?: number;
 }
 
+export interface StoreFileManifestTx {
+  appId: string;
+  subgroveId: string;
+  fileKey: string;
+  filename: string;
+  contentType: string;
+  totalSize: number;
+  contentHash: string; // hex-encoded SHA-256
+  chunkCount: number;
+  chunkSize: number;
+  chunkMerkleRoot: string; // hex-encoded
+  ownerDid: string;
+  signature?: string; // hex-encoded
+  publicKeyId?: string;
+  nonce?: number;
+}
+
+export interface DeleteFileManifestTx {
+  appId: string;
+  subgroveId: string;
+  fileKey: string;
+  ownerDid: string;
+  signature?: string; // hex-encoded
+  publicKeyId?: string;
+  nonce?: number;
+}
+
 /**
  * Transaction type union
  */
-export type Transaction = RegisterDidTx | RegisterAppTx | RegisterSubgroveTx | TransferTx | DataStoreTx;
+export type Transaction = RegisterDidTx | RegisterAppTx | RegisterSubgroveTx | TransferTx | DataStoreTx | StoreFileManifestTx | DeleteFileManifestTx;
 
 /**
  * Create transaction wrapper for consensus submission
@@ -265,6 +292,16 @@ export function createSignMessage(txType: string, transaction: Transaction): str
         `Owner: ${tx.ownerDid}`,
         `Nonce: ${tx.nonce || 0}`
       ].join('\n');
+    }
+
+    case 'StoreFileManifest': {
+      const tx = transaction as StoreFileManifestTx;
+      return `store_file:${tx.appId}:${tx.subgroveId}:${tx.fileKey}:${tx.contentHash}:${tx.totalSize}`;
+    }
+
+    case 'DeleteFileManifest': {
+      const tx = transaction as DeleteFileManifestTx;
+      return `delete_file:${tx.appId}:${tx.subgroveId}:${tx.fileKey}`;
     }
 
     default:

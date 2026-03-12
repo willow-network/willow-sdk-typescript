@@ -1,5 +1,6 @@
 import { WillowAuth } from "./auth";
 import { WillowData } from "./data";
+import { FileOperations } from "./files";
 import {
   WillowConfig,
   DidDocument,
@@ -22,11 +23,13 @@ export class WillowClient {
   private config: WillowConfig;
   public auth: WillowAuth;
   public data: WillowData;
+  public files: FileOperations;
 
   constructor(config: WillowConfig) {
     this.config = config;
     this.auth = new WillowAuth(config.apiUrl);
     this.data = new WillowData(config.apiUrl, this.auth);
+    this.files = new FileOperations(config.apiUrl, () => this.auth.getAuthHeaders('GET', '/files'));
 
     // Configure proof verification if options provided
     if (config.proofVerificationOptions) {

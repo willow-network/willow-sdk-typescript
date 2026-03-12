@@ -9,6 +9,8 @@ TypeScript/JavaScript SDK for interacting with the Willow decentralized data inf
 - **DID Authentication**: Ed25519 and secp256k1 (Ethereum-compatible) signature support
 - **Light Client**: Optional CometBFT light client for trustless header verification
 - **Multiple Verification Strategies**: Local full, local basic, or server-assisted verification
+- **File Storage**: Upload, download, list, and delete files with chunk Merkle verification
+- **File Encryption**: XChaCha20-Poly1305 encryption/decryption for private files
 - **Collection Helpers**: Convenient API for working with app/dataset pairs
 
 ## Installation

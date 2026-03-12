@@ -84,6 +84,10 @@ export type {
   Transaction,
 } from "./consensus";
 
+// Export file storage operations
+export { FileOperations, encryptFile, decryptFile } from "./files";
+export type { FileManifest, FileListResponse, FileEncryption } from "./files";
+
 // Export privacy / key grant management
 export {
   PrivacyOperations,
