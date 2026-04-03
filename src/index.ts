@@ -77,7 +77,6 @@ export type {
   BroadcastResult,
   TransactionStatus,
   RegisterDidTx,
-  RegisterAppTx,
   RegisterSubgroveTx,
   TransferTx,
   DataStoreTx,

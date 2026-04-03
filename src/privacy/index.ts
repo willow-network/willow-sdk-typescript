@@ -91,7 +91,6 @@ export interface KeyGrantProofResponse {
   /** Hex-encoded GroveDB Merkle proof. */
   proof: string;
   /** Application ID. */
-  app_id: string;
   /** Subgrove ID. */
   subgrove_id: string;
   /** DID of the grantee. */
@@ -101,7 +100,6 @@ export interface KeyGrantProofResponse {
 // ── Internal transaction field types ──────────────────────────────────
 
 interface GrantSubgroveKeyTxFields {
-  app_id: string;
   subgrove_id: string;
   encrypted_key_grant: EncryptedKeyGrant;
   sender_did: string;
@@ -111,7 +109,6 @@ interface GrantSubgroveKeyTxFields {
 }
 
 interface RevokeSubgroveKeyTxFields {
-  app_id: string;
   subgrove_id: string;
   revokee_did: string;
   sender_did: string;
@@ -121,7 +118,6 @@ interface RevokeSubgroveKeyTxFields {
 }
 
 interface RotateSubgroveKeyTxFields {
-  app_id: string;
   subgrove_id: string;
   new_epoch: number;
   new_grants: EncryptedKeyGrant[];
@@ -153,14 +149,14 @@ interface RotateSubgroveKeyTxFields {
  * );
  *
  * // Read operations
- * const grant = await privacy.getMyKeyGrant('my-app', 'private-data');
- * const grantees = await privacy.listKeyGrantees('my-app', 'private-data');
- * const proof = await privacy.getKeyGrantProof('my-app', 'private-data', did);
+ * const grant = await privacy.getMyKeyGrant('private-data');
+ * const grantees = await privacy.listKeyGrantees('private-data');
+ * const proof = await privacy.getKeyGrantProof('private-data', did);
  *
  * // Write operations (broadcast to consensus)
- * await privacy.grantSubgroveKey('my-app', 'private-data', encryptedGrant);
- * await privacy.revokeSubgroveKey('my-app', 'private-data', revokeDid);
- * await privacy.rotateSubgroveKey('my-app', 'private-data', 2, newGrants);
+ * await privacy.grantSubgroveKey('private-data', encryptedGrant);
+ * await privacy.revokeSubgroveKey('private-data', revokeDid);
+ * await privacy.rotateSubgroveKey('private-data', 2, newGrants);
  * ```
  */
 export class PrivacyOperations {
@@ -205,20 +201,19 @@ export class PrivacyOperations {
   /**
    * Get the encrypted key grant for the authenticated DID.
    *
-   * Calls GET /key-grants/:app_id/:subgrove_id/:did where the DID is
+   * Calls GET /key-grants/:subgrove_id/:did where the DID is
    * the caller's own DID from the auth instance.
    *
-   * @param appId - Application ID
+   * 
    * @param subgroveId - Subgrove ID
    * @returns The encrypted key grant for the caller's DID
    * @throws {WillowError} if no identity is set or the grant is not found
    */
   async getMyKeyGrant(
-    appId: string,
     subgroveId: string,
   ): Promise<EncryptedKeyGrant> {
     const did = this.requireDid();
-    const path = `/key-grants/${encodeURIComponent(appId)}/${encodeURIComponent(subgroveId)}/${encodeURIComponent(did)}`;
+    const path = `/key-grants/${encodeURIComponent(subgroveId)}/${encodeURIComponent(did)}`;
     const headers = this.auth.getAuthHeaders("GET", path);
     const response = await this.api.get<ApiResponse<EncryptedKeyGrant>>(path, {
       headers,
@@ -238,18 +233,17 @@ export class PrivacyOperations {
   /**
    * List all grantee DIDs for a subgrove.
    *
-   * Calls GET /key-grants/:app_id/:subgrove_id.
+   * Calls GET /key-grants/:subgrove_id.
    * Requires the caller to be the subgrove owner or admin.
    *
-   * @param appId - Application ID
+   * 
    * @param subgroveId - Subgrove ID
    * @returns Array of grantee DIDs
    */
   async listKeyGrantees(
-    appId: string,
     subgroveId: string,
   ): Promise<string[]> {
-    const path = `/key-grants/${encodeURIComponent(appId)}/${encodeURIComponent(subgroveId)}`;
+    const path = `/key-grants/${encodeURIComponent(subgroveId)}`;
     const headers = this.auth.getAuthHeaders("GET", path);
     const response = await this.api.get<ApiResponse<string[]>>(path, {
       headers,
@@ -268,20 +262,19 @@ export class PrivacyOperations {
   /**
    * Get a GroveDB Merkle proof for a key grant.
    *
-   * Calls GET /proof/key-grant/:app_id/:subgrove_id/:did.
+   * Calls GET /proof/key-grant/:subgrove_id/:did.
    * This endpoint is public (proofs are non-sensitive).
    *
-   * @param appId - Application ID
+   * 
    * @param subgroveId - Subgrove ID
    * @param did - DID of the grantee
    * @returns Proof response with hex-encoded Merkle proof
    */
   async getKeyGrantProof(
-    appId: string,
     subgroveId: string,
     did: string,
   ): Promise<KeyGrantProofResponse> {
-    const path = `/proof/key-grant/${encodeURIComponent(appId)}/${encodeURIComponent(subgroveId)}/${encodeURIComponent(did)}`;
+    const path = `/proof/key-grant/${encodeURIComponent(subgroveId)}/${encodeURIComponent(did)}`;
     const response = await this.api.get<ApiResponse<KeyGrantProofResponse>>(
       path,
     );
@@ -305,13 +298,12 @@ export class PrivacyOperations {
    * Builds a GrantSubgroveKey transaction, signs it with Ed25519, and
    * broadcasts to the CometBFT consensus layer.
    *
-   * @param appId - Application ID
+   * 
    * @param subgroveId - Subgrove ID
    * @param grant - The encrypted key grant for the grantee
    * @returns Broadcast result with transaction hash
    */
   async grantSubgroveKey(
-    appId: string,
     subgroveId: string,
     grant: EncryptedKeyGrant,
   ): Promise<BroadcastResult> {
@@ -319,12 +311,11 @@ export class PrivacyOperations {
     const nonce = await this.getNextNonce(did);
 
     // Sign message format must match the Rust consensus handler:
-    // "GrantSubgroveKey:{app_id}:{subgrove_id}:{grantee_did}:{sender_did}:{nonce}"
-    const message = `GrantSubgroveKey:${appId}:${subgroveId}:${grant.grantee_did}:${did}:${nonce}`;
+    // "GrantSubgroveKey:{subgrove_id}:{grantee_did}:{sender_did}:{nonce}"
+    const message = `GrantSubgroveKey:${subgroveId}:${grant.grantee_did}:${did}:${nonce}`;
     const signature = signEd25519(message, this.privateKey);
 
     const tx: GrantSubgroveKeyTxFields = {
-      app_id: appId,
       subgrove_id: subgroveId,
       encrypted_key_grant: grant,
       sender_did: did,
@@ -342,13 +333,12 @@ export class PrivacyOperations {
    * Builds a RevokeSubgroveKey transaction, signs it with Ed25519, and
    * broadcasts to the CometBFT consensus layer.
    *
-   * @param appId - Application ID
+   * 
    * @param subgroveId - Subgrove ID
    * @param revokeDid - DID to revoke access from
    * @returns Broadcast result with transaction hash
    */
   async revokeSubgroveKey(
-    appId: string,
     subgroveId: string,
     revokeDid: string,
   ): Promise<BroadcastResult> {
@@ -356,12 +346,11 @@ export class PrivacyOperations {
     const nonce = await this.getNextNonce(did);
 
     // Sign message format must match the Rust consensus handler:
-    // "RevokeSubgroveKey:{app_id}:{subgrove_id}:{revokee_did}:{sender_did}:{nonce}"
-    const message = `RevokeSubgroveKey:${appId}:${subgroveId}:${revokeDid}:${did}:${nonce}`;
+    // "RevokeSubgroveKey:{subgrove_id}:{revokee_did}:{sender_did}:{nonce}"
+    const message = `RevokeSubgroveKey:${subgroveId}:${revokeDid}:${did}:${nonce}`;
     const signature = signEd25519(message, this.privateKey);
 
     const tx: RevokeSubgroveKeyTxFields = {
-      app_id: appId,
       subgrove_id: subgroveId,
       revokee_did: revokeDid,
       sender_did: did,
@@ -383,14 +372,13 @@ export class PrivacyOperations {
    * exactly current_epoch + 1. All existing grants are deleted and
    * replaced with the provided new grants.
    *
-   * @param appId - Application ID
+   * 
    * @param subgroveId - Subgrove ID
    * @param newEpoch - New key epoch (must be current_epoch + 1)
    * @param newGrants - New encrypted key grants for all authorized DIDs
    * @returns Broadcast result with transaction hash
    */
   async rotateSubgroveKey(
-    appId: string,
     subgroveId: string,
     newEpoch: number,
     newGrants: EncryptedKeyGrant[],
@@ -399,12 +387,11 @@ export class PrivacyOperations {
     const nonce = await this.getNextNonce(did);
 
     // Sign message format must match the Rust consensus handler:
-    // "RotateSubgroveKey:{app_id}:{subgrove_id}:{new_epoch}:{sender_did}:{nonce}"
-    const message = `RotateSubgroveKey:${appId}:${subgroveId}:${newEpoch}:${did}:${nonce}`;
+    // "RotateSubgroveKey:{subgrove_id}:{new_epoch}:{sender_did}:{nonce}"
+    const message = `RotateSubgroveKey:${subgroveId}:${newEpoch}:${did}:${nonce}`;
     const signature = signEd25519(message, this.privateKey);
 
     const tx: RotateSubgroveKeyTxFields = {
-      app_id: appId,
       subgrove_id: subgroveId,
       new_epoch: newEpoch,
       new_grants: newGrants,

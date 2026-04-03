@@ -93,7 +93,7 @@ describe('WillowClient', () => {
     it('should generate auth headers when identity is set', () => {
       client.auth.setIdentity(testDid, testPrivateKey, testPublicKeyId);
 
-      const headers = client.auth.getAuthHeaders('GET', '/data/app1/dataset1/key1');
+      const headers = client.auth.getAuthHeaders('GET', '/data/dataset1/key1');
 
       expect(headers['X-DID']).toBe(testDid);
       expect(headers['X-Public-Key-ID']).toBe(testPublicKeyId);
@@ -102,12 +102,12 @@ describe('WillowClient', () => {
     });
 
     it('should return empty headers when no identity is set', () => {
-      const headers = client.auth.getAuthHeaders('GET', '/data/app1/dataset1/key1');
+      const headers = client.auth.getAuthHeaders('GET', '/data/dataset1/key1');
       expect(headers).toEqual({});
     });
 
     it('should throw when signing without identity', () => {
-      expect(() => client.auth.signRequest('GET', '/data/app1/dataset1/key1'))
+      expect(() => client.auth.signRequest('GET', '/data/dataset1/key1'))
         .toThrow('Identity not set');
     });
   });
@@ -125,12 +125,12 @@ describe('WillowClient', () => {
           data: { success: true },
         });
 
-        await client.data.storeData('app1', 'dataset1', {
+        await client.data.storeData('dataset1', {
           key1: { value: 'test' },
         });
 
         expect(mockAxios.post).toHaveBeenCalledWith(
-          '/data/app1/dataset1',
+          '/data/dataset1',
           { key1: { value: 'test' } },
           expect.objectContaining({
             headers: expect.objectContaining({
@@ -151,10 +151,10 @@ describe('WillowClient', () => {
           data: { success: true },
         });
 
-        await client.data.updateData('app1', 'dataset1', 'key1', { value: 'updated' });
+        await client.data.updateData('dataset1', 'key1', { value: 'updated' });
 
         expect(mockAxios.put).toHaveBeenCalledWith(
-          '/data/app1/dataset1/key1',
+          '/data/dataset1/key1',
           { value: 'updated' },
           expect.objectContaining({
             headers: expect.objectContaining({
@@ -175,10 +175,10 @@ describe('WillowClient', () => {
           data: { success: true },
         });
 
-        await client.data.deleteData('app1', 'dataset1', 'key1');
+        await client.data.deleteData('dataset1', 'key1');
 
         expect(mockAxios.delete).toHaveBeenCalledWith(
-          '/data/app1/dataset1/key1',
+          '/data/dataset1/key1',
           expect.objectContaining({
             headers: expect.objectContaining({
               'X-DID': testDid,
@@ -197,12 +197,12 @@ describe('WillowClient', () => {
       client.auth.setIdentity(testDid, testPrivateKey, testPublicKeyId);
     });
 
-    it('should register an app with auth headers', async () => {
+    it('should register a subgrove with auth headers', async () => {
       const appRequest = {
-        app_id: 'test-app',
+
         name: 'Test App',
         description: 'Test description',
-        app_type: 'test',
+
         owner_did: testDid,
         admins: [],
       };
@@ -212,10 +212,10 @@ describe('WillowClient', () => {
         data: { success: true, data: appRequest },
       });
 
-      const result = await client.data.registerApp(appRequest);
+      const result = await client.data.registerDataset(appRequest);
       expect(result).toEqual(appRequest);
       expect(mockAxios.post).toHaveBeenCalledWith(
-        '/register/app',
+        '/register/subgrove',
         appRequest,
         expect.objectContaining({
           headers: expect.objectContaining({
@@ -228,7 +228,7 @@ describe('WillowClient', () => {
     it('should register a dataset with auth headers', async () => {
       const datasetRequest = {
         dataset_id: 'test-dataset',
-        app_id: 'test-app',
+
         name: 'Test Dataset',
         dataset_path: ['collections'],
         schema: {

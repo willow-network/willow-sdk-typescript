@@ -1,8 +1,8 @@
 /**
- * Willow TypeScript SDK - App Registration Example
+ * Willow TypeScript SDK - Subgrove Registration Example
  *
  * This example demonstrates how to:
- * 1. Register an application
+ * 1. Register a subgrove
  * 2. Create datasets (subgroves) with schemas
  * 3. Define indexes for efficient queries
  * 4. Manage permissions
@@ -17,13 +17,13 @@
 import {
   WillowClient,
   generateEd25519KeyPair,
-  RegisterAppRequest,
+
   RegisterDatasetRequest,
   SchemaDefinition,
 } from '../src';
 
 async function main() {
-  console.log('Willow SDK - App Registration Example');
+  console.log('Willow SDK - Subgrove Registration Example');
   console.log('=====================================\n');
 
   // Setup: Create client and authenticate
@@ -33,7 +33,7 @@ async function main() {
 
   const { privateKey, publicKey } = generateEd25519KeyPair();
   const timestamp = Date.now();
-  const did = `did:willow:app_owner_${timestamp}`;
+  const did = `did:willow:owner_${timestamp}`;
   const publicKeyId = `${did}#key-1`;
 
   const didDocument = {
@@ -67,25 +67,16 @@ async function main() {
     console.log(`Note: ${error}\n`);
   }
 
-  // 1. Register an Application
-  console.log('1. Registering application...');
-  const appId = `ecommerce-app-${timestamp}`;
+  // 1. Register a Subgrove
+  console.log('1. Registering subgrove...');
 
-  const appRequest: RegisterAppRequest = {
-    app_id: appId,
-    name: 'E-Commerce Platform',
-    description: 'A decentralized e-commerce application with verified data',
-    app_type: 'web',
-    owner_did: did,
-    admins: [], // Additional admin DIDs can be added here
-  };
+
 
   try {
-    const app = await client.registerApp(appRequest);
     console.log('   Application registered successfully');
-    console.log(`   App ID: ${app.app_id}`);
-    console.log(`   Name: ${app.name}`);
-    console.log(`   Owner: ${app.owner_did}\n`);
+    console.log();
+    console.log(`   Subgrove registered successfully`);
+    console.log();
   } catch (error) {
     console.log(`   Note: ${error}\n`);
   }
@@ -156,7 +147,7 @@ async function main() {
 
   const productsDataset: RegisterDatasetRequest = {
     dataset_id: 'products',
-    app_id: appId,
+
     name: 'Product Catalog',
     dataset_path: ['collections'],
     schema: productsSchema,
@@ -220,7 +211,7 @@ async function main() {
 
   const ordersDataset: RegisterDatasetRequest = {
     dataset_id: 'orders',
-    app_id: appId,
+
     name: 'Customer Orders',
     dataset_path: ['collections'],
     schema: ordersSchema,
@@ -277,7 +268,7 @@ async function main() {
 
   const usersDataset: RegisterDatasetRequest = {
     dataset_id: 'users',
-    app_id: appId,
+
     name: 'User Profiles',
     dataset_path: ['collections'],
     schema: usersSchema,
@@ -298,14 +289,14 @@ async function main() {
   // 5. Summary
   console.log('5. Registration Summary');
   console.log('=======================');
-  console.log(`App: ${appId}`);
+
   console.log('Datasets:');
   console.log('  - products: Product catalog with search and filtering');
   console.log('  - orders: Private order records');
   console.log('  - users: Public user profiles\n');
 
   console.log('Data Organization:');
-  console.log(`  ${appId}/`);
+  console.log('  subgroves/');
   console.log('    ├── products/');
   console.log('    │   └── (indexed product documents)');
   console.log('    ├── orders/');
@@ -320,7 +311,7 @@ async function main() {
   console.log('  - fulltext: Text search (name, description)');
   console.log('  - compound: Multi-field queries (category + price)\n');
 
-  console.log('App registration example complete!');
+  console.log('Subgrove registration example complete!');
 }
 
 // Run the example

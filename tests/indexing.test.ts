@@ -7,7 +7,7 @@
 
 import { WillowClient } from '../src/client';
 import {
-  RegisterAppRequest,
+
   RegisterDatasetRequest,
   SchemaDefinition,
   IndexDefinition,
@@ -33,10 +33,10 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 // Helper to read funded DID
 function getFundedDID(): string {
   try {
-    const didPath = path.join(__dirname, '../../../devnet/app_owner_did.txt');
+    const didPath = path.join(__dirname, '../../../devnet/test_owner_did.txt');
     return fs.readFileSync(didPath, 'utf-8').trim();
   } catch (error) {
-    throw new Error('Funded DID file not found - ensure network is running with funding');
+    throw new Error('Test DID file not found - ensure network is running with funding');
   }
 }
 
@@ -45,7 +45,7 @@ describe('Willow Tests', () => {
   let client2: WillowClient;
   let client3: WillowClient;
   let fundedDID: string;
-  const appId = 'indexing-test-app';
+  const subgroveId = 'blog_posts';
 
   beforeAll(async () => {
     // Get funded DID
@@ -108,7 +108,7 @@ describe('Willow Tests', () => {
 
       const datasetRequest: RegisterDatasetRequest = {
         dataset_id: 'blog_posts',
-        app_id: appId,
+        
         name: 'Blog Posts with Indexes',
         dataset_path: [],
         schema,
@@ -169,13 +169,13 @@ describe('Willow Tests', () => {
 
     it('should store indexed documents', async () => {
       // Store documents via batch operation
-      await client1.data.batchStore(appId, 'blog_posts', testPosts);
+      await client1.data.batchStore('blog_posts', testPosts);
 
       // Wait for indexing
       await sleep(5000);
 
       // Verify data was stored
-      const retrieved = await client2.data.getData(appId, 'blog_posts', 'post_1');
+      const retrieved = await client2.data.getData('blog_posts', 'post_1');
       expect(retrieved.title).toBe('Introduction to TypeScript SDK');
       expect(retrieved.author).toBe('alice');
     });
@@ -189,7 +189,7 @@ describe('Willow Tests', () => {
         },
       };
 
-      const results = await client2.data.query(appId, 'blog_posts', query);
+      const results = await client2.data.query('blog_posts', query);
       expect(results.documents).toHaveLength(2);
       expect(results.documents.every(doc => doc.author === 'alice')).toBe(true);
     });
@@ -204,7 +204,7 @@ describe('Willow Tests', () => {
         },
       };
 
-      const results = await client2.data.query(appId, 'blog_posts', query);
+      const results = await client2.data.query('blog_posts', query);
       expect(results.documents).toHaveLength(2);
       expect(results.documents.every(doc =>
         doc.timestamp >= 1000 && doc.timestamp <= 1500
@@ -219,7 +219,7 @@ describe('Willow Tests', () => {
         },
       };
 
-      const results = await client2.data.query(appId, 'blog_posts', query);
+      const results = await client2.data.query('blog_posts', query);
       expect(results.documents.length).toBeGreaterThanOrEqual(2);
       expect(results.documents.some(doc =>
         doc.content.toLowerCase().includes('indexing')
@@ -234,7 +234,7 @@ describe('Willow Tests', () => {
         },
       };
 
-      const results = await client2.data.query(appId, 'blog_posts', query);
+      const results = await client2.data.query('blog_posts', query);
       expect(results.documents).toHaveLength(3);
 
       // Verify descending order
@@ -253,7 +253,7 @@ describe('Willow Tests', () => {
         offset: 0,
       };
 
-      const page1 = await client2.data.query(appId, 'blog_posts', page1Query);
+      const page1 = await client2.data.query('blog_posts', page1Query);
       expect(page1.documents).toHaveLength(2);
       expect(page1.limit).toBe(2);
       expect(page1.offset).toBe(0);
@@ -265,7 +265,7 @@ describe('Willow Tests', () => {
         offset: 2,
       };
 
-      const page2 = await client2.data.query(appId, 'blog_posts', page2Query);
+      const page2 = await client2.data.query('blog_posts', page2Query);
       expect(page2.documents.length).toBeLessThanOrEqual(2);
       expect(page2.offset).toBe(2);
     });
@@ -282,7 +282,7 @@ describe('Willow Tests', () => {
         },
       };
 
-      const results = await client2.data.query(appId, 'blog_posts', query);
+      const results = await client2.data.query('blog_posts', query);
       expect(results.documents).toHaveLength(1);
       expect(results.documents[0].author).toBe('alice');
       expect(results.documents[0].views).toBeGreaterThanOrEqual(200);
@@ -297,9 +297,9 @@ describe('Willow Tests', () => {
 
       // Query from all nodes
       const [results1, results2, results3] = await Promise.all([
-        client1.data.query(appId, 'blog_posts', query),
-        client2.data.query(appId, 'blog_posts', query),
-        client3.data.query(appId, 'blog_posts', query),
+        client1.data.query('blog_posts', query),
+        client2.data.query('blog_posts', query),
+        client3.data.query('blog_posts', query),
       ]);
 
       // All nodes should return the same number of documents
@@ -325,7 +325,7 @@ describe('Willow Tests', () => {
       };
 
       await expect(
-        client1.data.storeData(appId, 'blog_posts', {
+        client1.data.storeData('blog_posts', {
           post_duplicate: duplicatePost,
         })
       ).rejects.toThrow();
@@ -336,7 +336,7 @@ describe('Willow Tests', () => {
 describe('Performance Tests', () => {
   let client: WillowClient;
   let fundedDID: string;
-  const appId = 'indexing-test-app';
+  const subgroveId = 'blog_posts';
 
   beforeAll(async () => {
     fundedDID = getFundedDID();
@@ -362,7 +362,7 @@ describe('Performance Tests', () => {
 
     const perfDataset: RegisterDatasetRequest = {
       dataset_id: 'perf_test',
-      app_id: appId,
+      
       name: 'Performance Test Dataset',
       dataset_path: [],
       schema: perfSchema,
@@ -388,7 +388,7 @@ describe('Performance Tests', () => {
 
     // Measure bulk insert time
     const startTime = Date.now();
-    await client.data.batchStore(appId, 'perf_test', testData);
+    await client.data.batchStore('perf_test', testData);
     await sleep(5000); // Wait for indexing
     const insertTime = Date.now() - startTime;
 
@@ -397,7 +397,7 @@ describe('Performance Tests', () => {
 
     // Test query performance
     const queryStartTime = Date.now();
-    const categoryResults = await client.data.query(appId, 'perf_test', {
+    const categoryResults = await client.data.query('perf_test', {
       filters: { category: 'electronics' },
     });
     const categoryQueryTime = Date.now() - queryStartTime;
@@ -407,7 +407,7 @@ describe('Performance Tests', () => {
 
     // Range query performance
     const rangeStartTime = Date.now();
-    const rangeResults = await client.data.query(appId, 'perf_test', {
+    const rangeResults = await client.data.query('perf_test', {
       filters: {
         value: { $gte: 200, $lte: 500 },
       },

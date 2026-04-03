@@ -218,7 +218,7 @@ async function main() {
   console.log('   });');
   console.log('');
   console.log('   // All data operations are now verified');
-  console.log('   const data = await client.get(appId, datasetId, key);');
+  console.log('   const data = await client.get(datasetId, key);');
   console.log('   // Throws if proof verification fails');
   console.log('   ```\n');
 

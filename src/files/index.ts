@@ -56,7 +56,6 @@ export class FileOperations {
    *   server-side signing or a permissive test environment).
    */
   async upload(
-    appId: string,
     subgroveId: string,
     fileKey: string,
     filename: string,
@@ -77,13 +76,13 @@ export class FileOperations {
 
     // Submit StoreFileManifestTx to consensus
     const ownerDid = signing?.ownerDid ?? '';
-    const signMessage = `store_file:${appId}:${subgroveId}:${fileKey}:${contentHash}:${data.length}`;
+    const signMessage = `store_file:${subgroveId}:${fileKey}:${contentHash}:${data.length}`;
     const signature = signing
       ? signing.signFunction(signMessage, signing.privateKey)
       : '';
     const manifestTx = {
       StoreFileManifest: {
-        app_id: appId,
+        
         subgrove_id: subgroveId,
         file_key: fileKey,
         filename,
@@ -110,7 +109,7 @@ export class FileOperations {
 
     // Upload chunks to storage node
     for (let i = 0; i < chunks.length; i++) {
-      const url = `${storageNodeEndpoint}/upload/${appId}/${subgroveId}/${fileKey}?chunk_index=${i}&chunk_count=${chunkCount}&content_hash=${contentHash}`;
+      const url = `${storageNodeEndpoint}/upload/${subgroveId}/${fileKey}?chunk_index=${i}&chunk_count=${chunkCount}&content_hash=${contentHash}`;
       const chunkResp = await fetch(url, {
         method: 'POST',
         body: chunks[i],
@@ -142,16 +141,15 @@ export class FileOperations {
    * Download a file from a FileStorage subgrove.
    */
   async download(
-    appId: string,
     subgroveId: string,
     fileKey: string,
     storageNodeEndpoint: string,
   ): Promise<Buffer> {
-    const manifest = await this.metadata(appId, subgroveId, fileKey);
+    const manifest = await this.metadata(subgroveId, fileKey);
 
     const chunks: Buffer[] = [];
     for (let i = 0; i < manifest.chunk_count; i++) {
-      const url = `${storageNodeEndpoint}/chunk/${appId}/${subgroveId}/${fileKey}/${i}?content_hash=${manifest.content_hash}`;
+      const url = `${storageNodeEndpoint}/chunk/${subgroveId}/${fileKey}/${i}?content_hash=${manifest.content_hash}`;
       const resp = await fetch(url);
       if (!resp.ok) throw new Error(`Failed to download chunk ${i}`);
       chunks.push(Buffer.from(await resp.arrayBuffer()));
@@ -179,12 +177,11 @@ export class FileOperations {
    * Get file manifest metadata.
    */
   async metadata(
-    appId: string,
     subgroveId: string,
     fileKey: string,
   ): Promise<FileManifest> {
     const resp = await fetch(
-      `${this.apiUrl}/files/${appId}/${subgroveId}/${fileKey}`,
+      `${this.apiUrl}/files/${subgroveId}/${fileKey}`,
       { headers: this.getHeaders() },
     );
     if (!resp.ok) throw new Error(`File not found: ${fileKey}`);
@@ -194,9 +191,9 @@ export class FileOperations {
   /**
    * List all files in a subgrove.
    */
-  async list(appId: string, subgroveId: string): Promise<FileManifest[]> {
+  async list(subgroveId: string): Promise<FileManifest[]> {
     const resp = await fetch(
-      `${this.apiUrl}/files/${appId}/${subgroveId}`,
+      `${this.apiUrl}/files/${subgroveId}`,
       { headers: this.getHeaders() },
     );
     if (!resp.ok) throw new Error('Failed to list files');
@@ -208,18 +205,17 @@ export class FileOperations {
    * Delete a file (submits DeleteFileManifestTx to consensus).
    */
   async delete(
-    appId: string,
     subgroveId: string,
     fileKey: string,
     signing?: FileSigningOptions,
   ): Promise<void> {
-    const signMessage = `delete_file:${appId}:${subgroveId}:${fileKey}`;
+    const signMessage = `delete_file:${subgroveId}:${fileKey}`;
     const signature = signing
       ? signing.signFunction(signMessage, signing.privateKey)
       : '';
     const deleteTx = {
       DeleteFileManifest: {
-        app_id: appId,
+        
         subgrove_id: subgroveId,
         file_key: fileKey,
         owner_did: signing?.ownerDid ?? '',

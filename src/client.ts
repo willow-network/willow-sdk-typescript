@@ -4,8 +4,6 @@ import { FileOperations } from "./files";
 import {
   WillowConfig,
   DidDocument,
-  RegisterAppRequest,
-  AppRegistration,
   RegisterDatasetRequest,
   DatasetRegistration,
   DataRecord,
@@ -69,13 +67,6 @@ export class WillowClient {
   }
 
   /**
-   * Register a new app
-   */
-  async registerApp(request: RegisterAppRequest): Promise<AppRegistration> {
-    return this.data.registerApp(request);
-  }
-
-  /**
    * Register a dataset
    */
   async registerDataset(
@@ -88,64 +79,59 @@ export class WillowClient {
    * Store data
    */
   async store(
-    appId: string,
     datasetId: string,
     key: string,
     value: any,
   ): Promise<void> {
-    await this.data.storeData(appId, datasetId, { [key]: value });
+    await this.data.storeData(datasetId, { [key]: value });
   }
 
   /**
    * Get data with automatic proof verification (secure by default)
    */
   async get(
-    appId: string,
     datasetId: string,
     key: string,
   ): Promise<DataRecord> {
-    return this.data.getData(appId, datasetId, key);
+    return this.data.getData(datasetId, key);
   }
 
   /**
    * Get data without proof verification (use with caution)
    */
   async getUnverified(
-    appId: string,
     datasetId: string,
     key: string,
   ): Promise<DataRecord> {
-    return this.data.getDataUnverified(appId, datasetId, key);
+    return this.data.getDataUnverified(datasetId, key);
   }
 
   /**
    * Update data
    */
   async update(
-    appId: string,
     datasetId: string,
     key: string,
     value: any,
   ): Promise<void> {
-    return this.data.updateData(appId, datasetId, key, value);
+    return this.data.updateData(datasetId, key, value);
   }
 
   /**
    * Delete data
    */
-  async delete(appId: string, datasetId: string, key: string): Promise<void> {
-    return this.data.deleteData(appId, datasetId, key);
+  async delete(datasetId: string, key: string): Promise<void> {
+    return this.data.deleteData(datasetId, key);
   }
 
   /**
    * Get proof
    */
   async getProof(
-    appId: string,
     datasetId: string,
     key: string,
   ): Promise<string> {
-    return this.data.getProof(appId, datasetId, key);
+    return this.data.getProof(datasetId, key);
   }
 
   /**
@@ -207,44 +193,40 @@ export class WillowClient {
    * Query indexed data with automatic proof verification (secure by default)
    */
   async query(
-    appId: string,
     datasetId: string,
     query: QueryRequest,
   ): Promise<QueryResponse> {
-    return this.data.query(appId, datasetId, query);
+    return this.data.query(datasetId, query);
   }
 
   /**
    * Query indexed data without proof verification (use with caution)
    */
   async queryUnverified(
-    appId: string,
     datasetId: string,
     query: QueryRequest,
   ): Promise<QueryResponse> {
-    return this.data.queryUnverified(appId, datasetId, query);
+    return this.data.queryUnverified(datasetId, query);
   }
 
   /**
    * Execute a SQL query against a subgrove.
    */
   async sqlQuery(
-    appId: string,
     subgroveId: string,
     sql: string,
     options?: { includeProof?: boolean },
   ): Promise<SqlQueryResponse> {
-    return this.data.sqlQuery(appId, subgroveId, sql, options);
+    return this.data.sqlQuery(subgroveId, sql, options);
   }
 
   /**
-   * Register computed fields for a specific app/dataset.
+   * Register computed fields for a specific dataset.
    *
    * Computed fields are derived client-side from proven data. This enables
    * drop-in compatibility with The Graph's query interfaces by computing
    * values like price ratios from cryptographically proven reserves.
    *
-   * @param appId - The application ID
    * @param datasetId - The dataset ID
    * @param fields - The computed field definitions
    *
@@ -253,44 +235,43 @@ export class WillowClient {
    * import { WillowClient, UNISWAP_V2_PAIR_FIELDS } from '@willow/sdk';
    *
    * const client = new WillowClient({ apiUrl: 'http://localhost:3031' });
-   * client.registerComputedFields('uniswap-v2', 'pairs', UNISWAP_V2_PAIR_FIELDS);
+   * client.registerComputedFields('pairs', UNISWAP_V2_PAIR_FIELDS);
    *
    * // Queries now return computed prices alongside proven reserves
-   * const result = await client.query('uniswap-v2', 'pairs', { filters: { id: '0x...' } });
+   * const result = await client.query('pairs', { filters: { id: '0x...' } });
    * console.log(result.documents[0].token0Price); // Computed from proven reserves
    * ```
    */
   registerComputedFields(
-    appId: string,
     datasetId: string,
     fields: ComputedFieldSet,
   ): void {
-    this.data.registerComputedFields(appId, datasetId, fields);
+    this.data.registerComputedFields(datasetId, fields);
   }
 
   /**
-   * Create a helper for a specific app/dataset
+   * Create a helper for a specific dataset
    */
-  collection(appId: string, datasetId: string) {
+  collection(datasetId: string) {
     return {
       store: (key: string, value: any) =>
-        this.store(appId, datasetId, key, value),
-      get: (key: string) => this.get(appId, datasetId, key),
+        this.store(datasetId, key, value),
+      get: (key: string) => this.get(datasetId, key),
       getUnverified: (key: string) =>
-        this.data.getDataUnverified(appId, datasetId, key),
+        this.data.getDataUnverified(datasetId, key),
       update: (key: string, value: any) =>
-        this.update(appId, datasetId, key, value),
-      delete: (key: string) => this.delete(appId, datasetId, key),
-      getProof: (key: string) => this.getProof(appId, datasetId, key),
+        this.update(datasetId, key, value),
+      delete: (key: string) => this.delete(datasetId, key),
+      getProof: (key: string) => this.getProof(datasetId, key),
       batchStore: (records: Array<{ key: string; value: any }>) =>
-        this.data.batchStore(appId, datasetId, records),
+        this.data.batchStore(datasetId, records),
       getMultiple: (keys: string[]) =>
-        this.data.getMultiple(appId, datasetId, keys),
+        this.data.getMultiple(datasetId, keys),
       getMultipleUnverified: (keys: string[]) =>
-        this.data.getMultipleUnverified(appId, datasetId, keys),
-      query: (query: any) => this.data.query(appId, datasetId, query),
+        this.data.getMultipleUnverified(datasetId, keys),
+      query: (query: any) => this.data.query(datasetId, query),
       queryUnverified: (query: any) =>
-        this.data.queryUnverified(appId, datasetId, query),
+        this.data.queryUnverified(datasetId, query),
     };
   }
 }

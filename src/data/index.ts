@@ -4,8 +4,6 @@ import {
   WillowError,
   DataRecord,
   ProofResponse,
-  RegisterAppRequest,
-  AppRegistration,
   RegisterDatasetRequest,
   DatasetRegistration,
   QueryRequest,
@@ -45,13 +43,12 @@ export class WillowData {
   }
 
   /**
-   * Register computed fields for a specific app/dataset.
+   * Register computed fields for a specific dataset.
    *
    * Computed fields are derived client-side from proven data. This enables
    * drop-in compatibility with The Graph's query interfaces by computing
    * values like price ratios from cryptographically proven reserves.
    *
-   * @param appId - The application ID
    * @param datasetId - The dataset ID
    * @param fields - The computed field definitions
    *
@@ -59,15 +56,14 @@ export class WillowData {
    * ```typescript
    * import { UNISWAP_V2_PAIR_FIELDS } from '@willow/sdk';
    *
-   * client.data.registerComputedFields('uniswap-v2', 'pairs', UNISWAP_V2_PAIR_FIELDS);
+   * client.data.registerComputedFields('pairs', UNISWAP_V2_PAIR_FIELDS);
    * ```
    */
   registerComputedFields(
-    appId: string,
     datasetId: string,
     fields: ComputedFieldSet,
   ): void {
-    this.computedFieldRegistry.register(appId, datasetId, fields);
+    this.computedFieldRegistry.register(datasetId, fields);
   }
 
   /**
@@ -132,27 +128,6 @@ export class WillowData {
   }
 
   /**
-   * Register a new app
-   */
-  async registerApp(request: RegisterAppRequest): Promise<AppRegistration> {
-    const headers = this.auth.getAuthHeaders('POST', '/register/app');
-    const response = await this.api.post<ApiResponse<AppRegistration>>(
-      "/register/app",
-      request,
-      { headers },
-    );
-
-    if (!response.data.success) {
-      throw new WillowError(
-        response.data.error || "Failed to register app",
-        "APP_REGISTRATION_FAILED",
-      );
-    }
-
-    return response.data.data!;
-  }
-
-  /**
    * Register a dataset/subgrove
    */
   async registerDataset(
@@ -163,7 +138,6 @@ export class WillowData {
     // Convert to the API's expected format (subgrove endpoint for compatibility)
     const subgroveRequest = {
       subgrove_id: request.dataset_id,
-      app_id: request.app_id,
       name: request.name,
       schema: request.schema,
       owner_did: request.owner_did,
@@ -191,13 +165,12 @@ export class WillowData {
    * Store data (batch operation)
    */
   async storeData(
-    appId: string,
     datasetId: string,
     data: Record<string, any>,
   ): Promise<void> {
-    const headers = this.auth.getAuthHeaders('POST', `/data/${appId}/${datasetId}`);
+    const headers = this.auth.getAuthHeaders('POST', `/data/${datasetId}`);
     const response = await this.api.post<ApiResponse>(
-      `/data/${appId}/${datasetId}`,
+      `/data/${datasetId}`,
       data,
       { headers },
     );
@@ -214,15 +187,14 @@ export class WillowData {
    * Get data by key with automatic proof verification (secure by default)
    */
   async getData(
-    appId: string,
     datasetId: string,
     key: string,
   ): Promise<DataRecord> {
-    const headers = this.auth.getAuthHeaders('GET', `/data/${appId}/${datasetId}/${key}`);
+    const headers = this.auth.getAuthHeaders('GET', `/data/${datasetId}/${key}`);
 
     // First get the data
     const response = await this.api.get<ApiResponse<DataRecord>>(
-      `/data/${appId}/${datasetId}/${key}`,
+      `/data/${datasetId}/${key}`,
       { headers },
     );
 
@@ -239,7 +211,7 @@ export class WillowData {
     // Now get the proof for verification
     try {
       const proofResponse = await this.api.get<ApiResponse<ProofResponse>>(
-        `/proof/${appId}/${datasetId}/${key}`,
+        `/proof/${datasetId}/${key}`,
       );
 
       if (proofResponse.data.success && proofResponse.data.data?.proof) {
@@ -248,7 +220,7 @@ export class WillowData {
 
         // Verify the proof and compute root hash
         // Pass the path for proper verification
-        const path = ["apps", appId, "subgroves", datasetId, "data"];
+        const path = ["subgroves", datasetId, "data"];
         const computedRootHash = await verifyItemProof(
           proofResponse.data.data.proof,
           key,
@@ -290,13 +262,12 @@ export class WillowData {
    * Get data by key without proof verification (use with caution)
    */
   async getDataUnverified(
-    appId: string,
     datasetId: string,
     key: string,
   ): Promise<DataRecord> {
-    const headers = this.auth.getAuthHeaders('GET', `/data/${appId}/${datasetId}/${key}`);
+    const headers = this.auth.getAuthHeaders('GET', `/data/${datasetId}/${key}`);
     const response = await this.api.get<ApiResponse<DataRecord>>(
-      `/data/${appId}/${datasetId}/${key}`,
+      `/data/${datasetId}/${key}`,
       { headers },
     );
 
@@ -315,14 +286,13 @@ export class WillowData {
    * Update data by key
    */
   async updateData(
-    appId: string,
     datasetId: string,
     key: string,
     data: any,
   ): Promise<void> {
-    const headers = this.auth.getAuthHeaders('PUT', `/data/${appId}/${datasetId}/${key}`);
+    const headers = this.auth.getAuthHeaders('PUT', `/data/${datasetId}/${key}`);
     const response = await this.api.put<ApiResponse>(
-      `/data/${appId}/${datasetId}/${key}`,
+      `/data/${datasetId}/${key}`,
       data,
       { headers },
     );
@@ -339,13 +309,12 @@ export class WillowData {
    * Delete data by key
    */
   async deleteData(
-    appId: string,
     datasetId: string,
     key: string,
   ): Promise<void> {
-    const headers = this.auth.getAuthHeaders('DELETE', `/data/${appId}/${datasetId}/${key}`);
+    const headers = this.auth.getAuthHeaders('DELETE', `/data/${datasetId}/${key}`);
     const response = await this.api.delete<ApiResponse>(
-      `/data/${appId}/${datasetId}/${key}`,
+      `/data/${datasetId}/${key}`,
       { headers },
     );
 
@@ -361,12 +330,11 @@ export class WillowData {
    * Get cryptographic proof for data
    */
   async getProof(
-    appId: string,
     datasetId: string,
     key: string,
   ): Promise<string> {
     const response = await this.api.get<ApiResponse<ProofResponse>>(
-      `/proof/${appId}/${datasetId}/${key}`,
+      `/proof/${datasetId}/${key}`,
     );
 
     if (!response.data.success) {
@@ -383,7 +351,6 @@ export class WillowData {
    * Batch operations helper
    */
   async batchStore(
-    appId: string,
     datasetId: string,
     records: Array<{ key: string; value: any }>,
   ): Promise<void> {
@@ -392,14 +359,13 @@ export class WillowData {
       data[key] = value;
     });
 
-    await this.storeData(appId, datasetId, data);
+    await this.storeData(datasetId, data);
   }
 
   /**
    * Query helper - get multiple records with verification
    */
   async getMultiple(
-    appId: string,
     datasetId: string,
     keys: string[],
   ): Promise<Record<string, DataRecord>> {
@@ -409,7 +375,7 @@ export class WillowData {
     await Promise.all(
       keys.map(async (key) => {
         try {
-          results[key] = await this.getData(appId, datasetId, key);
+          results[key] = await this.getData(datasetId, key);
         } catch (error) {
           // Ignore not found errors in bulk operations
           if (error instanceof WillowError && error.statusCode === 404) {
@@ -427,7 +393,6 @@ export class WillowData {
    * Query helper - get multiple records without verification
    */
   async getMultipleUnverified(
-    appId: string,
     datasetId: string,
     keys: string[],
   ): Promise<Record<string, DataRecord>> {
@@ -437,7 +402,7 @@ export class WillowData {
     await Promise.all(
       keys.map(async (key) => {
         try {
-          results[key] = await this.getDataUnverified(appId, datasetId, key);
+          results[key] = await this.getDataUnverified(datasetId, key);
         } catch (error) {
           // Ignore not found errors in bulk operations
           if (error instanceof WillowError && error.statusCode === 404) {
@@ -473,7 +438,6 @@ export class WillowData {
    * Query indexed data with automatic proof verification (secure by default)
    */
   async query(
-    appId: string,
     datasetId: string,
     query: QueryRequest,
   ): Promise<QueryResponse> {
@@ -483,9 +447,9 @@ export class WillowData {
       include_proof: true,
     };
 
-    const headers = this.auth.getAuthHeaders('POST', `/query/${appId}/${datasetId}`);
+    const headers = this.auth.getAuthHeaders('POST', `/query/${datasetId}`);
     const response = await this.api.post<ApiResponse<QueryResponse>>(
-      `/query/${appId}/${datasetId}`,
+      `/query/${datasetId}`,
       queryWithProof,
       { headers },
     );
@@ -532,8 +496,8 @@ export class WillowData {
       }
     }
 
-    // Apply computed fields if registered for this app/dataset
-    const computedFields = this.computedFieldRegistry.get(appId, datasetId);
+    // Apply computed fields if registered for this dataset
+    const computedFields = this.computedFieldRegistry.get(datasetId);
     if (computedFields) {
       return applyComputedFieldsToResponse(result, computedFields);
     }
@@ -545,7 +509,6 @@ export class WillowData {
    * Query indexed data without proof verification (use with caution)
    */
   async queryUnverified(
-    appId: string,
     datasetId: string,
     query: QueryRequest,
   ): Promise<QueryResponse> {
@@ -555,9 +518,9 @@ export class WillowData {
       include_proof: false,
     };
 
-    const headers = this.auth.getAuthHeaders('POST', `/query/${appId}/${datasetId}`);
+    const headers = this.auth.getAuthHeaders('POST', `/query/${datasetId}`);
     const response = await this.api.post<ApiResponse<QueryResponse>>(
-      `/query/${appId}/${datasetId}`,
+      `/query/${datasetId}`,
       queryWithoutProof,
       { headers },
     );
@@ -571,8 +534,8 @@ export class WillowData {
 
     let result = response.data.data!;
 
-    // Apply computed fields if registered for this app/dataset
-    const computedFields = this.computedFieldRegistry.get(appId, datasetId);
+    // Apply computed fields if registered for this dataset
+    const computedFields = this.computedFieldRegistry.get(datasetId);
     if (computedFields) {
       result = applyComputedFieldsToResponse(result, computedFields);
     }
@@ -756,20 +719,18 @@ export class WillowData {
   /**
    * Execute a SQL query against a subgrove with optional Merkle proof.
    *
-   * @param appId - Application ID
    * @param subgroveId - Subgrove ID to query
    * @param sql - SQL SELECT query string
    * @param options - Query options
    * @returns SQL query response with columns, rows, and optional proof
    */
   async sqlQuery(
-    appId: string,
     subgroveId: string,
     sql: string,
     options?: { includeProof?: boolean },
   ): Promise<SqlQueryResponse> {
     const response = await this.api.post<SqlQueryResponse>(
-      `/sql/${appId}/${subgroveId}`,
+      `/sql/${subgroveId}`,
       {
         query: sql,
         include_proof: options?.includeProof ?? false,

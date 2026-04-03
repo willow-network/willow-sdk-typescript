@@ -11,7 +11,7 @@ TypeScript/JavaScript SDK for interacting with the Willow decentralized data inf
 - **Multiple Verification Strategies**: Local full, local basic, or server-assisted verification
 - **File Storage**: Upload, download, list, and delete files with chunk Merkle verification
 - **File Encryption**: XChaCha20-Poly1305 encryption/decryption for private files
-- **Collection Helpers**: Convenient API for working with app/dataset pairs
+- **Collection Helpers**: Convenient API for working with subgrove/dataset pairs
 
 ## Installation
 
@@ -45,13 +45,13 @@ await client.registerDid(didDocument);
 await client.init();
 
 // 4. Store data
-await client.store('my-app', 'users', 'alice', {
+await client.store('users', 'alice', {
   name: 'Alice',
   score: 100,
 });
 
 // 5. Retrieve data (automatically verified!)
-const data = await client.get('my-app', 'users', 'alice');
+const data = await client.get('users', 'alice');
 console.log(data);
 ```
 
@@ -61,8 +61,8 @@ All data operations automatically verify cryptographic proofs against the consen
 
 ```typescript
 // These operations automatically verify proofs:
-const data = await client.get('app', 'dataset', 'key');
-const results = await client.query('app', 'dataset', { filters: { status: 'active' } });
+const data = await client.get('dataset', 'key');
+const results = await client.query('dataset', { filters: { status: 'active' } });
 
 // Query results include the verified root hash
 if (results.verifiedRootHash) {
@@ -70,8 +70,8 @@ if (results.verifiedRootHash) {
 }
 
 // For performance-critical scenarios, skip verification:
-const unverifiedData = await client.getUnverified('app', 'dataset', 'key');
-const unverifiedResults = await client.queryUnverified('app', 'dataset', { /* query */ });
+const unverifiedData = await client.getUnverified('dataset', 'key');
+const unverifiedResults = await client.queryUnverified('dataset', { /* query */ });
 ```
 
 ## Data Operations
@@ -80,10 +80,10 @@ const unverifiedResults = await client.queryUnverified('app', 'dataset', { /* qu
 
 ```typescript
 // Store single item
-await client.store('app-id', 'dataset-id', 'key', { field: 'value' });
+await client.store('dataset-id', 'key', { field: 'value' });
 
 // Batch store using collection helper
-const collection = client.collection('app-id', 'dataset-id');
+const collection = client.collection('dataset-id');
 await collection.batchStore([
   { key: 'key1', value: { name: 'Item 1' } },
   { key: 'key2', value: { name: 'Item 2' } },
@@ -94,13 +94,13 @@ await collection.batchStore([
 
 ```typescript
 // With automatic proof verification (secure by default)
-const data = await client.get('app-id', 'dataset-id', 'key');
+const data = await client.get('dataset-id', 'key');
 
 // Without verification (performance mode)
-const data = await client.getUnverified('app-id', 'dataset-id', 'key');
+const data = await client.getUnverified('dataset-id', 'key');
 
 // Get multiple with verification
-const collection = client.collection('app-id', 'dataset-id');
+const collection = client.collection('dataset-id');
 const multiple = await collection.getMultiple(['key1', 'key2', 'key3']);
 ```
 
@@ -108,7 +108,7 @@ const multiple = await collection.getMultiple(['key1', 'key2', 'key3']);
 
 ```typescript
 // Query with automatic proof verification
-const results = await client.query('app-id', 'dataset-id', {
+const results = await client.query('dataset-id', {
   filters: { status: 'active', score: { $gte: 100 } },
   limit: 10,
   offset: 0,
@@ -119,7 +119,7 @@ console.log('Total:', results.total);
 console.log('Verified root:', results.verifiedRootHash);
 
 // Query without verification
-const results = await client.queryUnverified('app-id', 'dataset-id', {
+const results = await client.queryUnverified('dataset-id', {
   filters: { status: 'active' },
 });
 ```
@@ -127,8 +127,8 @@ const results = await client.queryUnverified('app-id', 'dataset-id', {
 ### Update and Delete
 
 ```typescript
-await client.update('app-id', 'dataset-id', 'key', { field: 'new value' });
-await client.delete('app-id', 'dataset-id', 'key');
+await client.update('dataset-id', 'key', { field: 'new value' });
+await client.delete('dataset-id', 'key');
 ```
 
 ### Historical Data Queries
@@ -184,10 +184,10 @@ try {
 
 ## Collection Helper
 
-For easier data management with a specific app/dataset:
+For easier data management with a specific subgrove/dataset:
 
 ```typescript
-const users = client.collection('my-app', 'users');
+const users = client.collection('users');
 
 // All operations scoped to this collection
 await users.store('alice', { name: 'Alice', score: 100 });
@@ -393,14 +393,10 @@ const client = new WillowClient({
 
 ## Registration
 
-### Register App
 
 ```typescript
-const app = await client.registerApp({
-  app_id: 'my-app',
   name: 'My Application',
   description: 'Built with Willow',
-  app_type: 'application',
   owner_did: didDocument.id,
   admins: [],
 });
@@ -411,7 +407,7 @@ const app = await client.registerApp({
 ```typescript
 const dataset = await client.registerDataset({
   dataset_id: 'users',
-  app_id: 'my-app',
+
   name: 'User Data',
   dataset_path: ['collections'],
   schema: {
@@ -438,7 +434,7 @@ const dataset = await client.registerDataset({
 import { WillowError } from '@willow/sdk';
 
 try {
-  await client.get('app', 'dataset', 'key');
+  await client.get('subgrove', 'dataset', 'key');
 } catch (error) {
   if (error instanceof WillowError) {
     switch (error.code) {
@@ -466,19 +462,19 @@ try {
 |--------|-------------|
 | `init()` | Initialize with authentication |
 | `registerDid(didDocument)` | Register a new DID |
-| `registerApp(request)` | Register an application |
+
 | `registerDataset(request)` | Register a dataset |
-| `store(appId, datasetId, key, value)` | Store data |
-| `get(appId, datasetId, key)` | Get data with proof verification |
-| `getUnverified(appId, datasetId, key)` | Get data without verification |
-| `update(appId, datasetId, key, value)` | Update data |
-| `delete(appId, datasetId, key)` | Delete data |
-| `query(appId, datasetId, query)` | Query with proof verification |
-| `queryUnverified(appId, datasetId, query)` | Query without verification |
-| `getProof(appId, datasetId, key)` | Get raw Merkle proof |
+| `store(datasetId, key, value)` | Store data |
+| `get(datasetId, key)` | Get data with proof verification |
+| `getUnverified(datasetId, key)` | Get data without verification |
+| `update(datasetId, key, value)` | Update data |
+| `delete(datasetId, key)` | Delete data |
+| `query(datasetId, query)` | Query with proof verification |
+| `queryUnverified(datasetId, query)` | Query without verification |
+| `getProof(datasetId, key)` | Get raw Merkle proof |
 | `getRootHash()` | Get consensus-verified root hash |
 | `getRootHashLocal()` | Get local node's root hash |
-| `collection(appId, datasetId)` | Create collection helper |
+| `collection(datasetId)` | Create collection helper |
 | `getSession()` | Get current session |
 
 ### Data Client Historical Methods

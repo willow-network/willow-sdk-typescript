@@ -30,27 +30,6 @@ export interface DidDocument {
   updated: number;
 }
 
-// App Registration Types
-export interface RegisterAppRequest {
-  app_id: string;
-  name: string;
-  description: string;
-  app_type: string;
-  owner_did: string;
-  admins: string[];
-}
-
-export interface AppRegistration {
-  app_id: string;
-  name: string;
-  description: string;
-  app_type: string;
-  owner_did: string;
-  admins: string[];
-  created_at: number;
-  updated_at: number;
-}
-
 // Dataset Types
 export interface FieldType {
   type: 'string' | 'number' | 'boolean' | 'array' | 'object' | 'bytes';
@@ -74,7 +53,6 @@ export interface SchemaDefinition {
 
 export interface RegisterDatasetRequest {
   dataset_id: string;
-  app_id: string;
   name: string;
   dataset_path: string[];
   schema: SchemaDefinition;
@@ -85,7 +63,6 @@ export interface RegisterDatasetRequest {
 
 export interface DatasetRegistration {
   dataset_id: string;
-  app_id: string;
   name: string;
   schema: SchemaDefinition;
   owner_did: string;

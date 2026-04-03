@@ -4,7 +4,7 @@
  * Provides direct transaction broadcasting to CometBFT consensus layer.
  */
 
-import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, RegisterDidTx, RegisterAppTx, RegisterSubgroveTx, SubgroveMode, RetentionWindow, TransferTx, DataStoreTx, StoreFileManifestTx, DeleteFileManifestTx, Transaction, createTransactionWrapper, createSignMessage, createBroadcastResult, stringToBase64 } from './types';
+import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, RegisterDidTx, RegisterSubgroveTx, SubgroveMode, RetentionWindow, TransferTx, DataStoreTx, StoreFileManifestTx, DeleteFileManifestTx, Transaction, createTransactionWrapper, createSignMessage, createBroadcastResult, stringToBase64 } from './types';
 
 /**
  * CometBFT consensus client for direct transaction broadcasting
@@ -41,40 +41,10 @@ export class ConsensusClient {
   }
 
   /**
-   * Register an application on the blockchain
-   */
-  async registerApp(
-    appId: string,
-    name: string,
-    description: string,
-    appType: string,
-    ownerDid: string,
-    privateKey: string,
-    publicKeyId: string,
-    signFunction: (message: string, privateKey: string) => string,
-    admins?: string[]
-  ): Promise<BroadcastResult> {
-    const tx: RegisterAppTx = {
-      appId,
-      name,
-      description,
-      appType,
-      ownerDid,
-      admins: admins || [],
-      signature: '',
-      publicKeyId,
-      nonce: await this.getNextNonce(ownerDid)
-    };
-
-    return this.signAndBroadcast('RegisterApp', tx, privateKey, signFunction);
-  }
-
-  /**
    * Register a subgrove (dataset) on the blockchain
    */
   async registerSubgrove(
     subgroveId: string,
-    appId: string,
     schema: string,
     ownerDid: string,
     privateKey: string,
@@ -85,7 +55,6 @@ export class ConsensusClient {
   ): Promise<BroadcastResult> {
     const tx: RegisterSubgroveTx = {
       subgroveId,
-      appId,
       schema,
       ownerDid,
       mode,
@@ -127,7 +96,6 @@ export class ConsensusClient {
    * Store data on the blockchain
    */
   async storeData(
-    appId: string,
     subgroveId: string,
     key: string,
     data: any,
@@ -137,7 +105,6 @@ export class ConsensusClient {
     signFunction: (message: string, privateKey: string) => string
   ): Promise<BroadcastResult> {
     const tx: DataStoreTx = {
-      appId,
       subgroveId,
       key,
       data: JSON.stringify(data),
@@ -154,7 +121,6 @@ export class ConsensusClient {
    * Store a file manifest on the blockchain
    */
   async storeFileManifest(
-    appId: string,
     subgroveId: string,
     fileKey: string,
     filename: string,
@@ -170,7 +136,6 @@ export class ConsensusClient {
     signFunction: (message: string, privateKey: string) => string
   ): Promise<BroadcastResult> {
     const tx: StoreFileManifestTx = {
-      appId,
       subgroveId,
       fileKey,
       filename,
@@ -193,7 +158,6 @@ export class ConsensusClient {
    * Delete a file manifest from the blockchain
    */
   async deleteFileManifest(
-    appId: string,
     subgroveId: string,
     fileKey: string,
     ownerDid: string,
@@ -202,7 +166,6 @@ export class ConsensusClient {
     signFunction: (message: string, privateKey: string) => string
   ): Promise<BroadcastResult> {
     const tx: DeleteFileManifestTx = {
-      appId,
       subgroveId,
       fileKey,
       ownerDid,

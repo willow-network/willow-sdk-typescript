@@ -29,10 +29,10 @@ describe('ComputedFieldRegistry', () => {
       },
     ];
 
-    registry.register('app1', 'dataset1', fields);
+    registry.register('dataset1', 'dataset1', fields);
 
-    expect(registry.has('app1', 'dataset1')).toBe(true);
-    expect(registry.get('app1', 'dataset1')).toBe(fields);
+    expect(registry.has('dataset1', 'dataset1')).toBe(true);
+    expect(registry.get('dataset1', 'dataset1')).toBe(fields);
   });
 
   it('should return undefined for unregistered app/dataset', () => {
@@ -50,8 +50,8 @@ describe('ComputedFieldRegistry', () => {
       },
     ];
 
-    registry.register('app1', 'dataset1', fields);
-    expect(registry.has('app1', 'dataset1')).toBe(true);
+    registry.register('dataset1', 'dataset1', fields);
+    expect(registry.has('dataset1', 'dataset1')).toBe(true);
 
     const result = registry.unregister('app1', 'dataset1');
     expect(result).toBe(true);
@@ -59,13 +59,13 @@ describe('ComputedFieldRegistry', () => {
   });
 
   it('should clear all registered fields', () => {
-    registry.register('app1', 'dataset1', []);
-    registry.register('app2', 'dataset2', []);
+    registry.register('dataset1', 'dataset1', []);
+    registry.register('dataset2', 'dataset2', []);
 
     registry.clear();
 
-    expect(registry.has('app1', 'dataset1')).toBe(false);
-    expect(registry.has('app2', 'dataset2')).toBe(false);
+    expect(registry.has('dataset1', 'dataset1')).toBe(false);
+    expect(registry.has('dataset2', 'dataset2')).toBe(false);
   });
 });
 

@@ -27,7 +27,7 @@ async function main() {
   });
 
   // Authenticate (assuming DID is already registered and funded)
-  const fundedDID = 'did:willow:app_owner_1703000000'; // Replace with actual funded DID
+  const fundedDID = process.env.WILLOW_TEST_DID || 'did:willow:test-owner'; // Replace with actual funded DID
   await client.authenticate(fundedDID, PRIVATE_KEY);
 
   // Define schema with multiple index types
@@ -102,7 +102,7 @@ async function main() {
   // Register the dataset
   const datasetRequest: RegisterDatasetRequest = {
     dataset_id: 'products',
-    app_id: 'indexing-test-app',
+    
     name: 'Product Catalog',
     dataset_path: [],
     schema,
@@ -176,7 +176,7 @@ async function main() {
   ];
 
   console.log('Storing products...');
-  await client.data.batchStore('indexing-test-app', 'products', products);
+  await client.data.batchStore('products', products);
 
   // Wait for indexing
   await new Promise(resolve => setTimeout(resolve, 3000));
@@ -190,7 +190,7 @@ async function main() {
       category: 'electronics',
     },
   };
-  const electronicsResults = await client.data.query('indexing-test-app', 'products', electronicsQuery);
+  const electronicsResults = await client.data.query('products', electronicsQuery);
   console.log(`Found ${electronicsResults.documents.length} electronics products`);
 
   // 1b. Query with cryptographic proof
@@ -201,7 +201,7 @@ async function main() {
     },
     include_proof: true,
   };
-  const proofResults = await client.data.query('indexing-test-app', 'products', queryWithProof);
+  const proofResults = await client.data.query('products', queryWithProof);
 
   if (proofResults.proof && proofResults.root_hash) {
     console.log(`Proof included: ${proofResults.proof.length / 2} bytes`);
@@ -230,7 +230,7 @@ async function main() {
       },
     },
   };
-  const priceResults = await client.data.query('indexing-test-app', 'products', priceRangeQuery);
+  const priceResults = await client.data.query('products', priceRangeQuery);
   priceResults.documents.forEach(doc => {
     console.log(`- ${doc.name}: $${doc.price}`);
   });
@@ -243,7 +243,7 @@ async function main() {
       query: 'laptop',
     },
   };
-  const searchResults = await client.data.query('indexing-test-app', 'products', searchQuery);
+  const searchResults = await client.data.query('products', searchQuery);
   searchResults.documents.forEach(doc => {
     console.log(`- ${doc.name}: ${doc.description.substring(0, 50)}...`);
   });
@@ -260,7 +260,7 @@ async function main() {
       order: 'asc',
     },
   };
-  const compoundResults = await client.data.query('indexing-test-app', 'products', compoundQuery);
+  const compoundResults = await client.data.query('products', compoundQuery);
   compoundResults.documents.forEach(doc => {
     console.log(`- ${doc.name}: $${doc.price}`);
   });
@@ -278,7 +278,7 @@ async function main() {
     limit: 2,
     offset: 0,
   };
-  const topRatedResults = await client.data.query('indexing-test-app', 'products', topRatedQuery);
+  const topRatedResults = await client.data.query('products', topRatedQuery);
   topRatedResults.documents.forEach(doc => {
     console.log(`- ${doc.name}: ⭐ ${doc.rating}`);
   });

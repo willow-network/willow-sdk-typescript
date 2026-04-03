@@ -88,8 +88,8 @@ async function main() {
   }
 
   // For the following steps, we'll use test values
-  // In production, you'd register your own app and dataset first
-  const appId = 'quickstart-app';
+  // In production, you'd register your own subgrove first
+  
   const datasetId = 'users';
 
   // 6. Store data
@@ -102,7 +102,7 @@ async function main() {
   };
 
   try {
-    await client.store(appId, datasetId, 'user-1', testData);
+    await client.store(datasetId, 'user-1', testData);
     console.log('   Data stored successfully');
     console.log(`   Key: user-1`);
     console.log(`   Value: ${JSON.stringify(testData)}\n`);
@@ -113,7 +113,7 @@ async function main() {
   // 7. Retrieve data with automatic proof verification
   console.log('7. Retrieving data (with proof verification)...');
   try {
-    const result = await client.get(appId, datasetId, 'user-1');
+    const result = await client.get(datasetId, 'user-1');
     console.log('   Data retrieved and VERIFIED:');
     console.log(`   ${JSON.stringify(result.data, null, 2)}\n`);
   } catch (error) {
@@ -123,7 +123,7 @@ async function main() {
   // 8. Retrieve data without verification (faster)
   console.log('8. Retrieving data (without verification)...');
   try {
-    const result = await client.getUnverified(appId, datasetId, 'user-1');
+    const result = await client.getUnverified(datasetId, 'user-1');
     console.log('   Data retrieved (unverified):');
     console.log(`   ${JSON.stringify(result.data, null, 2)}\n`);
   } catch (error) {
@@ -133,7 +133,7 @@ async function main() {
   // 9. Update data
   console.log('9. Updating data...');
   try {
-    await client.update(appId, datasetId, 'user-1', {
+    await client.update(datasetId, 'user-1', {
       ...testData,
       score: 150,
       updated: Date.now(),

@@ -71,12 +71,12 @@ async function main() {
     console.log(`Note: ${error}\n`);
   }
 
-  // Use test app/dataset (would be registered in production)
-  const appId = 'data-demo-app';
+  // Use test dataset (would be registered in production)
+  
   const datasetId = 'products';
 
   // Create a collection helper for cleaner syntax
-  const products = client.collection(appId, datasetId);
+  const products = client.collection(datasetId);
 
   // 1. Store single item
   console.log('1. Store single item...');

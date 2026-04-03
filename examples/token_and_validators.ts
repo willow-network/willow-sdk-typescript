@@ -54,7 +54,6 @@ interface Balance {
 
 interface FeeSchedule {
   did_registration: string;
-  app_registration: string;
   subgrove_registration: string;
   base_tx_cost: string;
   cost_per_byte: string;
@@ -154,16 +153,16 @@ async function main() {
     console.log(`   Note: ${error}\n`);
   }
 
-  // 3. Get App Balance
-  console.log('3. App Balance');
-  console.log('--------------');
-  const testAppId = 'demo-app';
+  // 3. Get Subgrove Balance
+  console.log('3. Subgrove Balance');
+  console.log('-------------------');
+  const testSubgroveId = 'demo-subgrove';
   try {
-    const appBalance = await fetchApi<{ balance: number }>(apiUrl, `/app/${testAppId}/balance`);
-    console.log(`   App: ${testAppId}`);
+    const appBalance = await fetchApi<{ balance: number }>(apiUrl, `/subgrove/${testSubgroveId}/balance`);
+    console.log(`   Subgrove: ${testSubgroveId}`);
     console.log(`   Balance: ${appBalance.balance?.toLocaleString() || 0} WILL\n`);
   } catch (error) {
-    console.log(`   App "${testAppId}" not found or no balance\n`);
+    console.log(`   Subgrove "${testSubgroveId}" not found or no balance\n`);
   }
 
   // 4. Get Fee Schedule
@@ -272,10 +271,10 @@ async function main() {
   console.log('ECONOMIC MODEL SUMMARY');
   console.log('======================');
   console.log('- WILL token for storage fees and staking');
-  console.log('- Pay-per-storage model (automatic deduction from app balance)');
+  console.log('- Pay-per-storage model (automatic deduction from subgrove balance)');
   console.log('- Validators secure the network via Proof of Stake');
   console.log('- Indexers earn rewards for indexing work');
-  console.log('- Apps fund storage to enable data operations\n');
+  console.log('- Subgroves fund storage to enable data operations\n');
 
   console.log('Token and validator operations example complete!');
 }

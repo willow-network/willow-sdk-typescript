@@ -99,22 +99,6 @@ export interface RegisterDidTx {
   nonce: number;
 }
 
-/**
- * App registration transaction
- */
-export interface RegisterAppTx {
-  appId: string;
-  name: string;
-  description: string;
-  appType: string;
-  ownerDid: string;
-  admins?: string[];
-  initialFunding?: number;
-  signature?: string; // hex-encoded
-  publicKeyId?: string;
-  nonce?: number;
-}
-
 /** How long real-time indexed data is retained on consensus nodes. */
 export type RetentionWindow =
   | { type: 'Blocks'; value: number }
@@ -135,7 +119,6 @@ export type SubgroveMode =
  */
 export interface RegisterSubgroveTx {
   subgroveId: string;
-  appId: string;
   schema: string; // JSON schema as string
   ownerDid: string;
   mode?: SubgroveMode;
@@ -162,7 +145,6 @@ export interface TransferTx {
  * Data storage transaction
  */
 export interface DataStoreTx {
-  appId: string;
   subgroveId: string;
   key: string;
   data: string; // JSON data as string
@@ -173,7 +155,6 @@ export interface DataStoreTx {
 }
 
 export interface StoreFileManifestTx {
-  appId: string;
   subgroveId: string;
   fileKey: string;
   filename: string;
@@ -190,7 +171,6 @@ export interface StoreFileManifestTx {
 }
 
 export interface DeleteFileManifestTx {
-  appId: string;
   subgroveId: string;
   fileKey: string;
   ownerDid: string;
@@ -202,7 +182,7 @@ export interface DeleteFileManifestTx {
 /**
  * Transaction type union
  */
-export type Transaction = RegisterDidTx | RegisterAppTx | RegisterSubgroveTx | TransferTx | DataStoreTx | StoreFileManifestTx | DeleteFileManifestTx;
+export type Transaction = RegisterDidTx | RegisterSubgroveTx | TransferTx | DataStoreTx | StoreFileManifestTx | DeleteFileManifestTx;
 
 /**
  * Create transaction wrapper for consensus submission
@@ -222,24 +202,6 @@ export function createSignMessage(txType: string, transaction: Transaction): str
       return JSON.stringify(tx.didDocument);
     }
 
-    case 'RegisterApp': {
-      const tx = transaction as RegisterAppTx;
-      const parts = [
-        'RegisterApp',
-        `App ID: ${tx.appId}`,
-        `Name: ${tx.name}`,
-        `Description: ${tx.description}`,
-        `Type: ${tx.appType}`,
-        `Owner: ${tx.ownerDid}`,
-        `Admins: ${(tx.admins || []).join(',')}`,
-        `Nonce: ${tx.nonce || 0}`
-      ];
-      if (tx.initialFunding && tx.initialFunding > 0) {
-        parts.push(`Funding: ${tx.initialFunding}`);
-      }
-      return parts.join('\n');
-    }
-
     case 'RegisterSubgrove': {
       const tx = transaction as RegisterSubgroveTx;
       const mode = tx.mode;
@@ -247,7 +209,6 @@ export function createSignMessage(txType: string, transaction: Transaction): str
         return [
           'RegisterSubgrove',
           `Subgrove ID: ${tx.subgroveId}`,
-          `App ID: ${tx.appId}`,
           `Mode: BlockchainIndexing`,
           `Schema: ${tx.schema}`,
           `Owner: ${tx.ownerDid}`,
@@ -259,7 +220,6 @@ export function createSignMessage(txType: string, transaction: Transaction): str
       return [
         'RegisterSubgrove',
         `Subgrove ID: ${tx.subgroveId}`,
-        `App ID: ${tx.appId}`,
         `Name: ${ds.name || ''}`,
         `Schema: ${tx.schema}`,
         `Owner: ${tx.ownerDid}`,
@@ -285,7 +245,6 @@ export function createSignMessage(txType: string, transaction: Transaction): str
       const tx = transaction as DataStoreTx;
       return [
         'DataStore',
-        `App ID: ${tx.appId}`,
         `Subgrove ID: ${tx.subgroveId}`,
         `Key: ${tx.key}`,
         `Data: ${tx.data}`,
@@ -296,12 +255,12 @@ export function createSignMessage(txType: string, transaction: Transaction): str
 
     case 'StoreFileManifest': {
       const tx = transaction as StoreFileManifestTx;
-      return `store_file:${tx.appId}:${tx.subgroveId}:${tx.fileKey}:${tx.contentHash}:${tx.totalSize}`;
+      return `store_file:${tx.subgroveId}:${tx.fileKey}:${tx.contentHash}:${tx.totalSize}`;
     }
 
     case 'DeleteFileManifest': {
       const tx = transaction as DeleteFileManifestTx;
-      return `delete_file:${tx.appId}:${tx.subgroveId}:${tx.fileKey}`;
+      return `delete_file:${tx.subgroveId}:${tx.fileKey}`;
     }
 
     default:

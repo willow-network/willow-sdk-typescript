@@ -14,10 +14,10 @@
  * @example
  * ```typescript
  * // Register Uniswap V2 computed fields
- * client.registerComputedFields('uniswap-v2', 'pairs', UNISWAP_V2_PAIR_FIELDS);
+ * client.registerComputedFields('pairs', UNISWAP_V2_PAIR_FIELDS);
  *
  * // Query returns computed prices alongside proven reserves
- * const pair = await client.query('uniswap-v2', 'pairs', { filters: { id: '0x...' } });
+ * const pair = await client.query('pairs', { filters: { id: '0x...' } });
  * // pair.documents[0] contains:
  * // - reserve0, reserve1 (proven by GKR circuit)
  * // - token0Price, token1Price (computed from proven reserves)
@@ -54,45 +54,40 @@ export interface ComputedFieldDefinition {
 export type ComputedFieldSet = ComputedFieldDefinition[];
 
 /**
- * Registry of computed fields by app/dataset.
+ * Registry of computed fields by dataset (subgrove).
  */
 export class ComputedFieldRegistry {
   private registry: Map<string, ComputedFieldSet> = new Map();
 
   /**
-   * Register computed fields for a specific app/dataset combination.
+   * Register computed fields for a specific dataset (subgrove).
    *
-   * @param appId - The application ID
-   * @param datasetId - The dataset ID
+   * @param datasetId - The dataset (subgrove) ID
    * @param fields - The computed field definitions
    */
-  register(appId: string, datasetId: string, fields: ComputedFieldSet): void {
-    const key = `${appId}:${datasetId}`;
-    this.registry.set(key, fields);
+  register(datasetId: string, fields: ComputedFieldSet): void {
+    this.registry.set(datasetId, fields);
   }
 
   /**
-   * Get computed fields for a specific app/dataset.
+   * Get computed fields for a specific dataset.
    */
-  get(appId: string, datasetId: string): ComputedFieldSet | undefined {
-    const key = `${appId}:${datasetId}`;
-    return this.registry.get(key);
+  get(datasetId: string): ComputedFieldSet | undefined {
+    return this.registry.get(datasetId);
   }
 
   /**
-   * Check if computed fields are registered for an app/dataset.
+   * Check if computed fields are registered for a dataset.
    */
-  has(appId: string, datasetId: string): boolean {
-    const key = `${appId}:${datasetId}`;
-    return this.registry.has(key);
+  has(datasetId: string): boolean {
+    return this.registry.has(datasetId);
   }
 
   /**
-   * Remove computed fields for an app/dataset.
+   * Remove computed fields for a dataset.
    */
-  unregister(appId: string, datasetId: string): boolean {
-    const key = `${appId}:${datasetId}`;
-    return this.registry.delete(key);
+  unregister(datasetId: string): boolean {
+    return this.registry.delete(datasetId);
   }
 
   /**
