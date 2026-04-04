@@ -180,9 +180,21 @@ export interface DeleteFileManifestTx {
 }
 
 /**
+ * Deregister (delete) a subgrove transaction.
+ * Remaining funding balance is refunded to the owner.
+ */
+export interface DeregisterSubgroveTx {
+  subgroveId: string;
+  ownerDid: string;
+  signature?: string; // hex-encoded
+  publicKeyId?: string;
+  nonce?: number;
+}
+
+/**
  * Transaction type union
  */
-export type Transaction = RegisterDidTx | RegisterSubgroveTx | TransferTx | DataStoreTx | StoreFileManifestTx | DeleteFileManifestTx;
+export type Transaction = RegisterDidTx | RegisterSubgroveTx | TransferTx | DataStoreTx | StoreFileManifestTx | DeleteFileManifestTx | DeregisterSubgroveTx;
 
 /**
  * Create transaction wrapper for consensus submission
@@ -261,6 +273,11 @@ export function createSignMessage(txType: string, transaction: Transaction): str
     case 'DeleteFileManifest': {
       const tx = transaction as DeleteFileManifestTx;
       return `delete_file:${tx.subgroveId}:${tx.fileKey}`;
+    }
+
+    case 'DeregisterSubgrove': {
+      const tx = transaction as DeregisterSubgroveTx;
+      return `DeregisterSubgrove:${tx.subgroveId}:${tx.ownerDid}:${tx.nonce || 0}`;
     }
 
     default:

@@ -4,7 +4,7 @@
  * Provides direct transaction broadcasting to CometBFT consensus layer.
  */
 
-import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, RegisterDidTx, RegisterSubgroveTx, SubgroveMode, RetentionWindow, TransferTx, DataStoreTx, StoreFileManifestTx, DeleteFileManifestTx, Transaction, createTransactionWrapper, createSignMessage, createBroadcastResult, stringToBase64 } from './types';
+import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, RegisterDidTx, RegisterSubgroveTx, SubgroveMode, RetentionWindow, TransferTx, DataStoreTx, StoreFileManifestTx, DeleteFileManifestTx, DeregisterSubgroveTx, Transaction, createTransactionWrapper, createSignMessage, createBroadcastResult, stringToBase64 } from './types';
 
 /**
  * CometBFT consensus client for direct transaction broadcasting
@@ -175,6 +175,27 @@ export class ConsensusClient {
     };
 
     return this.signAndBroadcast('DeleteFileManifest', tx, privateKey, signFunction);
+  }
+
+  /**
+   * Deregister (delete) a subgrove. Remaining funding is refunded to the owner.
+   */
+  async deregisterSubgrove(
+    subgroveId: string,
+    ownerDid: string,
+    privateKey: string,
+    publicKeyId: string,
+    signFunction: (message: string, privateKey: string) => string
+  ): Promise<BroadcastResult> {
+    const tx: DeregisterSubgroveTx = {
+      subgroveId,
+      ownerDid,
+      signature: '',
+      publicKeyId,
+      nonce: await this.getNextNonce(ownerDid)
+    };
+
+    return this.signAndBroadcast('DeregisterSubgrove', tx, privateKey, signFunction);
   }
 
   /**
