@@ -26,7 +26,7 @@ export class WillowClient {
   constructor(config: WillowConfig) {
     this.config = config;
     this.auth = new WillowAuth(config.apiUrl);
-    this.data = new WillowData(config.apiUrl, this.auth);
+    this.data = new WillowData(config.apiUrl, this.auth, config.indexerUrl);
     this.files = new FileOperations(config.apiUrl, () => this.auth.getAuthHeaders('GET', '/files'));
 
     // Configure proof verification if options provided

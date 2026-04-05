@@ -4,6 +4,8 @@ import { ProofVerificationOptions } from '../proof';
 
 export interface WillowConfig {
   apiUrl: string;
+  /** Optional indexer node URL. When set, GraphQL and SQL queries are routed here. */
+  indexerUrl?: string;
   did?: string;
   privateKey?: string; // For signing
   proofVerificationOptions?: ProofVerificationOptions; // Optional proof verification config

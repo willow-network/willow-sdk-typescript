@@ -24,13 +24,14 @@ import {
 
 export class WillowData {
   private api: AxiosInstance;
+  private indexerApi?: AxiosInstance;
   private auth: WillowAuth;
   private apiUrl: string;
   private lightClient?: LightClient;
   private lightClientInitPromise?: Promise<LightClient>;
   private computedFieldRegistry: ComputedFieldRegistry;
 
-  constructor(apiUrl: string, auth: WillowAuth) {
+  constructor(apiUrl: string, auth: WillowAuth, indexerUrl?: string) {
     this.apiUrl = apiUrl;
     this.api = axios.create({
       baseURL: apiUrl,
@@ -38,6 +39,14 @@ export class WillowData {
         "Content-Type": "application/json",
       },
     });
+    if (indexerUrl) {
+      this.indexerApi = axios.create({
+        baseURL: indexerUrl,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+    }
     this.auth = auth;
     this.computedFieldRegistry = new ComputedFieldRegistry();
   }
@@ -729,7 +738,8 @@ export class WillowData {
     sql: string,
     options?: { includeProof?: boolean },
   ): Promise<SqlQueryResponse> {
-    const response = await this.api.post<SqlQueryResponse>(
+    const client = this.indexerApi ?? this.api;
+    const response = await client.post<SqlQueryResponse>(
       `/sql/${subgroveId}`,
       {
         query: sql,
