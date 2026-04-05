@@ -739,12 +739,14 @@ export class WillowData {
     options?: { includeProof?: boolean },
   ): Promise<SqlQueryResponse> {
     const client = this.indexerApi ?? this.api;
+    const headers = this.auth.getAuthHeaders('POST', `/sql/${subgroveId}`);
     const response = await client.post<SqlQueryResponse>(
       `/sql/${subgroveId}`,
       {
         query: sql,
         include_proof: options?.includeProof ?? false,
       },
+      { headers },
     );
 
     return response.data;
