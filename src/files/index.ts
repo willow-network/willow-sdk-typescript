@@ -4,9 +4,15 @@
  * Upload, download, and manage files in FileStorage subgroves.
  * Files are chunked locally, manifests go through consensus,
  * and chunks are uploaded to storage nodes.
+ *
+ * This module is browser-safe: it uses `Uint8Array` instead of Node's
+ * `Buffer`, `@noble/hashes` for SHA-256, and `@noble/ciphers` for
+ * XChaCha20-Poly1305.
  */
 
-import { createHash } from 'crypto';
+import { sha256 } from '@noble/hashes/sha256';
+import { bytesToHex, randomBytes } from '@noble/hashes/utils';
+import { xchacha20poly1305 } from '@noble/ciphers/chacha';
 
 const DEFAULT_CHUNK_SIZE = 262_144; // 256 KB
 
@@ -39,6 +45,18 @@ export interface FileSigningOptions {
   nonce: number;
 }
 
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  let total = 0;
+  for (const c of chunks) total += c.length;
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.length;
+  }
+  return out;
+}
+
 export class FileOperations {
   private apiUrl: string;
   private getHeaders: () => Record<string, string>;
@@ -59,7 +77,7 @@ export class FileOperations {
     subgroveId: string,
     fileKey: string,
     filename: string,
-    data: Buffer,
+    data: Uint8Array,
     storageNodeEndpoint: string,
     signing?: FileSigningOptions,
   ): Promise<FileManifest> {
@@ -68,11 +86,9 @@ export class FileOperations {
     const chunkCount = chunks.length;
 
     // Compute hashes
-    const contentHash = createHash('sha256').update(data).digest('hex');
-    const chunkHashes = chunks.map(c =>
-      createHash('sha256').update(c).digest(),
-    );
-    const chunkMerkleRoot = computeMerkleRoot(chunkHashes).toString('hex');
+    const contentHash = bytesToHex(sha256(data));
+    const chunkHashes = chunks.map((c) => sha256(c));
+    const chunkMerkleRoot = bytesToHex(computeMerkleRoot(chunkHashes));
 
     // Submit StoreFileManifestTx to consensus
     const ownerDid = signing?.ownerDid ?? '';
@@ -82,7 +98,6 @@ export class FileOperations {
       : '';
     const manifestTx = {
       StoreFileManifest: {
-        
         subgrove_id: subgroveId,
         file_key: fileKey,
         filename,
@@ -144,28 +159,28 @@ export class FileOperations {
     subgroveId: string,
     fileKey: string,
     storageNodeEndpoint: string,
-  ): Promise<Buffer> {
+  ): Promise<Uint8Array> {
     const manifest = await this.metadata(subgroveId, fileKey);
 
-    const chunks: Buffer[] = [];
+    const chunks: Uint8Array[] = [];
     for (let i = 0; i < manifest.chunk_count; i++) {
       const url = `${storageNodeEndpoint}/chunk/${subgroveId}/${fileKey}/${i}?content_hash=${manifest.content_hash}`;
       const resp = await fetch(url);
       if (!resp.ok) throw new Error(`Failed to download chunk ${i}`);
-      chunks.push(Buffer.from(await resp.arrayBuffer()));
+      chunks.push(new Uint8Array(await resp.arrayBuffer()));
     }
 
     // Verify chunk Merkle root
-    const chunkHashes = chunks.map(c => createHash('sha256').update(c).digest());
-    const computedMerkleRoot = computeMerkleRoot(chunkHashes).toString('hex');
+    const chunkHashes = chunks.map((c) => sha256(c));
+    const computedMerkleRoot = bytesToHex(computeMerkleRoot(chunkHashes));
     if (computedMerkleRoot !== manifest.chunk_merkle_root) {
       throw new Error('Chunk Merkle root mismatch');
     }
 
-    const fileData = Buffer.concat(chunks);
+    const fileData = concatBytes(chunks);
 
     // Verify content hash
-    const computedHash = createHash('sha256').update(fileData).digest('hex');
+    const computedHash = bytesToHex(sha256(fileData));
     if (computedHash !== manifest.content_hash) {
       throw new Error('Content hash mismatch');
     }
@@ -215,7 +230,6 @@ export class FileOperations {
       : '';
     const deleteTx = {
       DeleteFileManifest: {
-        
         subgrove_id: subgroveId,
         file_key: fileKey,
         owner_did: signing?.ownerDid ?? '',
@@ -233,6 +247,7 @@ export class FileOperations {
       throw new Error(`Failed to delete file: ${await resp.text()}`);
     }
   }
+
   /**
    * Unregister a storage node (submits UnregisterStorageNode to consensus).
    */
@@ -263,16 +278,16 @@ export class FileOperations {
   }
 }
 
-function chunkData(data: Buffer, chunkSize: number): Buffer[] {
-  const chunks: Buffer[] = [];
+function chunkData(data: Uint8Array, chunkSize: number): Uint8Array[] {
+  const chunks: Uint8Array[] = [];
   for (let i = 0; i < data.length; i += chunkSize) {
     chunks.push(data.subarray(i, Math.min(i + chunkSize, data.length)));
   }
   return chunks;
 }
 
-function computeMerkleRoot(hashes: Buffer[]): Buffer {
-  if (hashes.length === 0) return Buffer.alloc(32);
+function computeMerkleRoot(hashes: Uint8Array[]): Uint8Array {
+  if (hashes.length === 0) return new Uint8Array(32);
   // No early return for single-leaf: pad to [leaf, leaf] and hash.
   // This prevents availability proof forgery for single-chunk files.
 
@@ -280,12 +295,9 @@ function computeMerkleRoot(hashes: Buffer[]): Buffer {
   if (current.length === 1) current.push(current[0]);
   while (current.length > 1) {
     if (current.length % 2 !== 0) current.push(current[current.length - 1]);
-    const next: Buffer[] = [];
+    const next: Uint8Array[] = [];
     for (let i = 0; i < current.length; i += 2) {
-      const h = createHash('sha256');
-      h.update(current[i]);
-      h.update(current[i + 1]);
-      next.push(h.digest());
+      next.push(sha256(concatBytes([current[i], current[i + 1]])));
     }
     current = next;
   }
@@ -303,35 +315,26 @@ export interface FileEncryption {
 /**
  * Encrypt file data using XChaCha20-Poly1305.
  *
- * IMPORTANT: This uses XChaCha20-Poly1305 with a 24-byte nonce to match the
- * Rust SDK and consensus layer. Files encrypted with this function are
- * interoperable across all Willow SDKs.
- *
- * Requires the `@noble/ciphers` package: `npm install @noble/ciphers`
+ * Uses XChaCha20-Poly1305 with a 24-byte nonce to match the Rust SDK and
+ * consensus layer. Files encrypted with this function are interoperable
+ * across all Willow SDKs.
  *
  * @param data - Plaintext file data
  * @param key - 32-byte symmetric key from the subgrove key grant system
- * @returns Object with ciphertext Buffer and 24-byte nonce
+ * @returns Object with ciphertext and 24-byte nonce
  */
 export function encryptFile(
-  data: Buffer,
-  key: Buffer,
-): { ciphertext: Buffer; nonce: Buffer } {
-  const { xchacha20poly1305 } = require('@noble/ciphers/chacha');
-  const { randomBytes } = require('crypto');
+  data: Uint8Array,
+  key: Uint8Array,
+): { ciphertext: Uint8Array; nonce: Uint8Array } {
   const nonce = randomBytes(24);
   const cipher = xchacha20poly1305(key, nonce);
   const ciphertext = cipher.encrypt(data);
-  return {
-    ciphertext: Buffer.from(ciphertext),
-    nonce: Buffer.from(nonce),
-  };
+  return { ciphertext, nonce };
 }
 
 /**
  * Decrypt file data using XChaCha20-Poly1305.
- *
- * Requires the `@noble/ciphers` package: `npm install @noble/ciphers`
  *
  * @param ciphertext - Encrypted data (ciphertext + 16-byte auth tag)
  * @param key - 32-byte symmetric key
@@ -339,13 +342,12 @@ export function encryptFile(
  * @returns Decrypted plaintext
  */
 export function decryptFile(
-  ciphertext: Buffer,
-  key: Buffer,
-  nonce: Buffer,
-): Buffer {
-  const { xchacha20poly1305 } = require('@noble/ciphers/chacha');
+  ciphertext: Uint8Array,
+  key: Uint8Array,
+  nonce: Uint8Array,
+): Uint8Array {
   const cipher = xchacha20poly1305(key, nonce);
-  return Buffer.from(cipher.decrypt(ciphertext));
+  return cipher.decrypt(ciphertext);
 }
 
 function guessContentType(filename: string): string {

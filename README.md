@@ -5,11 +5,11 @@ TypeScript/JavaScript SDK for interacting with the Willow decentralized data inf
 ## Features
 
 - **Secure by Default**: All data operations automatically verify cryptographic proofs
-- **Full Local Verification**: Pure TypeScript GroveDB proof verification (BLAKE3, Merk proofs)
+- **Full Local Verification**: Pure TypeScript GroveDB proof verification — BLAKE3 hashing, Merk proof parser, bincode decoder, full layered verification. Runs in Node and the browser without WASM.
 - **DID Authentication**: Ed25519 and secp256k1 (Ethereum-compatible) signature support
 - **Light Client**: Optional CometBFT light client for trustless header verification
-- **Multiple Verification Strategies**: Local full, local basic, or server-assisted verification
-- **File Storage**: Upload, download, list, and delete files with chunk Merkle verification
+- **GKR Proof Verification**: Server-side verification via the `/verify-gkr-proof` endpoint. (Full browser-native GKR verification is blocked on upstream Expander support for `wasm32`.)
+- **File Storage**: Upload, download, list, and delete files with chunk Merkle verification (browser-safe; uses `Uint8Array` and `@noble/hashes`/`@noble/ciphers`)
 - **File Encryption**: XChaCha20-Poly1305 encryption/decryption for private files
 - **Collection Helpers**: Convenient API for working with subgrove/dataset pairs
 
@@ -235,21 +235,15 @@ if (verifiedRoot === localRoot) {
 ```typescript
 import { configureProofVerification } from '@willow/sdk';
 
-// Use local full verification (default)
-configureProofVerification({
-  serverAssisted: false,
-});
-
-// Use server-assisted verification
-configureProofVerification({
-  serverAssisted: true,
-  apiUrl: 'http://localhost:3031',
-});
-
-// Verify against a known root hash
+// Verify against a known root hash. When set, every proof verification
+// will throw unless the computed root matches. For trustless operation,
+// obtain the expected root from a light client rather than hardcoding.
 configureProofVerification({
   expectedRootHash: knownRootHash,
 });
+
+// Clear the global expected root hash
+configureProofVerification({});
 ```
 
 ### Manual Proof Verification
@@ -272,16 +266,47 @@ const rootHash = await verifyItemProof(proofHex, 'key', value, ['path', 'to', 'i
 // Verify a query response object
 const rootHash = await verifyQueryResponse(response);
 
-// Advanced verification with options
+// Advanced verification: returns { valid, rootHash?, error? } instead of throwing
 const result = await verifyProofAdvanced(proofHex, documents, {
-  serverAssisted: true,
   expectedRootHash: expectedRoot,
 });
-// result: { valid: boolean, rootHash: string, method: string }
+// result: { valid: boolean, rootHash?: string, error?: string }
 
-// Extract root hash only (fast)
+// Fully verify a proof and return just the root hash.
+// Performs the same cryptographic checks as verifyQueryProof — despite the
+// name, it does not skip verification.
 const rootHash = await extractRootHashFromProof(proofHex);
 ```
+
+### Server-Assisted GKR Verification
+
+GKR proofs cannot currently be verified in the browser because the Expander
+GKR verifier depends on native SIMD intrinsics and an unconditional `mpi`
+C dependency, neither of which compile to `wasm32`. Until upstream Expander
+grows a `wasm32` fallback, browser clients must use the server endpoint:
+
+```typescript
+const response = await fetch('http://localhost:3031/verify-gkr-proof', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    proof: proofHex,
+    verification_key_hash: vkHashHex,
+    public_inputs: {
+      input_commitment: inputCommitmentHex,
+      output_root: outputRootHex,
+      block_range: [startBlock, endBlock],
+      config_hash: configHashHex,
+    },
+  }),
+});
+const { data } = await response.json();
+// data: { valid: boolean, error?: string }
+```
+
+GroveDB Merkle proofs and CometBFT light-client header/signature
+verification remain fully trustless in the browser — only GKR verification
+requires server trust.
 
 ## GroveDB Verification Module
 

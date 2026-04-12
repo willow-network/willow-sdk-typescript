@@ -31,13 +31,15 @@ export {
   NULL_HASH
 } from './types';
 
-// Bincode utilities
+// Bincode 2 reader + hex helpers
 export {
-  decodeGroveDBProof,
+  BincodeReader,
   bytesToHex,
-  hexToBytes,
-  BincodeReader
+  hexToBytes
 } from './bincode';
+
+// GroveDBProof decoder (bincode 2)
+export { decodeGroveDBProof } from './decoder';
 
 // Hash functions
 export {

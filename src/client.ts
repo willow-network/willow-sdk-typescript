@@ -1,6 +1,7 @@
-import { WillowAuth } from "./auth";
+import { WillowAuth, signEd25519 } from "./auth";
 import { WillowData } from "./data";
 import { FileOperations } from "./files";
+import { ConsensusClient } from "./consensus";
 import {
   WillowConfig,
   DidDocument,
@@ -14,6 +15,19 @@ import {
 import { configureProofVerification, ProofVerificationOptions } from "./proof";
 import { ComputedFieldSet } from "./computed-fields";
 
+function deriveCometBftUrl(apiUrl: string): string {
+  const match = apiUrl.match(/:(\d+)(\/)?$/);
+  if (match) {
+    const apiPort = parseInt(match[1]);
+    const nodeN = apiPort - 3030;
+    if (nodeN >= 1 && nodeN <= 10) {
+      const rpcPort = 26557 + nodeN * 100;
+      return apiUrl.replace(`:${apiPort}`, `:${rpcPort}`);
+    }
+  }
+  return apiUrl.replace(/:3031/, ':26657');
+}
+
 /**
  * Main Willow SDK client
  */
@@ -22,12 +36,20 @@ export class WillowClient {
   public auth: WillowAuth;
   public data: WillowData;
   public files: FileOperations;
+  public consensus: ConsensusClient;
 
   constructor(config: WillowConfig) {
     this.config = config;
     this.auth = new WillowAuth(config.apiUrl);
     this.data = new WillowData(config.apiUrl, this.auth, config.indexerUrl);
     this.files = new FileOperations(config.apiUrl, () => this.auth.getAuthHeaders('GET', '/files'));
+
+    // Derive CometBFT RPC URL from API URL (:303N → :2655N+(N-1)*100)
+    const cometUrl = config.consensusRpcUrl ?? deriveCometBftUrl(config.apiUrl);
+    this.consensus = new ConsensusClient({
+      consensusRpcUrl: cometUrl,
+      apiUrl: config.apiUrl,
+    });
 
     // Configure proof verification if options provided
     if (config.proofVerificationOptions) {
@@ -67,23 +89,50 @@ export class WillowClient {
   }
 
   /**
-   * Register a dataset
+   * Register a subgrove via a consensus transaction.
    */
   async registerDataset(
     request: RegisterDatasetRequest,
   ): Promise<DatasetRegistration> {
-    return this.data.registerDataset(request);
+    this.requireIdentity();
+    const result = await this.consensus.registerSubgrove(
+      request.dataset_id,
+      JSON.stringify(request.schema ?? {}),
+      this.auth.getDid()!,
+      this.auth.getPrivateKey()!,
+      this.auth.getPublicKeyId()!,
+      signEd25519,
+    );
+    return {
+      dataset_id: request.dataset_id,
+      name: request.name,
+      schema: request.schema ?? { version: 1, fields: {}, indexes: [], required_fields: [] },
+      owner_did: request.owner_did,
+      writers: request.writers ?? [],
+      readers: request.readers ?? [],
+      created_at: Math.floor(Date.now() / 1000),
+      updated_at: Math.floor(Date.now() / 1000),
+    };
   }
 
   /**
-   * Store data
+   * Store data via a consensus transaction.
    */
   async store(
     datasetId: string,
     key: string,
     value: any,
   ): Promise<void> {
-    await this.data.storeData(datasetId, { [key]: value });
+    this.requireIdentity();
+    await this.consensus.storeData(
+      datasetId,
+      key,
+      value,
+      this.auth.getDid()!,
+      this.auth.getPrivateKey()!,
+      this.auth.getPublicKeyId()!,
+      signEd25519,
+    );
   }
 
   /**
@@ -107,18 +156,18 @@ export class WillowClient {
   }
 
   /**
-   * Update data
+   * Update data via a consensus transaction (same as store — idempotent upsert).
    */
   async update(
     datasetId: string,
     key: string,
     value: any,
   ): Promise<void> {
-    return this.data.updateData(datasetId, key, value);
+    return this.store(datasetId, key, value);
   }
 
   /**
-   * Delete data
+   * Delete data by key.
    */
   async delete(datasetId: string, key: string): Promise<void> {
     return this.data.deleteData(datasetId, key);
@@ -242,6 +291,14 @@ export class WillowClient {
    * console.log(result.documents[0].token0Price); // Computed from proven reserves
    * ```
    */
+  private requireIdentity(): void {
+    if (!this.auth.getDid() || !this.auth.getPrivateKey() || !this.auth.getPublicKeyId()) {
+      throw new Error(
+        'Identity not set. Call client.auth.setIdentity(did, privateKey, publicKeyId) before write operations.',
+      );
+    }
+  }
+
   registerComputedFields(
     datasetId: string,
     fields: ComputedFieldSet,

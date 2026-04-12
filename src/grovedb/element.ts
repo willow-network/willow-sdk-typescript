@@ -1,15 +1,33 @@
 /**
- * GroveDB Element Deserialization
+ * GroveDB `Element` deserialization.
  *
- * Deserializes GroveDB Element types from their binary encoding.
+ * Matches the bincode 2 wire format used by grovedb 3.1.0. The Rust type is:
+ *
+ *   pub enum Element {
+ *       Item(Vec<u8>, Option<ElementFlags>),
+ *       Reference(ReferencePathType, MaxReferenceHop, Option<ElementFlags>),
+ *       Tree(Option<Vec<u8>>, Option<ElementFlags>),
+ *       SumItem(SumValue, Option<ElementFlags>),
+ *       SumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
+ *       BigSumTree(Option<Vec<u8>>, BigSumValue, Option<ElementFlags>),
+ *       CountTree(Option<Vec<u8>>, CountValue, Option<ElementFlags>),
+ *       CountSumTree(Option<Vec<u8>>, CountValue, SumValue, Option<ElementFlags>),
+ *   }
+ *
+ * where:
+ *   ElementFlags = Vec<u8>
+ *   MaxReferenceHop = Option<u8>
+ *   SumValue = i64       (zigzag varint)
+ *   BigSumValue = i128   (zigzag varint)
+ *   CountValue = u64     (unsigned varint)
+ *
+ * `ReferencePathType` is a 7-variant enum (see reference_path.rs). Variants
+ * use byte-slice payloads and small u8 heights; all encoded with bincode 2.
  */
 
-import { Element, GroveDBVerificationError } from './types';
 import { BincodeReader } from './bincode';
+import { Element, GroveDBVerificationError } from './types';
 
-/**
- * Element type discriminants
- */
 const ELEMENT_ITEM = 0;
 const ELEMENT_REFERENCE = 1;
 const ELEMENT_TREE = 2;
@@ -19,156 +37,129 @@ const ELEMENT_BIG_SUM_TREE = 5;
 const ELEMENT_COUNT_TREE = 6;
 const ELEMENT_COUNT_SUM_TREE = 7;
 
-/**
- * Deserialize a GroveDB Element from bytes
- */
 export function deserializeElement(bytes: Uint8Array): Element {
   const reader = new BincodeReader(bytes);
   return readElement(reader);
 }
 
-/**
- * Read an Element from a BincodeReader
- */
 function readElement(reader: BincodeReader): Element {
-  const elementType = reader.readU8();
+  const variant = reader.readVariant();
 
-  switch (elementType) {
+  switch (variant) {
     case ELEMENT_ITEM: {
-      const value = reader.readBytes();
-      const flags = readOptionBytes(reader);
+      const value = reader.readByteVec();
+      const flags = reader.readOptionByteVec();
       return { type: 'Item', value, flags };
     }
 
     case ELEMENT_REFERENCE: {
       const path = readReferencePath(reader);
-      const flags = readOptionBytes(reader);
+      // MaxReferenceHop = Option<u8>
+      const _maxHop = reader.readOptionU8();
+      void _maxHop;
+      const flags = reader.readOptionByteVec();
       return { type: 'Reference', path, flags };
     }
 
     case ELEMENT_TREE: {
-      const rootKey = readOptionBytes(reader);
-      const flags = readOptionBytes(reader);
+      const rootKey = reader.readOptionByteVec();
+      const flags = reader.readOptionByteVec();
       return { type: 'Tree', rootKey, flags };
     }
 
     case ELEMENT_SUM_ITEM: {
-      const value = readI64(reader);
-      const flags = readOptionBytes(reader);
+      const value = reader.readVarintI64();
+      const flags = reader.readOptionByteVec();
       return { type: 'SumItem', value, flags };
     }
 
     case ELEMENT_SUM_TREE: {
-      const rootKey = readOptionBytes(reader);
-      const sumValue = readI64(reader);
-      const flags = readOptionBytes(reader);
+      const rootKey = reader.readOptionByteVec();
+      const sumValue = reader.readVarintI64();
+      const flags = reader.readOptionByteVec();
       return { type: 'SumTree', rootKey, sumValue, flags };
     }
 
     case ELEMENT_BIG_SUM_TREE: {
-      const rootKey = readOptionBytes(reader);
-      const sumValue = readI128(reader);
-      const flags = readOptionBytes(reader);
+      const rootKey = reader.readOptionByteVec();
+      const sumValue = reader.readVarintI128();
+      const flags = reader.readOptionByteVec();
       return { type: 'BigSumTree', rootKey, sumValue, flags };
     }
 
     case ELEMENT_COUNT_TREE: {
-      const rootKey = readOptionBytes(reader);
-      const count = readU64(reader);
-      const flags = readOptionBytes(reader);
+      const rootKey = reader.readOptionByteVec();
+      const count = reader.readVarintU64();
+      const flags = reader.readOptionByteVec();
       return { type: 'CountTree', rootKey, count, flags };
     }
 
     case ELEMENT_COUNT_SUM_TREE: {
-      const rootKey = readOptionBytes(reader);
-      const count = readU64(reader);
-      const sum = readI64(reader);
-      const flags = readOptionBytes(reader);
+      const rootKey = reader.readOptionByteVec();
+      const count = reader.readVarintU64();
+      const sum = reader.readVarintI64();
+      const flags = reader.readOptionByteVec();
       return { type: 'CountSumTree', rootKey, count, sum, flags };
     }
 
     default:
-      throw new GroveDBVerificationError(`Unknown element type: ${elementType}`);
+      throw new GroveDBVerificationError(`Unknown element variant: ${variant}`);
   }
 }
 
 /**
- * Read Option<Vec<u8>>
- */
-function readOptionBytes(reader: BincodeReader): Uint8Array | null {
-  const hasValue = reader.readBool();
-  if (hasValue) {
-    return reader.readBytes();
-  }
-  return null;
-}
-
-/**
- * Read reference path (Vec<Vec<u8>>)
+ * Read `ReferencePathType`. The 7 variants are documented in
+ * grovedb/src/reference_path.rs.
+ *
+ * We don't reconstruct the full typed path tree into our TS `Element.Reference`
+ * payload — the consumer of a Reference element typically needs the
+ * destination, not the raw path-type variant. For now we decode all variants
+ * into a uniform `Uint8Array[][]` by flattening their path fields. Callers who
+ * need the structured reference type should call a dedicated helper; this one
+ * exists so that `deserializeElement` can walk the full byte stream without
+ * throwing on reference elements.
  */
 function readReferencePath(reader: BincodeReader): Uint8Array[][] {
-  const length = Number(reader.readU64());
-  const path: Uint8Array[][] = [];
+  const variant = reader.readVariant();
 
-  for (let i = 0; i < length; i++) {
-    const segmentLength = Number(reader.readU64());
-    const segment: Uint8Array[] = [];
-    for (let j = 0; j < segmentLength; j++) {
-      segment.push(reader.readBytes());
+  switch (variant) {
+    case 0: {
+      // AbsolutePathReference(Vec<Vec<u8>>)
+      const path = reader.readVecOfByteVec();
+      return [path];
     }
-    path.push(segment);
+    case 1:
+    case 2:
+    case 3: {
+      // UpstreamRootHeightReference(u8, Vec<Vec<u8>>)
+      // UpstreamRootHeightWithParentPathAdditionReference(u8, Vec<Vec<u8>>)
+      // UpstreamFromElementHeightReference(u8, Vec<Vec<u8>>)
+      reader.readU8();
+      const path = reader.readVecOfByteVec();
+      return [path];
+    }
+    case 4: {
+      // CousinReference(Vec<u8>)
+      const single = reader.readByteVec();
+      return [[single]];
+    }
+    case 5: {
+      // RemovedCousinReference(Vec<Vec<u8>>)
+      const path = reader.readVecOfByteVec();
+      return [path];
+    }
+    case 6: {
+      // SiblingReference(Vec<u8>)
+      const single = reader.readByteVec();
+      return [[single]];
+    }
+    default:
+      throw new GroveDBVerificationError(
+        `Unknown ReferencePathType variant: ${variant}`,
+      );
   }
-
-  return path;
 }
 
-/**
- * Read i64 (big-endian)
- */
-function readI64(reader: BincodeReader): bigint {
-  const bytes = reader.readRawBytes(8);
-  let value = 0n;
-  for (let i = 0; i < 8; i++) {
-    value = (value << 8n) | BigInt(bytes[i]);
-  }
-  // Handle sign
-  if (bytes[0] & 0x80) {
-    value = value - (1n << 64n);
-  }
-  return value;
-}
-
-/**
- * Read u64 (big-endian)
- */
-function readU64(reader: BincodeReader): bigint {
-  const bytes = reader.readRawBytes(8);
-  let value = 0n;
-  for (let i = 0; i < 8; i++) {
-    value = (value << 8n) | BigInt(bytes[i]);
-  }
-  return value;
-}
-
-/**
- * Read i128 (big-endian)
- */
-function readI128(reader: BincodeReader): bigint {
-  const bytes = reader.readRawBytes(16);
-  let value = 0n;
-  for (let i = 0; i < 16; i++) {
-    value = (value << 8n) | BigInt(bytes[i]);
-  }
-  // Handle sign
-  if (bytes[0] & 0x80) {
-    value = value - (1n << 128n);
-  }
-  return value;
-}
-
-/**
- * Check if an element is a tree type (has subtrees)
- */
 export function isTreeElement(element: Element): boolean {
   return (
     element.type === 'Tree' ||
@@ -179,9 +170,6 @@ export function isTreeElement(element: Element): boolean {
   );
 }
 
-/**
- * Check if an element has a root key (non-empty tree)
- */
 export function hasRootKey(element: Element): boolean {
   switch (element.type) {
     case 'Tree':
@@ -195,9 +183,6 @@ export function hasRootKey(element: Element): boolean {
   }
 }
 
-/**
- * Get the tree feature type from an element
- */
 export function getTreeFeatureType(element: Element): string | null {
   switch (element.type) {
     case 'Tree':

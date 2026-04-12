@@ -13,7 +13,8 @@ import {
   ProvedKeyValue,
   Element
 } from './types';
-import { decodeGroveDBProof, bytesToHex, hexToBytes } from './bincode';
+import { bytesToHex, hexToBytes } from './bincode';
+import { decodeGroveDBProof } from './decoder';
 import { executeMerkProofWithQuery, MerkExecutionResult } from './executor';
 import { deserializeElement, isTreeElement, hasRootKey } from './element';
 import { combineHash, valueHash, hashEquals, hashToHex } from './hash';

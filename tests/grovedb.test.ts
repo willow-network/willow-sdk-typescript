@@ -415,20 +415,107 @@ describe('Executor', () => {
   });
 });
 
-describe('BincodeReader', () => {
+describe('BincodeReader (bincode 2)', () => {
   it('reads u8', () => {
     const reader = new BincodeReader(new Uint8Array([0x42]));
     expect(reader.readU8()).toBe(0x42);
   });
 
-  it('reads u16 big-endian', () => {
-    const reader = new BincodeReader(new Uint8Array([0x01, 0x02]));
-    expect(reader.readU16()).toBe(0x0102);
+  describe('readVarintU128', () => {
+    it('decodes single-byte values (0..=250)', () => {
+      expect(new BincodeReader(new Uint8Array([0])).readVarintU128()).toBe(0n);
+      expect(new BincodeReader(new Uint8Array([1])).readVarintU128()).toBe(1n);
+      expect(new BincodeReader(new Uint8Array([250])).readVarintU128()).toBe(250n);
+    });
+
+    it('decodes 3-byte u16 form (tag 0xFB + 2 bytes BE)', () => {
+      // 300 → tag + u16 BE(300) = [0xFB, 0x01, 0x2c]
+      expect(
+        new BincodeReader(new Uint8Array([0xfb, 0x01, 0x2c])).readVarintU128(),
+      ).toBe(300n);
+      // 65535 → [0xFB, 0xFF, 0xFF]
+      expect(
+        new BincodeReader(new Uint8Array([0xfb, 0xff, 0xff])).readVarintU128(),
+      ).toBe(65535n);
+    });
+
+    it('decodes 5-byte u32 form (tag 0xFC + 4 bytes BE)', () => {
+      // 65536 → [0xFC, 0x00, 0x01, 0x00, 0x00]
+      expect(
+        new BincodeReader(
+          new Uint8Array([0xfc, 0x00, 0x01, 0x00, 0x00]),
+        ).readVarintU128(),
+      ).toBe(65536n);
+    });
+
+    it('decodes 9-byte u64 form (tag 0xFD + 8 bytes BE)', () => {
+      // 5_000_000_000 → [0xFD, 0, 0, 0, 1, 0x2A, 0x05, 0xF2, 0x00]
+      const bytes = new Uint8Array([
+        0xfd, 0x00, 0x00, 0x00, 0x01, 0x2a, 0x05, 0xf2, 0x00,
+      ]);
+      expect(new BincodeReader(bytes).readVarintU128()).toBe(5_000_000_000n);
+    });
+
+    it('throws on unknown varint tag', () => {
+      expect(() =>
+        new BincodeReader(new Uint8Array([0xff])).readVarintU128(),
+      ).toThrow(/Unknown varint tag/);
+    });
   });
 
-  it('reads u32 big-endian', () => {
-    const reader = new BincodeReader(new Uint8Array([0x01, 0x02, 0x03, 0x04]));
-    expect(reader.readU32()).toBe(0x01020304);
+  describe('readVarintI64 (zigzag)', () => {
+    it('decodes 0', () => {
+      // zigzag(0) = 0
+      expect(new BincodeReader(new Uint8Array([0])).readVarintI64()).toBe(0n);
+    });
+
+    it('decodes small positives', () => {
+      // zigzag(5) = 10
+      expect(new BincodeReader(new Uint8Array([10])).readVarintI64()).toBe(5n);
+      // zigzag(1) = 2
+      expect(new BincodeReader(new Uint8Array([2])).readVarintI64()).toBe(1n);
+    });
+
+    it('decodes small negatives', () => {
+      // zigzag(-1) = 1
+      expect(new BincodeReader(new Uint8Array([1])).readVarintI64()).toBe(-1n);
+      // zigzag(-5) = 9
+      expect(new BincodeReader(new Uint8Array([9])).readVarintI64()).toBe(-5n);
+    });
+  });
+
+  describe('readByteVec', () => {
+    it('reads length-prefixed bytes with varint length', () => {
+      // length 3 + bytes [a,b,c]
+      const reader = new BincodeReader(new Uint8Array([3, 0x61, 0x62, 0x63]));
+      const bytes = reader.readByteVec();
+      expect(Array.from(bytes)).toEqual([0x61, 0x62, 0x63]);
+    });
+
+    it('reads empty byte vec (length 0)', () => {
+      const reader = new BincodeReader(new Uint8Array([0]));
+      const bytes = reader.readByteVec();
+      expect(bytes.length).toBe(0);
+    });
+  });
+
+  describe('readOptionByteVec', () => {
+    it('reads None (tag 0)', () => {
+      expect(new BincodeReader(new Uint8Array([0])).readOptionByteVec()).toBeNull();
+    });
+
+    it('reads Some(bytes) (tag 1 + varint length + bytes)', () => {
+      const reader = new BincodeReader(new Uint8Array([1, 2, 0xaa, 0xbb]));
+      const bytes = reader.readOptionByteVec();
+      expect(bytes).not.toBeNull();
+      expect(Array.from(bytes!)).toEqual([0xaa, 0xbb]);
+    });
+
+    it('throws on invalid Option tag', () => {
+      expect(() =>
+        new BincodeReader(new Uint8Array([2])).readOptionByteVec(),
+      ).toThrow(/Invalid Option tag/);
+    });
   });
 
   it('reads boolean', () => {
@@ -439,7 +526,7 @@ describe('BincodeReader', () => {
 
   it('throws on invalid boolean', () => {
     const reader = new BincodeReader(new Uint8Array([2]));
-    expect(() => reader.readBool()).toThrow('Invalid boolean');
+    expect(() => reader.readBool()).toThrow(/Invalid bool tag/);
   });
 });
 

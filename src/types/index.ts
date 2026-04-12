@@ -6,9 +6,11 @@ export interface WillowConfig {
   apiUrl: string;
   /** Optional indexer node URL. When set, GraphQL and SQL queries are routed here. */
   indexerUrl?: string;
+  /** Optional CometBFT RPC URL for consensus transactions. Derived from apiUrl if omitted. */
+  consensusRpcUrl?: string;
   did?: string;
-  privateKey?: string; // For signing
-  proofVerificationOptions?: ProofVerificationOptions; // Optional proof verification config
+  privateKey?: string;
+  proofVerificationOptions?: ProofVerificationOptions;
 }
 
 export interface ApiResponse<T = any> {

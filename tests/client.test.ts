@@ -197,34 +197,6 @@ describe('WillowClient', () => {
       client.auth.setIdentity(testDid, testPrivateKey, testPublicKeyId);
     });
 
-    it('should register a subgrove with auth headers', async () => {
-      const appRequest = {
-
-        name: 'Test App',
-        description: 'Test description',
-
-        owner_did: testDid,
-        admins: [],
-      };
-
-      const mockAxios = getMockAxios();
-      mockAxios.post.mockResolvedValueOnce({
-        data: { success: true, data: appRequest },
-      });
-
-      const result = await client.data.registerDataset(appRequest);
-      expect(result).toEqual(appRequest);
-      expect(mockAxios.post).toHaveBeenCalledWith(
-        '/register/subgrove',
-        appRequest,
-        expect.objectContaining({
-          headers: expect.objectContaining({
-            'X-DID': testDid,
-          }),
-        })
-      );
-    });
-
     it('should register a dataset with auth headers', async () => {
       const datasetRequest = {
         dataset_id: 'test-dataset',

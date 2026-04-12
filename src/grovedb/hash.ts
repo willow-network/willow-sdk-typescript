@@ -2,9 +2,15 @@
  * GroveDB Hash Functions
  *
  * All hash functions use BLAKE3, matching the Rust implementation.
+ *
+ * We use `@noble/hashes/blake3` (pure TS, sync, isomorphic) rather than the
+ * `blake3` npm package, which has a Node/browser split where the default
+ * entry point requires async WebAssembly loading in browsers. `@noble/hashes`
+ * is already a transitive dependency via other modules and works the same
+ * way in Node, the browser, and any bundler target.
  */
 
-import { hash } from 'blake3';
+import { blake3 } from '@noble/hashes/blake3';
 import { encodeVarint } from './varint';
 import { CryptoHash, HASH_LENGTH, NULL_HASH, GroveDBVerificationError } from './types';
 
@@ -12,15 +18,7 @@ import { CryptoHash, HASH_LENGTH, NULL_HASH, GroveDBVerificationError } from './
  * Compute BLAKE3 hash of data
  */
 export function blake3Hash(data: Uint8Array): CryptoHash {
-  // blake3.hash returns Buffer which extends Uint8Array
-  const result = hash(data);
-  // Handle both Buffer and string return types
-  if (typeof result === 'string') {
-    // Should not happen with default options, but handle it
-    throw new GroveDBVerificationError('blake3 returned string instead of Buffer');
-  }
-  // Convert Buffer to Uint8Array
-  return Uint8Array.from(result);
+  return blake3(data);
 }
 
 /**

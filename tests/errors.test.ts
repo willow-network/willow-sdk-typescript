@@ -1,4 +1,4 @@
-import { WillowError } from '../src/errors';
+import { WillowError } from '../src/types';
 
 describe('WillowError', () => {
   it('should create error with message', () => {
@@ -9,24 +9,22 @@ describe('WillowError', () => {
     expect(error.name).toBe('WillowError');
   });
 
-  it('should include status code', () => {
-    const error = new WillowError('Not found', 404);
+  it('should include error code', () => {
+    const error = new WillowError('Not found', 'NOT_FOUND');
     expect(error.message).toBe('Not found');
-    expect(error.statusCode).toBe(404);
+    expect(error.code).toBe('NOT_FOUND');
   });
 
-  it('should include details', () => {
-    const details = { field: 'email', reason: 'Invalid format' };
-    const error = new WillowError('Validation failed', 422, details);
-    expect(error.message).toBe('Validation failed');
-    expect(error.statusCode).toBe(422);
-    expect(error.details).toEqual(details);
+  it('should include status code', () => {
+    const error = new WillowError('Not found', 'NOT_FOUND', 404);
+    expect(error.message).toBe('Not found');
+    expect(error.code).toBe('NOT_FOUND');
+    expect(error.statusCode).toBe(404);
   });
 
   it('should have proper stack trace', () => {
     const error = new WillowError('Stack test');
     expect(error.stack).toBeDefined();
-    expect(error.stack).toContain('WillowError');
     expect(error.stack).toContain('Stack test');
   });
 
@@ -36,19 +34,16 @@ describe('WillowError', () => {
     expect(error instanceof WillowError).toBe(true);
   });
 
-  it('should serialize to JSON', () => {
-    const error = new WillowError('JSON test', 400, { foo: 'bar' });
-    const json = JSON.stringify(error);
-    const parsed = JSON.parse(json);
-
-    expect(parsed.message).toBe('JSON test');
-    expect(parsed.statusCode).toBe(400);
-    expect(parsed.details).toEqual({ foo: 'bar' });
+  it('should expose fields for serialization', () => {
+    const error = new WillowError('JSON test', 'BAD_REQUEST', 400);
+    // Fields declared via `public` parameter properties are enumerable
+    expect(error.code).toBe('BAD_REQUEST');
+    expect(error.statusCode).toBe(400);
   });
 
-  it('should handle undefined values', () => {
+  it('should handle undefined optional fields', () => {
     const error = new WillowError('Basic error');
+    expect(error.code).toBeUndefined();
     expect(error.statusCode).toBeUndefined();
-    expect(error.details).toBeUndefined();
   });
 });

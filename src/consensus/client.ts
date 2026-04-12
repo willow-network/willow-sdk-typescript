@@ -16,7 +16,12 @@ export class ConsensusClient {
   private nonceCache: Map<string, number> = new Map();
 
   constructor(config: ConsensusConfig) {
-    this.config = config;
+    this.config = {
+      ...config,
+      requestTimeoutSecs: config.requestTimeoutSecs ?? 30,
+      maxRetries: config.maxRetries ?? 3,
+      retryDelaySecs: config.retryDelaySecs ?? 1,
+    };
   }
 
   /**
@@ -51,7 +56,8 @@ export class ConsensusClient {
     publicKeyId: string,
     signFunction: (message: string, privateKey: string) => string,
     mode?: SubgroveMode,
-    retentionWindow?: RetentionWindow
+    retentionWindow?: RetentionWindow,
+    initialFunding?: string
   ): Promise<BroadcastResult> {
     const tx: RegisterSubgroveTx = {
       subgroveId,
@@ -59,6 +65,7 @@ export class ConsensusClient {
       ownerDid,
       mode,
       retention_window: retentionWindow,
+      initialFunding,
       signature: '',
       publicKeyId,
       nonce: await this.getNextNonce(ownerDid)

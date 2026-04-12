@@ -1,204 +1,235 @@
 /**
- * Bincode Decoder for GroveDB Proofs
+ * Bincode 2 reader + hex helpers.
  *
- * Decodes the outer bincode-encoded GroveDBProof structure.
- * Uses big-endian encoding as specified in GroveDB.
+ * Implements the wire format used by `bincode = "2.0.0-rc.3"` with
+ * `config::standard().with_big_endian().with_no_limit()`. This is the format
+ * grovedb 3.1.0 uses for both `GroveDBProof` (emitted by `prove_query`) and
+ * `Element` (stored as Merk leaf values).
+ *
+ * Wire format summary (from bincode-2.0.0-rc.3/src/varint/encode_unsigned.rs
+ * and encode_signed.rs):
+ *
+ *   Unsigned varint (big-endian):
+ *     0..=250           → 1 byte  (value as u8)
+ *     251..=65535       → 1 byte tag 0xFB + u16 BE
+ *     65536..=2^32-1    → 1 byte tag 0xFC + u32 BE
+ *     2^32..=2^64-1     → 1 byte tag 0xFD + u64 BE
+ *     2^64..=2^128-1    → 1 byte tag 0xFE + u128 BE
+ *
+ *   Signed varint: zigzag-encode first, then unsigned varint.
+ *     zigzag_i64(n)  = (n << 1) ^ (n >> 63)
+ *     zigzag_i128(n) = (n << 1) ^ (n >> 127)
+ *
+ *   Enum variant: u32-as-varint (so V0 is 0x00)
+ *   Vec<u8>/String: usize-as-varint (u64 form) + bytes
+ *   BTreeMap / Vec<T>: length-as-varint + entries
+ *   Option<T>: 1 byte tag (0=None, 1=Some) + T
+ *   bool: 1 byte (0 or 1)
+ *   Structs: fields in declaration order, no length prefix
  */
 
-import { GroveDBProof, GroveDBProofV0, LayerProof, ProveOptions, GroveDBVerificationError } from './types';
+import { GroveDBVerificationError } from './types';
 
-/**
- * Bincode reader for big-endian encoded data
- */
+const U16_TAG = 0xfb;
+const U32_TAG = 0xfc;
+const U64_TAG = 0xfd;
+const U128_TAG = 0xfe;
+
 export class BincodeReader {
-  private data: Uint8Array;
-  private offset: number = 0;
+  private view: DataView;
+  private offset: number;
 
-  constructor(data: Uint8Array) {
-    this.data = data;
+  constructor(private readonly data: Uint8Array) {
+    this.view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    this.offset = 0;
   }
 
-  /**
-   * Get current position
-   */
   position(): number {
     return this.offset;
   }
 
-  /**
-   * Check if there's more data
-   */
+  remaining(): number {
+    return this.data.length - this.offset;
+  }
+
   hasMore(): boolean {
     return this.offset < this.data.length;
   }
 
-  /**
-   * Read a single byte
-   */
-  readU8(): number {
-    if (this.offset >= this.data.length) {
-      throw new GroveDBVerificationError('Unexpected end of data reading u8');
+  private requireBytes(n: number, context: string): void {
+    if (this.offset + n > this.data.length) {
+      throw new GroveDBVerificationError(
+        `${context}: need ${n} bytes at offset ${this.offset}, only ${
+          this.data.length - this.offset
+        } remaining`,
+      );
     }
+  }
+
+  readU8(): number {
+    this.requireBytes(1, 'readU8');
     return this.data[this.offset++];
   }
 
-  /**
-   * Read a big-endian u16
-   */
-  readU16(): number {
-    if (this.offset + 2 > this.data.length) {
-      throw new GroveDBVerificationError('Unexpected end of data reading u16');
-    }
-    const value = (this.data[this.offset] << 8) | this.data[this.offset + 1];
-    this.offset += 2;
-    return value;
-  }
-
-  /**
-   * Read a big-endian u32
-   */
-  readU32(): number {
-    if (this.offset + 4 > this.data.length) {
-      throw new GroveDBVerificationError('Unexpected end of data reading u32');
-    }
-    const value =
-      (this.data[this.offset] << 24) |
-      (this.data[this.offset + 1] << 16) |
-      (this.data[this.offset + 2] << 8) |
-      this.data[this.offset + 3];
-    this.offset += 4;
-    return value >>> 0; // Convert to unsigned
-  }
-
-  /**
-   * Read a big-endian u64 as bigint
-   */
-  readU64(): bigint {
-    if (this.offset + 8 > this.data.length) {
-      throw new GroveDBVerificationError('Unexpected end of data reading u64');
-    }
-    let value = 0n;
-    for (let i = 0; i < 8; i++) {
-      value = (value << 8n) | BigInt(this.data[this.offset + i]);
-    }
-    this.offset += 8;
-    return value;
-  }
-
-  /**
-   * Read a boolean
-   */
   readBool(): boolean {
-    const value = this.readU8();
-    if (value !== 0 && value !== 1) {
-      throw new GroveDBVerificationError(`Invalid boolean value: ${value}`);
-    }
-    return value === 1;
+    const b = this.readU8();
+    if (b === 0) return false;
+    if (b === 1) return true;
+    throw new GroveDBVerificationError(
+      `Invalid bool tag ${b} at offset ${this.offset - 1}`,
+    );
   }
 
   /**
-   * Read a length-prefixed byte array (bincode uses u64 for lengths)
+   * Read a variable-length unsigned integer. Returns a bigint since the wire
+   * format supports up to u128.
    */
-  readBytes(): Uint8Array {
-    const length = Number(this.readU64());
-    if (length > 1_000_000_000) {
-      throw new GroveDBVerificationError(`Suspiciously large byte array length: ${length}`);
+  readVarintU128(): bigint {
+    this.requireBytes(1, 'readVarint tag');
+    const tag = this.data[this.offset++];
+
+    if (tag <= 250) return BigInt(tag);
+
+    if (tag === U16_TAG) {
+      this.requireBytes(2, 'readVarint U16');
+      const v = this.view.getUint16(this.offset, false);
+      this.offset += 2;
+      return BigInt(v);
     }
-    if (this.offset + length > this.data.length) {
-      throw new GroveDBVerificationError(`Unexpected end of data reading ${length} bytes`);
+
+    if (tag === U32_TAG) {
+      this.requireBytes(4, 'readVarint U32');
+      const v = this.view.getUint32(this.offset, false);
+      this.offset += 4;
+      return BigInt(v);
     }
-    const bytes = this.data.slice(this.offset, this.offset + length);
-    this.offset += length;
-    return bytes;
+
+    if (tag === U64_TAG) {
+      this.requireBytes(8, 'readVarint U64');
+      const hi = this.view.getUint32(this.offset, false);
+      const lo = this.view.getUint32(this.offset + 4, false);
+      this.offset += 8;
+      return (BigInt(hi) << 32n) | BigInt(lo);
+    }
+
+    if (tag === U128_TAG) {
+      this.requireBytes(16, 'readVarint U128');
+      let v = 0n;
+      for (let i = 0; i < 16; i++) {
+        v = (v << 8n) | BigInt(this.data[this.offset + i]);
+      }
+      this.offset += 16;
+      return v;
+    }
+
+    throw new GroveDBVerificationError(
+      `Unknown varint tag 0x${tag.toString(16)} at offset ${this.offset - 1}`,
+    );
   }
 
   /**
-   * Read raw bytes without length prefix
+   * Read a varint as bigint (u64-range).
    */
-  readRawBytes(length: number): Uint8Array {
-    if (this.offset + length > this.data.length) {
-      throw new GroveDBVerificationError(`Unexpected end of data reading ${length} raw bytes`);
+  readVarintU64(): bigint {
+    return this.readVarintU128();
+  }
+
+  /**
+   * Read a varint that is expected to fit in a JS Number (<= 2^53-1).
+   */
+  readVarintAsNumber(): number {
+    const big = this.readVarintU128();
+    if (big > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new GroveDBVerificationError(
+        `Varint value ${big} exceeds Number.MAX_SAFE_INTEGER`,
+      );
     }
-    const bytes = this.data.slice(this.offset, this.offset + length);
-    this.offset += length;
-    return bytes;
+    return Number(big);
+  }
+
+  /**
+   * Read a zigzag-encoded signed i64 varint.
+   *
+   * zigzag_decode(v) = (v >> 1) ^ -(v & 1)
+   */
+  readVarintI64(): bigint {
+    const u = this.readVarintU128();
+    return (u >> 1n) ^ -(u & 1n);
+  }
+
+  /**
+   * Read a zigzag-encoded signed i128 varint.
+   */
+  readVarintI128(): bigint {
+    const u = this.readVarintU128();
+    return (u >> 1n) ^ -(u & 1n);
+  }
+
+  /**
+   * Read an enum variant tag. In bincode 2, enum discriminants are encoded as
+   * u32-as-varint.
+   */
+  readVariant(): number {
+    return this.readVarintAsNumber();
+  }
+
+  /**
+   * Read a Vec<u8> or any length-prefixed byte sequence.
+   */
+  readByteVec(): Uint8Array {
+    const len = this.readVarintAsNumber();
+    this.requireBytes(len, 'readByteVec body');
+    const out = this.data.slice(this.offset, this.offset + len);
+    this.offset += len;
+    return out;
+  }
+
+  /**
+   * Read a sequence length prefix (for Vec<T>, BTreeMap, etc).
+   */
+  readLength(): number {
+    return this.readVarintAsNumber();
+  }
+
+  /**
+   * Read `Option<Vec<u8>>`: 1 byte tag + optional bytes.
+   */
+  readOptionByteVec(): Uint8Array | null {
+    const tag = this.readU8();
+    if (tag === 0) return null;
+    if (tag === 1) return this.readByteVec();
+    throw new GroveDBVerificationError(
+      `Invalid Option tag ${tag} at offset ${this.offset - 1}`,
+    );
+  }
+
+  /**
+   * Read `Option<u8>`: 1 byte tag + optional single byte.
+   */
+  readOptionU8(): number | null {
+    const tag = this.readU8();
+    if (tag === 0) return null;
+    if (tag === 1) return this.readU8();
+    throw new GroveDBVerificationError(
+      `Invalid Option tag ${tag} at offset ${this.offset - 1}`,
+    );
+  }
+
+  /**
+   * Read `Vec<Vec<u8>>` (length + repeated byte vecs).
+   */
+  readVecOfByteVec(): Uint8Array[] {
+    const len = this.readLength();
+    const out: Uint8Array[] = [];
+    for (let i = 0; i < len; i++) out.push(this.readByteVec());
+    return out;
   }
 }
 
-/**
- * Decode a LayerProof from bincode
- */
-function decodeLayerProof(reader: BincodeReader): LayerProof {
-  // merk_proof: Vec<u8>
-  const merkProof = reader.readBytes();
-
-  // lower_layers: BTreeMap<Key, LayerProof>
-  const mapLength = Number(reader.readU64());
-  const lowerLayers = new Map<string, LayerProof>();
-
-  for (let i = 0; i < mapLength; i++) {
-    // Key is Vec<u8>
-    const key = reader.readBytes();
-    const keyHex = bytesToHex(key);
-
-    // Value is LayerProof (recursive)
-    const layerProof = decodeLayerProof(reader);
-
-    lowerLayers.set(keyHex, layerProof);
-  }
-
-  return { merkProof, lowerLayers };
-}
-
-/**
- * Decode ProveOptions from bincode
- */
-function decodeProveOptions(reader: BincodeReader): ProveOptions {
-  return {
-    decreaseLimitOnEmptySubQueryResult: reader.readBool()
-  };
-}
-
-/**
- * Decode GroveDBProofV0 from bincode
- */
-function decodeGroveDBProofV0(reader: BincodeReader): GroveDBProofV0 {
-  const rootLayer = decodeLayerProof(reader);
-  const proveOptions = decodeProveOptions(reader);
-
-  return { rootLayer, proveOptions };
-}
-
-/**
- * Decode a GroveDBProof from bincode-encoded bytes
- */
-export function decodeGroveDBProof(bytes: Uint8Array): GroveDBProof {
-  const reader = new BincodeReader(bytes);
-
-  // Read enum variant (u32 for bincode enums)
-  const variant = reader.readU32();
-
-  if (variant !== 0) {
-    throw new GroveDBVerificationError(`Unknown GroveDBProof version: ${variant}`);
-  }
-
-  const proof = decodeGroveDBProofV0(reader);
-
-  // Trailing bytes are acceptable - proof may include extra data for future compatibility
-
-  return { version: 0, proof };
-}
-
-/**
- * Helper: Convert bytes to hex string
- */
 export function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/**
- * Helper: Convert hex string to bytes
- */
 export function hexToBytes(hex: string): Uint8Array {
   const clean = hex.replace(/^0x/, '');
   if (clean.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(clean)) {
