@@ -41,11 +41,10 @@ export class WillowClient {
   constructor(config: WillowConfig) {
     this.config = config;
     this.auth = new WillowAuth(config.apiUrl);
-    this.data = new WillowData(config.apiUrl, this.auth, config.indexerUrl);
+    const cometUrl = config.consensusRpcUrl ?? deriveCometBftUrl(config.apiUrl);
+    this.data = new WillowData(config.apiUrl, this.auth, config.indexerUrl, cometUrl);
     this.files = new FileOperations(config.apiUrl, () => this.auth.getAuthHeaders('GET', '/files'));
 
-    // Derive CometBFT RPC URL from API URL (:303N → :2655N+(N-1)*100)
-    const cometUrl = config.consensusRpcUrl ?? deriveCometBftUrl(config.apiUrl);
     this.consensus = new ConsensusClient({
       consensusRpcUrl: cometUrl,
       apiUrl: config.apiUrl,

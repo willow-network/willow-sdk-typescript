@@ -83,6 +83,7 @@ export interface DataRecord {
 
 export interface ProofResponse {
   proof: string; // Hex encoded proof
+  height?: number; // Block height the proof was generated at
 }
 
 // Query Types

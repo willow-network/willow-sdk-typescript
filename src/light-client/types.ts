@@ -57,8 +57,8 @@ export interface Validator {
  */
 export function createValidator(data: any): Validator {
   return {
-    address: base64ToBytes(data.address),
-    pubKey: base64ToBytes(data.pub_key.value),
+    address: decodeBytes(data.address),
+    pubKey: base64ToBytes(data.pub_key.value), // pubkey is always base64
     votingPower: parseInt(data.voting_power),
     proposerPriority: parseInt(data.proposer_priority || '0')
   };
@@ -103,10 +103,11 @@ export interface BlockId {
  * Create block ID from CometBFT JSON response
  */
 export function createBlockId(data: any): BlockId {
+  const parts = data.parts ?? data.part_set_header;
   return {
-    hash: base64ToBytes(data.hash),
-    partSetHeaderTotal: parseInt(data.part_set_header.total),
-    partSetHeaderHash: base64ToBytes(data.part_set_header.hash)
+    hash: decodeBytes(data.hash),
+    partSetHeaderTotal: parseInt(parts.total),
+    partSetHeaderHash: decodeBytes(parts.hash)
   };
 }
 
@@ -145,15 +146,15 @@ export function createHeader(data: any): Header {
     height: parseInt(data.height),
     time: new Date(data.time),
     lastBlockId,
-    lastCommitHash: base64ToBytes(data.last_commit_hash),
-    dataHash: base64ToBytes(data.data_hash),
-    validatorsHash: base64ToBytes(data.validators_hash),
-    nextValidatorsHash: base64ToBytes(data.next_validators_hash),
-    consensusHash: base64ToBytes(data.consensus_hash),
-    appHash: base64ToBytes(data.app_hash),
-    lastResultsHash: base64ToBytes(data.last_results_hash),
-    evidenceHash: base64ToBytes(data.evidence_hash),
-    proposerAddress: base64ToBytes(data.proposer_address)
+    lastCommitHash: decodeBytes(data.last_commit_hash || ''),
+    dataHash: decodeBytes(data.data_hash || ''),
+    validatorsHash: decodeBytes(data.validators_hash || ''),
+    nextValidatorsHash: decodeBytes(data.next_validators_hash || ''),
+    consensusHash: decodeBytes(data.consensus_hash || ''),
+    appHash: decodeBytes(data.app_hash || ''),
+    lastResultsHash: decodeBytes(data.last_results_hash || ''),
+    evidenceHash: decodeBytes(data.evidence_hash || ''),
+    proposerAddress: decodeBytes(data.proposer_address || '')
   };
 }
 
@@ -173,9 +174,9 @@ export interface CommitSig {
 export function createCommitSig(data: any): CommitSig {
   return {
     blockIdFlag: parseInt(data.block_id_flag),
-    validatorAddress: base64ToBytes(data.validator_address),
+    validatorAddress: decodeBytes(data.validator_address || ''),
     timestamp: new Date(data.timestamp),
-    signature: data.signature ? base64ToBytes(data.signature) : undefined
+    signature: data.signature ? base64ToBytes(data.signature) : undefined // signature is always base64
   };
 }
 
@@ -216,10 +217,15 @@ export interface LightBlock {
  * Create light block from CometBFT JSON response
  */
 export function createLightBlock(data: any, provider?: string): LightBlock {
+  // CometBFT /block returns "last_commit" at the block level.
+  // Some internal representations use "commit".
+  const commitData = data.last_commit ?? data.commit;
+  // Validators may be provided inline or fetched separately.
+  const validatorsData = data.validators ?? { validators: [] };
   return {
     header: createHeader(data.header),
-    commit: createCommit(data.commit),
-    validators: createValidatorSet(data.validators),
+    commit: createCommit(commitData),
+    validators: createValidatorSet(validatorsData),
     nextValidators: data.next_validators ? createValidatorSet(data.next_validators) : undefined,
     provider
   };
@@ -380,6 +386,26 @@ export function createLightClientConfig(config: Partial<LightClientConfig> & Pic
 }
 
 // Utility functions
+
+/**
+ * Decode a byte string that may be hex (CometBFT 1.x) or base64 (older).
+ * Auto-detects: if all chars are hex digits, treat as hex; otherwise base64.
+ */
+export function decodeBytes(s: string): Uint8Array {
+  if (!s) return new Uint8Array(0);
+  if (/^[0-9a-fA-F]*$/.test(s) && s.length % 2 === 0) {
+    return hexToByteArray(s);
+  }
+  return base64ToBytes(s);
+}
+
+function hexToByteArray(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+  }
+  return bytes;
+}
 
 /**
  * Convert base64 string to Uint8Array

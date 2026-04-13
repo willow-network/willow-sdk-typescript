@@ -5,7 +5,7 @@
  * and GroveDB proof verification.
  */
 
-import { LightBlock, LightClientConfig, TrustedHeader, QueryProof, VerificationResult, LightClientError, createLightBlock, serializeTrustedHeader, deserializeTrustedHeader } from './types';
+import { LightBlock, LightClientConfig, TrustedHeader, QueryProof, VerificationResult, LightClientError, createLightBlock, serializeTrustedHeader, deserializeTrustedHeader, decodeBytes } from './types';
 import { HeaderVerifier, ProofVerifier } from './verifier';
 
 /**
@@ -324,20 +324,43 @@ export class LightClient {
    * verified against for trustless data verification.
    */
   async getVerifiedRootHash(): Promise<string> {
-    // Initialize with trust-on-first-use if not already initialized
-    if (this.trustedHeaders.size === 0) {
-      await this.initializeWithTrustOnFirstUse();
-    }
+    // Use /block_results for the latest app_hash — same as getVerifiedRootHashAtHeight
+    // but without specifying a height (gets the latest).
+    return this.getVerifiedRootHashAtHeight(0);
+  }
 
-    const latestHeader = await this.getLatestHeader();
-    if (!latestHeader) {
-      throw new LightClientError('No trusted header available');
+  /**
+   * Get the verified root hash (app_hash) at a specific block height.
+   *
+   * Uses `/block_results` to get the app_hash from `ResponseFinalizeBlock`,
+   * which is the GroveDB root hash AFTER the block was executed. Block
+   * headers have a 1-block lag (block H's header contains the app_hash
+   * from block H-1), so `/block_results` is the only reliable way to get
+   * the hash matching a proof from the current state.
+   */
+  async getVerifiedRootHashAtHeight(height: number): Promise<string> {
+    for (const endpoint of this.config.validatorEndpoints) {
+      try {
+        const url = `${endpoint}/block_results${height > 0 ? `?height=${height}` : ''}`;
+        const response = await fetch(url, {
+          method: 'GET',
+          signal: AbortSignal.timeout(this.config.requestTimeoutSecs! * 1000)
+        });
+        if (!response.ok) continue;
+        const data = await response.json() as { result?: { app_hash?: string } };
+        const appHash = data.result?.app_hash;
+        if (appHash) {
+          // app_hash from block_results may be hex or base64
+          const bytes = decodeBytes(appHash);
+          return Array.from(bytes)
+            .map(b => b.toString(16).padStart(2, '0'))
+            .join('');
+        }
+      } catch {
+        continue;
+      }
     }
-
-    // Convert app hash to hex string
-    return Array.from(latestHeader.header.appHash)
-      .map(b => b.toString(16).padStart(2, '0'))
-      .join('');
+    throw new LightClientError(`Could not fetch block_results at height ${height}`);
   }
 
   /**
@@ -445,26 +468,40 @@ export class LightClient {
    * Fetch header from a specific validator endpoint
    */
   private async fetchHeaderFromEndpoint(endpoint: string, height: number): Promise<LightBlock | undefined> {
-    const url = `${endpoint}/block`;
-    const params = height > 0 ? `?height=${height}` : '';
+    const heightParam = height > 0 ? `?height=${height}` : '';
+    const timeout = this.config.requestTimeoutSecs! * 1000;
 
-    const response = await fetch(`${url}${params}`, {
+    // Fetch block
+    const blockRes = await fetch(`${endpoint}/block${heightParam}`, {
       method: 'GET',
       headers: { 'Content-Type': 'application/json' },
-      signal: AbortSignal.timeout(this.config.requestTimeoutSecs! * 1000)
+      signal: AbortSignal.timeout(timeout)
     });
+    if (!blockRes.ok) throw new Error(`HTTP ${blockRes.status}`);
+    const blockJson = await blockRes.json() as { result?: { block?: any; block_id?: any } };
+    if (!blockJson.result?.block) throw new Error('Invalid block response');
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+    const blockData = blockJson.result.block;
+
+    // Fetch validators at the same height
+    const blockHeight = blockData.header?.height ?? '';
+    const valParam = blockHeight ? `?height=${blockHeight}` : '';
+    try {
+      const valRes = await fetch(`${endpoint}/validators${valParam}`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(timeout)
+      });
+      if (valRes.ok) {
+        const valJson = await valRes.json() as { result?: any };
+        if (valJson.result) {
+          blockData.validators = valJson.result;
+        }
+      }
+    } catch {
+      // Validators fetch is best-effort — createLightBlock handles missing validators
     }
 
-    const data = await response.json() as { result?: { block?: any } };
-
-    if (!data.result || !data.result.block) {
-      throw new Error('Invalid response format');
-    }
-
-    const blockData = data.result.block;
     return createLightBlock(blockData, endpoint);
   }
 

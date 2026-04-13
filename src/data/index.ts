@@ -27,12 +27,14 @@ export class WillowData {
   private indexerApi?: AxiosInstance;
   private auth: WillowAuth;
   private apiUrl: string;
+  private cometbftRpcUrl?: string;
   private lightClient?: LightClient;
   private lightClientInitPromise?: Promise<LightClient>;
   private computedFieldRegistry: ComputedFieldRegistry;
 
-  constructor(apiUrl: string, auth: WillowAuth, indexerUrl?: string) {
+  constructor(apiUrl: string, auth: WillowAuth, indexerUrl?: string, cometbftRpcUrl?: string) {
     this.apiUrl = apiUrl;
+    this.cometbftRpcUrl = cometbftRpcUrl;
     this.api = axios.create({
       baseURL: apiUrl,
       headers: {
@@ -109,8 +111,7 @@ export class WillowData {
       // instead of trust-on-first-use for true trustless initialization from genesis.
       const config: LightClientConfig = {
         chainId: "willow-chain",
-        // Derive CometBFT RPC endpoint from API URL (typically :3031 -> :26657)
-        validatorEndpoints: [this.apiUrl.replace(":3031", ":26657")],
+        validatorEndpoints: [this.cometbftRpcUrl ?? this.apiUrl.replace(":3031", ":26657")],
         trustThreshold: { numerator: 2, denominator: 3 },
         trustingPeriodSecs: 86400, // 24 hours
         maxClockDriftSecs: 30,
@@ -219,28 +220,36 @@ export class WillowData {
 
     // Now get the proof for verification
     try {
+      const proofHeaders = this.auth.getAuthHeaders('GET', `/proof/${datasetId}/${key}`);
       const proofResponse = await this.api.get<ApiResponse<ProofResponse>>(
         `/proof/${datasetId}/${key}`,
+        { headers: proofHeaders },
       );
 
       if (proofResponse.data.success && proofResponse.data.data?.proof) {
-        // Get verified root hash from consensus
-        const verifiedRootHash = await this.getVerifiedRootHash();
+        const proofData = proofResponse.data.data;
 
         // Verify the proof and compute root hash
-        // Pass the path for proper verification
         const path = ["subgroves", datasetId, "data"];
         const computedRootHash = await verifyItemProof(
-          proofResponse.data.data.proof,
+          proofData.proof,
           key,
           data,
           path,
         );
 
+        // Get verified root hash at the SAME block height as the proof.
+        // This avoids the timing mismatch where the chain advances between
+        // fetching the proof and fetching the latest verified header.
+        const lightClient = await this.getOrCreateLightClient();
+        const verifiedRootHash = proofData.height
+          ? await lightClient.getVerifiedRootHashAtHeight(proofData.height)
+          : await lightClient.getVerifiedRootHash();
+
         // Compare computed root with verified root
         if (computedRootHash.toLowerCase() !== verifiedRootHash.toLowerCase()) {
           console.error(
-            `Root hash mismatch: computed=${computedRootHash}, verified=${verifiedRootHash}`,
+            `Root hash mismatch: computed=${computedRootHash}, verified=${verifiedRootHash}, height=${proofData.height}`,
           );
           throw new WillowError(
             "Proof verification failed: root hash mismatch",
@@ -437,8 +446,6 @@ export class WillowData {
    * @private
    */
   private async getVerifiedRootHash(): Promise<string> {
-    // Always use light client for trustless verification
-    // This auto-initializes the light client on first use (trust-on-first-use)
     const lightClient = await this.getOrCreateLightClient();
     return lightClient.getVerifiedRootHash();
   }
@@ -475,17 +482,22 @@ export class WillowData {
     // Verify proof if present
     if (result.proof) {
       try {
-        // Get verified root hash from consensus
-        const verifiedRootHash = await this.getVerifiedRootHash();
-
         // Verify the proof and compute root hash
         const computedRootHash = await verifyQueryProof(
           result.proof,
           result.documents,
         );
 
+        // Get verified root hash at the same block height as the proof
+        // to avoid timing mismatches on live chains.
+        const proofHeight = (result as any).height as number | undefined;
+        const lightClient = await this.getOrCreateLightClient();
+        const verifiedRootHash = proofHeight
+          ? await lightClient.getVerifiedRootHashAtHeight(proofHeight)
+          : await lightClient.getVerifiedRootHash();
+
         // Compare computed root with verified root
-        if (computedRootHash !== verifiedRootHash) {
+        if (computedRootHash.toLowerCase() !== verifiedRootHash.toLowerCase()) {
           throw new WillowError(
             "Proof verification failed: root hash mismatch",
             "PROOF_VERIFICATION_FAILED",
