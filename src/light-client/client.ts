@@ -5,8 +5,16 @@
  * and GroveDB proof verification.
  */
 
-import { LightBlock, LightClientConfig, TrustedHeader, QueryProof, VerificationResult, LightClientError, createLightBlock, serializeTrustedHeader, deserializeTrustedHeader, decodeBytes } from './types';
+import { LightBlock, LightClientConfig, TrustedHeader, GroveDBQueryProof, VerificationResult, LightClientError, createLightBlock, serializeTrustedHeader, deserializeTrustedHeader, decodeBytes } from './types';
 import { HeaderVerifier, ProofVerifier } from './verifier';
+
+/** Decode an app_hash from CometBFT (hex or base64) to a lowercase hex string. */
+function appHashToHex(appHash: string): string {
+  const bytes = decodeBytes(appHash);
+  return Array.from(bytes)
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
 
 /**
  * CometBFT light client with GroveDB proof verification
@@ -245,7 +253,7 @@ export class LightClient {
    * Verify a GroveDB query proof against verified headers
    */
   async verifyQueryProof(
-    proof: QueryProof,
+    proof: GroveDBQueryProof,
     height?: number
   ): Promise<VerificationResult> {
     const verifyHeight = height || proof.height;
@@ -332,35 +340,134 @@ export class LightClient {
   /**
    * Get the verified root hash (app_hash) at a specific block height.
    *
-   * Uses `/block_results` to get the app_hash from `ResponseFinalizeBlock`,
-   * which is the GroveDB root hash AFTER the block was executed. Block
-   * headers have a 1-block lag (block H's header contains the app_hash
-   * from block H-1), so `/block_results` is the only reliable way to get
-   * the hash matching a proof from the current state.
+   * In CometBFT, block H's FinalizeBlock produces an app_hash that represents
+   * state AFTER H. That hash is then committed into block H+1's header as
+   * `header.app_hash`. So:
+   *
+   *   - `block H+1.header.app_hash` = state after H (what we want for height H)
+   *   - `status.latest_app_hash` = state after the latest committed block
+   *
+   * We used to use `/block_results` here, but CometBFT 0.38+ does NOT populate
+   * `app_hash` in that response — it's intentionally empty. The canonical
+   * source is the next block's header, with `/status` as the fallback when
+   * height is the very latest (H+1 doesn't exist yet).
+   *
+   * When `height <= 0`, we fetch the latest app_hash via `/status`.
    */
   async getVerifiedRootHashAtHeight(height: number): Promise<string> {
     for (const endpoint of this.config.validatorEndpoints) {
       try {
-        const url = `${endpoint}/block_results${height > 0 ? `?height=${height}` : ''}`;
-        const response = await fetch(url, {
-          method: 'GET',
-          signal: AbortSignal.timeout(this.config.requestTimeoutSecs! * 1000)
-        });
-        if (!response.ok) continue;
-        const data = await response.json() as { result?: { app_hash?: string } };
-        const appHash = data.result?.app_hash;
-        if (appHash) {
-          // app_hash from block_results may be hex or base64
-          const bytes = decodeBytes(appHash);
-          return Array.from(bytes)
-            .map(b => b.toString(16).padStart(2, '0'))
-            .join('');
-        }
+        const hash = await this.fetchAppHashForHeight(endpoint, height);
+        if (hash) return hash;
       } catch {
         continue;
       }
     }
-    throw new LightClientError(`Could not fetch block_results at height ${height}`);
+    throw new LightClientError(`Could not fetch app_hash for height ${height} from any endpoint`);
+  }
+
+  /**
+   * Fetches `app_hash` for the state AFTER the given block height.
+   *
+   * Strategy:
+   *   - If height <= 0: use `/status.latest_app_hash`.
+   *   - Otherwise: try `/block?height=height+1` for `header.app_hash`.
+   *     If H+1 doesn't exist yet, poll `/status` — when the chain catches
+   *     up (latest >= H+1) retry the block fetch; if chain is exactly at H,
+   *     use `status.latest_app_hash` directly.
+   *
+   * Retries for up to `requestTimeoutSecs` seconds to handle the common
+   * race where the proof was generated at the current latest height but
+   * H+1 hasn't been produced yet by the time we query.
+   */
+  private async fetchAppHashForHeight(
+    endpoint: string,
+    height: number
+  ): Promise<string | null> {
+    const timeoutMs = this.config.requestTimeoutSecs! * 1000;
+
+    if (height <= 0) {
+      return this.fetchLatestAppHash(endpoint, timeoutMs);
+    }
+
+    const deadline = Date.now() + timeoutMs;
+    const perAttemptTimeoutMs = Math.max(1000, Math.floor(timeoutMs / 4));
+
+    while (Date.now() < deadline) {
+      // Try next block's header first.
+      const fromNextBlock = await this.tryFetchBlockHeaderAppHash(
+        endpoint,
+        height + 1,
+        perAttemptTimeoutMs
+      );
+      if (fromNextBlock) return fromNextBlock;
+
+      // Block H+1 not available. Check where the chain is.
+      const status = await this.fetchStatus(endpoint, perAttemptTimeoutMs);
+      if (!status) {
+        return null;
+      }
+      if (status.latestHeight === height) {
+        // Chain is exactly at H — status.latest_app_hash is state after H.
+        return status.latestAppHash;
+      }
+      if (status.latestHeight > height) {
+        // Chain advanced past H but /block?height=H+1 still didn't return.
+        // Transient — brief delay then retry.
+        await new Promise(resolve => setTimeout(resolve, 200));
+        continue;
+      }
+      // Chain is behind H — caller asked for a future block. Wait briefly.
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    return null;
+  }
+
+  private async tryFetchBlockHeaderAppHash(
+    endpoint: string,
+    height: number,
+    timeoutMs: number
+  ): Promise<string | null> {
+    try {
+      const response = await fetch(`${endpoint}/block?height=${height}`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(timeoutMs)
+      });
+      if (!response.ok) return null;
+      const data = await response.json() as {
+        result?: { block?: { header?: { app_hash?: string } } }
+      };
+      const appHash = data.result?.block?.header?.app_hash;
+      return appHash ? appHashToHex(appHash) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async fetchLatestAppHash(endpoint: string, timeoutMs: number): Promise<string | null> {
+    const status = await this.fetchStatus(endpoint, timeoutMs);
+    return status?.latestAppHash ?? null;
+  }
+
+  private async fetchStatus(
+    endpoint: string,
+    timeoutMs: number
+  ): Promise<{ latestHeight: number; latestAppHash: string } | null> {
+    const response = await fetch(`${endpoint}/status`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    if (!response.ok) return null;
+    const data = await response.json() as {
+      result?: { sync_info?: { latest_block_height?: string; latest_app_hash?: string } }
+    };
+    const info = data.result?.sync_info;
+    if (!info?.latest_app_hash || !info.latest_block_height) return null;
+    return {
+      latestHeight: parseInt(info.latest_block_height, 10),
+      latestAppHash: appHashToHex(info.latest_app_hash)
+    };
   }
 
   /**

@@ -8,7 +8,7 @@
 import { ed25519 } from '@noble/curves/ed25519';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
-import { LightBlock, Header, Commit, ValidatorSet, CommitSig, TrustThreshold, VerificationResult, LightClientError, QueryProof, getTrustFraction, bytesToHex } from './types';
+import { LightBlock, Header, Commit, ValidatorSet, CommitSig, TrustThreshold, VerificationResult, LightClientError, GroveDBQueryProof, getTrustFraction, bytesToHex } from './types';
 
 /**
  * Verifies block headers using CometBFT light client protocol
@@ -262,7 +262,7 @@ export class ProofVerifier {
    * Verify a GroveDB query proof against a trusted app hash
    */
   async verifyQueryProof(
-    proof: QueryProof,
+    proof: GroveDBQueryProof,
     trustedAppHash: Uint8Array,
     queryResult?: Uint8Array[]
   ): Promise<VerificationResult> {
@@ -358,7 +358,7 @@ export class ProofVerifier {
   ): Promise<boolean> {
     // For full inclusion proof verification, use server-assisted verification
     // This requires parsing the GroveDB proof format
-    const queryProof: QueryProof = {
+    const queryProof: GroveDBQueryProof = {
       proof: proofBytes,
       pathQuery: { key },
       height: 0,
@@ -379,7 +379,7 @@ export class ProofVerifier {
   ): Promise<boolean> {
     // Absence proofs in GroveDB show that a key doesn't exist
     // For full verification, use server-assisted verification
-    const queryProof: QueryProof = {
+    const queryProof: GroveDBQueryProof = {
       proof: proofBytes,
       pathQuery: { key },
       height: 0,

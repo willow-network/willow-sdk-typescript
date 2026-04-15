@@ -73,7 +73,7 @@ export type {
   ValidatorSet,
   Validator,
   TrustedHeader,
-  QueryProof,
+  GroveDBQueryProof,
 } from "./light-client";
 
 // Export consensus client (with explicit naming to avoid conflicts)

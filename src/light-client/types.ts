@@ -288,9 +288,16 @@ export function deserializeTrustedHeader(data: any): TrustedHeader {
 }
 
 /**
- * GroveDB query proof with verification metadata
+ * GroveDB query proof with verification metadata.
+ *
+ * This is the *internal* proof format the light client operates on
+ * (raw bytes + path query). It is distinct from the top-level
+ * `QueryProof` in `../types/index.ts`, which is the wire shape
+ * returned by the server for SQL / GraphQL query responses. The two
+ * used to share a name and caused tsup DTS naming collisions
+ * (`QueryProof$1`) in downstream packages.
  */
-export interface QueryProof {
+export interface GroveDBQueryProof {
   proof: Uint8Array;
   pathQuery: any;
   height: number;
@@ -298,9 +305,9 @@ export interface QueryProof {
 }
 
 /**
- * Serialize query proof
+ * Serialize a GroveDB query proof for transport.
  */
-export function serializeQueryProof(proof: QueryProof): any {
+export function serializeQueryProof(proof: GroveDBQueryProof): any {
   return {
     proof: bytesToBase64(proof.proof),
     pathQuery: proof.pathQuery,
@@ -310,9 +317,9 @@ export function serializeQueryProof(proof: QueryProof): any {
 }
 
 /**
- * Deserialize query proof
+ * Deserialize a GroveDB query proof from transport.
  */
-export function deserializeQueryProof(data: any): QueryProof {
+export function deserializeQueryProof(data: any): GroveDBQueryProof {
   return {
     proof: base64ToBytes(data.proof),
     pathQuery: data.pathQuery,
