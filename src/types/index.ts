@@ -4,7 +4,17 @@ import { ProofVerificationOptions } from '../proof';
 
 export interface WillowConfig {
   apiUrl: string;
-  /** Optional indexer node URL. When set, GraphQL and SQL queries are routed here. */
+  /**
+   * Optional explicit indexer node URL. When set, `source: 'indexer'` and
+   * `source: 'auto'` queries route directly to this URL and skip the
+   * `GET /indexers` discovery round-trip. When unset (the common case), the
+   * SDK discovers indexers automatically via the validator's registry.
+   *
+   * Use cases for the override:
+   * - Local dev: avoid a tiny extra RTT on every query.
+   * - Pinning: always hit the operator's own indexer (enterprise, paid).
+   * - Debugging: isolate which indexer is serving a request.
+   */
   indexerUrl?: string;
   /** Optional CometBFT RPC URL for consensus transactions. Derived from apiUrl if omitted. */
   consensusRpcUrl?: string;
@@ -12,6 +22,46 @@ export interface WillowConfig {
   privateKey?: string;
   proofVerificationOptions?: ProofVerificationOptions;
 }
+
+/**
+ * Which backend should serve a query.
+ *
+ * - `'validator'`: consensus-verified chain-tip. Every row comes with
+ *   Merkle proofs. Fails fast for `VerifyOnly` subgroves (validator
+ *   never stored the data).
+ * - `'indexer'`: full history + analytics. Trust is sampling/dispute based.
+ *   Fails if no indexer serves the subgrove or all reachable ones fail.
+ * - `'auto'` (default): indexer if any serves this subgrove, otherwise
+ *   validator. On indexer failure, falls back to validator and flags
+ *   the result with `fallback: true`.
+ */
+export type QuerySource = "validator" | "indexer" | "auto";
+
+export interface GraphQLQueryOptions {
+  source?: QuerySource;
+  variables?: Record<string, any>;
+  operationName?: string;
+}
+
+export interface SqlQueryOptions {
+  source?: QuerySource;
+  includeProof?: boolean;
+}
+
+/** Result envelope surfacing which backend actually served a query. */
+export interface RoutedQueryResult<T> {
+  /** Raw response body from the backend. */
+  result: T;
+  /** Backend that served this query. */
+  source: "validator" | "indexer";
+  /** DID of the indexer that served (only present when `source === 'indexer'`). */
+  indexerDid?: string;
+  /** True when `'auto'` routing fell back from indexer → validator. */
+  fallback: boolean;
+}
+
+export type GraphQLQueryResult = RoutedQueryResult<any>;
+export type SqlQueryResult = RoutedQueryResult<SqlQueryResponse>;
 
 export interface ApiResponse<T = any> {
   success: boolean;

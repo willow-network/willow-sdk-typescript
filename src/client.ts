@@ -2,6 +2,8 @@ import { WillowAuth, signEd25519 } from "./auth";
 import { WillowData } from "./data";
 import { FileOperations } from "./files";
 import { ConsensusClient } from "./consensus";
+import { WillowIndexers } from "./indexers";
+import { WillowSubscriptions } from "./subscriptions";
 import {
   WillowConfig,
   DidDocument,
@@ -10,7 +12,10 @@ import {
   DataRecord,
   QueryRequest,
   QueryResponse,
-  SqlQueryResponse,
+  SqlQueryResult,
+  SqlQueryOptions,
+  GraphQLQueryResult,
+  GraphQLQueryOptions,
 } from "./types";
 import { configureProofVerification, ProofVerificationOptions } from "./proof";
 import { ComputedFieldSet } from "./computed-fields";
@@ -37,12 +42,26 @@ export class WillowClient {
   public data: WillowData;
   public files: FileOperations;
   public consensus: ConsensusClient;
+  /** Indexer discovery client (reads validator's `/indexers` with 30s cache). */
+  public indexers: WillowIndexers;
+  /** GraphQL subscription client (WebSocket → validator `/graphql/ws`). */
+  public subscriptions: WillowSubscriptions;
 
   constructor(config: WillowConfig) {
     this.config = config;
     this.auth = new WillowAuth(config.apiUrl);
     const cometUrl = config.consensusRpcUrl ?? deriveCometBftUrl(config.apiUrl);
-    this.data = new WillowData(config.apiUrl, this.auth, config.indexerUrl, cometUrl);
+
+    // Discovery layer. When the caller set `indexerUrl` explicitly, the
+    // instance short-circuits discovery and returns a synthetic single-
+    // entry list so the data-layer routing code stays uniform.
+    this.indexers = new WillowIndexers(config.apiUrl, {
+      indexerUrl: config.indexerUrl,
+    });
+
+    this.data = new WillowData(config.apiUrl, this.auth, this.indexers, cometUrl);
+    this.subscriptions = new WillowSubscriptions(config.apiUrl);
+
     this.files = new FileOperations(config.apiUrl, () => this.auth.getAuthHeaders('GET', '/files'));
 
     this.consensus = new ConsensusClient({
@@ -259,13 +278,32 @@ export class WillowClient {
 
   /**
    * Execute a SQL query against a subgrove.
+   *
+   * Routes to an indexer (history + analytics) or the validator (chain-tip,
+   * consensus-verified) based on `options.source`. See `QuerySource` in
+   * `./types` for details.
    */
   async sqlQuery(
     subgroveId: string,
     sql: string,
-    options?: { includeProof?: boolean },
-  ): Promise<SqlQueryResponse> {
+    options?: SqlQueryOptions,
+  ): Promise<SqlQueryResult> {
     return this.data.sqlQuery(subgroveId, sql, options);
+  }
+
+  /**
+   * Execute a GraphQL query against a subgrove.
+   *
+   * Routes to an indexer (history + analytics) or the validator (chain-tip,
+   * consensus-verified) based on `options.source`. See `QuerySource` in
+   * `./types` for details.
+   */
+  async graphqlQuery(
+    subgroveId: string,
+    query: string,
+    options?: GraphQLQueryOptions,
+  ): Promise<GraphQLQueryResult> {
+    return this.data.graphqlQuery(subgroveId, query, options);
   }
 
   /**

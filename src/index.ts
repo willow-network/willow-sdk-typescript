@@ -10,7 +10,19 @@ export {
   generateEd25519KeyPair,
   getEd25519PublicKey,
 } from "./auth";
-export { WillowData, extendQueryResponse, QueryResponseExt } from "./data";
+export {
+  WillowData,
+  extendQueryResponse,
+  QueryResponseExt,
+  ValidatorHasNoDataError,
+  NoIndexersReachableError,
+} from "./data";
+
+// Indexer discovery + subscription clients
+export { WillowIndexers, effectiveQueryEndpoint } from "./indexers";
+export type { ApiIndexerInfo, WillowIndexersOptions } from "./indexers";
+export { WillowSubscriptions } from "./subscriptions";
+export type { SubscribeOptions, UnsubscribeFn } from "./subscriptions";
 
 // Export all types
 export * from "./types";

@@ -12,6 +12,11 @@ import {
   HistoricalQueryResponse,
   CheckpointInfo,
   SqlQueryResponse,
+  GraphQLQueryResult,
+  GraphQLQueryOptions,
+  SqlQueryOptions,
+  SqlQueryResult,
+  QuerySource,
 } from "../types";
 import { WillowAuth } from "../auth";
 import { verifyQueryProof, verifyItemProof } from "../proof";
@@ -21,34 +26,57 @@ import {
   ComputedFieldSet,
   applyComputedFieldsToResponse,
 } from "../computed-fields";
+import {
+  WillowIndexers,
+  ApiIndexerInfo,
+  effectiveQueryEndpoint,
+} from "../indexers";
+
+export class ValidatorHasNoDataError extends WillowError {
+  constructor(subgroveId: string, reason: string) {
+    super(
+      `Validator cannot serve data for subgrove "${subgroveId}": ${reason}`,
+      "VALIDATOR_HAS_NO_DATA",
+    );
+    this.name = "ValidatorHasNoDataError";
+  }
+}
+
+export class NoIndexersReachableError extends WillowError {
+  constructor(subgroveId: string, details: string) {
+    super(
+      `No indexer could serve subgrove "${subgroveId}": ${details}`,
+      "NO_INDEXERS_REACHABLE",
+    );
+    this.name = "NoIndexersReachableError";
+  }
+}
 
 export class WillowData {
   private api: AxiosInstance;
-  private indexerApi?: AxiosInstance;
   private auth: WillowAuth;
   private apiUrl: string;
   private cometbftRpcUrl?: string;
   private lightClient?: LightClient;
   private lightClientInitPromise?: Promise<LightClient>;
   private computedFieldRegistry: ComputedFieldRegistry;
+  private indexers: WillowIndexers;
 
-  constructor(apiUrl: string, auth: WillowAuth, indexerUrl?: string, cometbftRpcUrl?: string) {
+  constructor(
+    apiUrl: string,
+    auth: WillowAuth,
+    indexers: WillowIndexers,
+    cometbftRpcUrl?: string,
+  ) {
     this.apiUrl = apiUrl;
     this.cometbftRpcUrl = cometbftRpcUrl;
+    this.indexers = indexers;
     this.api = axios.create({
       baseURL: apiUrl,
       headers: {
         "Content-Type": "application/json",
       },
     });
-    if (indexerUrl) {
-      this.indexerApi = axios.create({
-        baseURL: indexerUrl,
-        headers: {
-          "Content-Type": "application/json",
-        },
-      });
-    }
     this.auth = auth;
     this.computedFieldRegistry = new ComputedFieldRegistry();
   }
@@ -740,28 +768,150 @@ export class WillowData {
   /**
    * Execute a SQL query against a subgrove with optional Merkle proof.
    *
+   * Routes to the validator (chain-tip) or an indexer (full history) based
+   * on `options.source`. Defaults to `'auto'`: prefers an indexer when one
+   * serves this subgrove, falling back to the validator's chain-tip data.
+   *
    * @param subgroveId - Subgrove ID to query
    * @param sql - SQL SELECT query string
-   * @param options - Query options
-   * @returns SQL query response with columns, rows, and optional proof
+   * @param options - Query options including source selection
+   * @returns SQL query response plus routing metadata (`source`, `fallback`)
    */
   async sqlQuery(
     subgroveId: string,
     sql: string,
-    options?: { includeProof?: boolean },
-  ): Promise<SqlQueryResponse> {
-    const client = this.indexerApi ?? this.api;
-    const headers = this.auth.getAuthHeaders('POST', `/sql/${subgroveId}`);
-    const response = await client.post<SqlQueryResponse>(
-      `/sql/${subgroveId}`,
-      {
-        query: sql,
-        include_proof: options?.includeProof ?? false,
-      },
-      { headers },
-    );
+    options?: SqlQueryOptions,
+  ): Promise<SqlQueryResult> {
+    const body = {
+      query: sql,
+      include_proof: options?.includeProof ?? false,
+    };
 
-    return response.data;
+    return this.routeQuery<SqlQueryResponse>(
+      subgroveId,
+      "sql",
+      body,
+      options?.source ?? "auto",
+    );
+  }
+
+  /**
+   * Execute a GraphQL query against a subgrove.
+   *
+   * Routes to the validator (chain-tip, consensus-verified) or an indexer
+   * (full history, analytics-friendly) based on `options.source`. Defaults
+   * to `'auto'`.
+   *
+   * @param subgroveId - Subgrove ID to query
+   * @param query - GraphQL query string
+   * @param options - Query options including source selection and variables
+   * @returns GraphQL response plus routing metadata (`source`, `fallback`)
+   */
+  async graphqlQuery(
+    subgroveId: string,
+    query: string,
+    options?: GraphQLQueryOptions,
+  ): Promise<GraphQLQueryResult> {
+    const body: Record<string, unknown> = { query };
+    if (options?.variables) body.variables = options.variables;
+    if (options?.operationName) body.operationName = options.operationName;
+
+    return this.routeQuery(
+      subgroveId,
+      "graphql",
+      body,
+      options?.source ?? "auto",
+    );
+  }
+
+  /**
+   * Shared routing helper for `/graphql/:subgrove` and `/sql/:subgrove`.
+   *
+   * Behaviour by source:
+   * - `'validator'`: POST to `{apiUrl}/{path}/:sg`; surface errors as-is.
+   *   When the validator has no data (VerifyOnly subgrove, pruned retention),
+   *   throws `ValidatorHasNoDataError` instead of silently falling back.
+   * - `'indexer'`: walk the discovery-cached indexer list (or a synthetic
+   *   single-entry list when `indexerUrl` was configured), try each in
+   *   performance order, and throw `NoIndexersReachableError` if all fail.
+   * - `'auto'` (default): try an indexer first if any serves the subgrove;
+   *   fall back to the validator on any indexer failure, annotating the
+   *   result with `fallback: true`.
+   */
+  private async routeQuery<T>(
+    subgroveId: string,
+    path: "graphql" | "sql",
+    body: unknown,
+    source: QuerySource,
+  ): Promise<{ result: T; source: "validator" | "indexer"; indexerDid?: string; fallback: boolean }> {
+    const httpPath = `/${path}/${subgroveId}`;
+    const headers = this.auth.getAuthHeaders("POST", httpPath);
+
+    const callValidator = async (): Promise<T> => {
+      try {
+        const resp = await this.api.post<T>(httpPath, body, { headers });
+        return resp.data;
+      } catch (err: any) {
+        // When the validator refuses because the data isn't available
+        // here (VerifyOnly retention, pruned, not indexed by consensus),
+        // surface a typed error rather than a raw axios failure so
+        // callers can react programmatically.
+        const status = err?.response?.status as number | undefined;
+        const msg = err?.response?.data?.error ?? err?.message ?? "unknown error";
+        if (status === 403 || status === 404 || /VerifyOnly|not indexed|not available/i.test(String(msg))) {
+          throw new ValidatorHasNoDataError(subgroveId, String(msg));
+        }
+        throw err;
+      }
+    };
+
+    const callIndexer = async (info: ApiIndexerInfo): Promise<T> => {
+      const url = `${effectiveQueryEndpoint(info).replace(/\/$/, "")}${httpPath}`;
+      const resp = await axios.post<T>(url, body, { headers });
+      return resp.data;
+    };
+
+    if (source === "validator") {
+      const result = await callValidator();
+      return { result, source: "validator", fallback: false };
+    }
+
+    if (source === "indexer") {
+      const candidates = await this.indexers.forSubgrove(subgroveId);
+      if (candidates.length === 0) {
+        throw new NoIndexersReachableError(
+          subgroveId,
+          "no indexer in the registry serves this subgrove",
+        );
+      }
+      const errors: string[] = [];
+      for (const info of candidates) {
+        try {
+          const result = await callIndexer(info);
+          return { result, source: "indexer", indexerDid: info.indexer_did, fallback: false };
+        } catch (err: any) {
+          const status = err?.response?.status as number | undefined;
+          if (status && status >= 500) this.indexers.evict(info.indexer_did);
+          errors.push(`${info.indexer_did}: ${err?.message ?? err}`);
+        }
+      }
+      throw new NoIndexersReachableError(subgroveId, errors.join("; "));
+    }
+
+    // source === 'auto'
+    const candidates = await this.indexers.forSubgrove(subgroveId);
+    for (const info of candidates) {
+      try {
+        const result = await callIndexer(info);
+        return { result, source: "indexer", indexerDid: info.indexer_did, fallback: false };
+      } catch (err: any) {
+        const status = err?.response?.status as number | undefined;
+        if (status && status >= 500) this.indexers.evict(info.indexer_did);
+        // continue to next indexer / fall back to validator
+      }
+    }
+    const result = await callValidator();
+    return { result, source: "validator", fallback: candidates.length > 0 };
   }
 }
 
