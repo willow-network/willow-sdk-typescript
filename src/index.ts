@@ -22,7 +22,7 @@ export {
 export { WillowIndexers, effectiveQueryEndpoint } from "./indexers";
 export type { ApiIndexerInfo, WillowIndexersOptions } from "./indexers";
 export { WillowSubscriptions } from "./subscriptions";
-export type { SubscribeOptions, UnsubscribeFn } from "./subscriptions";
+export type { SubscribeOptions, SubscribeSource, UnsubscribeFn } from "./subscriptions";
 
 // Export all types
 export * from "./types";
