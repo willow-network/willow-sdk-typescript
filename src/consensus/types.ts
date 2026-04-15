@@ -107,11 +107,23 @@ export type RetentionWindow =
   | { type: 'VerifyOnly' };
 
 /**
- * Subgrove mode: DataStorage or BlockchainIndexing.
- * When omitted, defaults to DataStorage with empty values.
+ * Subgrove mode — determines what kind of data the subgrove holds and how
+ * it's ingested. Three variants match the Rust `SubgroveMode` enum. When
+ * omitted, the wire defaults to DataStorage with empty values.
  */
 export type SubgroveMode =
   | { DataStorage: { name: string; writers?: string[]; free_readers?: string[]; read_pricing?: any } }
+  | {
+      FileStorage: {
+        name: string;
+        max_file_size: number;
+        replication_factor: number;
+        writers?: string[];
+        free_readers?: string[];
+        read_pricing?: any;
+        retention_period?: number;
+      };
+    }
   | { BlockchainIndexing: { manifest_content?: number[]; wasm_modules?: any[]; execution_mode?: any; indexer_config?: any; retention_window?: RetentionWindow } };
 
 /**
@@ -348,9 +360,18 @@ export function createSignMessage(txType: string, transaction: Transaction): str
       const tx = transaction as RegisterSubgroveTx;
       const mode = tx.mode;
       const sh = schemaHash(tx.schema);
+
+      // BlockchainIndexing uses a simpler payload format. The live
+      // consensus validator at
+      // `crates/consensus/src/willow_cometbft/subgrove_transactions.rs`
+      // signs over `RegisterSubgrove:{id}:{owner}:{nonce}`. The
+      // multi-line format that the other modes use exists in a sibling
+      // file but is dead code for this path — using it here makes every
+      // BlockchainIndexing registration fail signature validation.
       if (mode && 'BlockchainIndexing' in mode) {
-        return `RegisterSubgrove\nID: ${tx.subgroveId}\nMode: BlockchainIndexing\nSchemaHash: ${sh}\nOwner: ${tx.ownerDid}\nNonce: ${tx.nonce || 0}`;
+        return `RegisterSubgrove:${tx.subgroveId}:${tx.ownerDid}:${tx.nonce || 0}`;
       }
+
       if (mode && 'FileStorage' in mode) {
         const fs = (mode as { FileStorage: { name?: string; writers?: string[]; free_readers?: string[] } }).FileStorage;
         return `RegisterSubgrove\nID: ${tx.subgroveId}\nMode: FileStorage\nName: ${fs.name ?? tx.subgroveId}\nDescription: \nSchemaHash: ${sh}\nOwner: ${tx.ownerDid}\nAdmins: \nWriters: ${(fs.writers ?? []).join(',')}\nReaders: ${(fs.free_readers ?? []).join(',')}\nNonce: ${tx.nonce || 0}`;
