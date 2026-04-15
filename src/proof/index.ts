@@ -82,15 +82,19 @@ function enforceExpectedRoot(computed: string, override?: string): void {
  * The caller must compare this to a trusted root hash to establish
  * authenticity — this function alone does not prove the data came from a
  * canonical state unless combined with an independent trust anchor.
+ *
+ * Accepts an optional `options` override; when omitted, falls back to the
+ * globally configured options (see `configureProofVerification`).
  */
 export async function verifyQueryProof(
   proofHex: string,
   _documents: DataRecord[],
+  options?: ProofVerificationOptions,
 ): Promise<string> {
   const bytes = decodeProofBytes(proofHex);
   const result = verifyGroveDBProof(bytes);
   const computed = hashToHex(result.rootHash);
-  enforceExpectedRoot(computed);
+  enforceExpectedRoot(computed, options?.expectedRootHash);
   return computed;
 }
 
@@ -101,12 +105,16 @@ export async function verifyQueryProof(
  * contains the requested `key` at the given `path` — rejecting proofs that
  * are internally valid but prove a different (key, path) within the same
  * state tree.
+ *
+ * Accepts an optional `options` override; when omitted, falls back to the
+ * globally configured options (see `configureProofVerification`).
  */
 export async function verifyItemProof(
   proofHex: string,
   key: string,
   _value: any,
   path: string[] = [],
+  options?: ProofVerificationOptions,
 ): Promise<string> {
   const bytes = decodeProofBytes(proofHex);
   const verification = verifyGroveDBProof(bytes);
@@ -124,8 +132,63 @@ export async function verifyItemProof(
   }
 
   const computed = hashToHex(verification.rootHash);
-  enforceExpectedRoot(computed);
+  enforceExpectedRoot(computed, options?.expectedRootHash);
   return computed;
+}
+
+/**
+ * Stateful GroveDB proof verifier that binds `ProofVerificationOptions` at
+ * construction time. Mirrors the Python SDK's `GroveDBProofVerifier` so
+ * React/JS callers that want instance-scoped options (rather than global
+ * configuration) have a cross-language-consistent API.
+ *
+ * For the simpler throwing API, use the module functions directly
+ * (`verifyQueryProof`, `verifyItemProof`, `extractRootHashFromProof`).
+ */
+export class GroveDBProofVerifier {
+  constructor(public readonly options: ProofVerificationOptions = {}) {}
+
+  /**
+   * Verify a query/range proof. Returns a `ProofVerificationResult` instead
+   * of throwing, matching the Python SDK's behaviour.
+   */
+  async verifyQueryProof(
+    proofHex: string,
+    documents: DataRecord[],
+  ): Promise<ProofVerificationResult> {
+    return verifyProofAdvanced(proofHex, documents, this.options);
+  }
+
+  /**
+   * Verify a single-item proof. Returns a `ProofVerificationResult` instead
+   * of throwing. On success, `rootHash` is the computed root; on failure,
+   * `error` carries the reason (missing key, root mismatch, etc.).
+   */
+  async verifyItemProof(
+    proofHex: string,
+    key: string,
+    value: any,
+    path: string[] = [],
+  ): Promise<ProofVerificationResult> {
+    try {
+      const rootHash = await verifyItemProof(proofHex, key, value, path, this.options);
+      return { valid: true, rootHash };
+    } catch (err) {
+      return {
+        valid: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  /**
+   * Extract the root hash from a proof via full verification. Throws if
+   * the proof is malformed — use `verifyQueryProof` for a non-throwing
+   * variant that returns a structured result.
+   */
+  async extractRootHash(proofHex: string): Promise<string> {
+    return extractRootHashFromProof(proofHex);
+  }
 }
 
 /**
