@@ -1,7 +1,7 @@
 // GraphQL subscriptions over WebSocket.
 //
-// Thin wrapper around the validator's `/graphql/ws` endpoint implementing
-// the `graphql-transport-ws` protocol:
+// Thin wrapper around `/graphql/ws` on either the validator or an indexer,
+// speaking the `graphql-transport-ws` protocol:
 //
 // 1. Client connects and sends `connection_init`
 // 2. Server responds with `connection_ack`
@@ -9,11 +9,19 @@
 // 4. Server streams `next` messages as matching events arrive
 // 5. Either side sends `complete` to end the subscription
 //
-// Validator-only today. Indexer WebSocket support is deferred (tracked as
-// follow-up) — the live-chart UX pattern is: initial load from indexer for
-// history + ongoing updates from validator for chain-tip.
+// The `source` option picks which server:
+//   - `'validator'` (default): consensus-verified chain-tip events
+//   - `'indexer'`: the indexer's own event bus (e.g. `IndexedDataStored`
+//     when it submits a new chain-tip block). Useful for subgroves where
+//     the validator's retention is too short (or `VerifyOnly`) to see the
+//     tail.
+
+import type { WillowIndexers } from "../indexers";
+import { effectiveQueryEndpoint } from "../indexers";
 
 export type UnsubscribeFn = () => void;
+
+export type SubscribeSource = "validator" | "indexer";
 
 export interface SubscribeOptions {
   /** Optional GraphQL variables. */
@@ -26,6 +34,20 @@ export interface SubscribeOptions {
   onComplete?: () => void;
   /** Arbitrary payload forwarded on `connection_init` (e.g., auth). */
   connectionPayload?: Record<string, any>;
+  /**
+   * Which server to open the WebSocket against.
+   *
+   * - `'validator'` (default): `{apiUrl}/graphql/ws`. Consensus-verified
+   *   chain-tip events. Use this for real-time data on subgroves that
+   *   have chain-tip retention.
+   * - `'indexer'`: picks the best-performing indexer for the subgrove via
+   *   discovery (or the configured `indexerUrl` override) and connects
+   *   to its `/graphql/ws`. The indexer fires `IndexedDataStored` events
+   *   at submission time — useful for `VerifyOnly` subgroves where the
+   *   validator has no tail, or for chart UIs that want to react to the
+   *   indexer's ingest pace rather than the consensus commit pace.
+   */
+  source?: SubscribeSource;
 }
 
 interface ClientMessage {
@@ -58,10 +80,12 @@ function toWsUrl(apiUrl: string): string {
 
 export class WillowSubscriptions {
   private apiUrl: string;
+  private indexers?: WillowIndexers;
   private counter = 0;
 
-  constructor(apiUrl: string) {
+  constructor(apiUrl: string, indexers?: WillowIndexers) {
     this.apiUrl = apiUrl;
+    this.indexers = indexers;
   }
 
   /**
@@ -70,92 +94,150 @@ export class WillowSubscriptions {
    * Returns an unsubscribe function that sends `complete` and closes the
    * WebSocket. Callers should invoke it on component unmount / cleanup.
    *
-   * @param subgroveId - Subgrove ID (not used by the wire protocol today,
-   *   but reserved for future per-subgrove routing)
+   * With `source: 'indexer'`, this async-resolves the best-performing
+   * indexer for the subgrove via discovery (or the configured indexer URL
+   * override) before opening the socket. Connection failures during
+   * discovery surface through `options.onError`.
+   *
+   * @param subgroveId - Subgrove ID — used for indexer selection when
+   *   `source: 'indexer'`; otherwise informational.
    * @param query - GraphQL subscription document
    * @param onNext - Called with each incoming data payload
-   * @param options - Optional variables, operation name, error handlers
+   * @param options - Optional variables, operation name, error handlers,
+   *   and `source` selection
    */
   subscribe(
-    _subgroveId: string,
+    subgroveId: string,
     query: string,
     onNext: (payload: { data?: any; errors?: any[] }) => void,
     options: SubscribeOptions = {},
   ): UnsubscribeFn {
-    const wsUrl = toWsUrl(this.apiUrl.replace(/\/$/, "")) + "/graphql/ws";
-    const socket = new WebSocket(wsUrl, "graphql-transport-ws");
-    const id = `sub-${++this.counter}-${Date.now()}`;
-    let initialized = false;
-    let closedByClient = false;
+    const source: SubscribeSource = options.source ?? "validator";
 
-    const send = (msg: ClientMessage) => {
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify(msg));
+    // For validator mode we can open the socket synchronously. For indexer
+    // mode we need a round-trip (or cache hit) to resolve the endpoint, so
+    // the socket open is deferred. Either way, the returned unsubscribe
+    // function is valid immediately — it cancels a pending connect if
+    // called before the socket is up.
+    let socket: WebSocket | null = null;
+    let closedByClient = false;
+    const id = `sub-${++this.counter}-${Date.now()}`;
+
+    const sendOn = (s: WebSocket, msg: ClientMessage) => {
+      if (s.readyState === WebSocket.OPEN) {
+        s.send(JSON.stringify(msg));
       }
     };
 
-    socket.addEventListener("open", () => {
-      send({ type: "connection_init", payload: options.connectionPayload ?? {} });
-    });
+    const wireSocket = (wsUrl: string) => {
+      if (closedByClient) return;
+      socket = new WebSocket(wsUrl, "graphql-transport-ws");
+      const s = socket;
 
-    socket.addEventListener("message", (ev: MessageEvent) => {
-      let msg: ServerMessage;
-      try {
-        msg = JSON.parse(String((ev as any).data));
-      } catch (err) {
-        options.onError?.(err);
-        return;
+      s.addEventListener("open", () => {
+        sendOn(s, { type: "connection_init", payload: options.connectionPayload ?? {} });
+      });
+
+      s.addEventListener("message", (ev: MessageEvent) => {
+        let msg: ServerMessage;
+        try {
+          msg = JSON.parse(String((ev as any).data));
+        } catch (err) {
+          options.onError?.(err);
+          return;
+        }
+
+        switch (msg.type) {
+          case "connection_ack":
+            sendOn(s, {
+              type: "subscribe",
+              id,
+              payload: {
+                query,
+                ...(options.variables ? { variables: options.variables } : {}),
+                ...(options.operationName ? { operationName: options.operationName } : {}),
+              },
+            });
+            break;
+          case "next":
+            if (msg.id === id && msg.payload) onNext(msg.payload);
+            break;
+          case "error":
+            if (msg.id === id) options.onError?.(msg.payload);
+            break;
+          case "complete":
+            if (msg.id === id) options.onComplete?.();
+            break;
+          case "ping":
+            sendOn(s, { type: "pong" });
+            break;
+          case "pong":
+            // no-op
+            break;
+          default:
+            // Unknown type — ignore
+            break;
+        }
+      });
+
+      s.addEventListener("error", (ev) => {
+        options.onError?.(ev);
+      });
+
+      s.addEventListener("close", () => {
+        if (!closedByClient) options.onComplete?.();
+      });
+    };
+
+    if (source === "validator") {
+      wireSocket(toWsUrl(this.apiUrl.replace(/\/$/, "")) + "/graphql/ws");
+    } else {
+      // `indexer`: resolve an endpoint, then open. An explicit `indexerUrl`
+      // override on the client surfaces via `WillowIndexers.for_subgrove`
+      // as a single synthetic entry, so we don't need special-casing here.
+      if (!this.indexers) {
+        options.onError?.(
+          new Error(
+            "Cannot subscribe with source='indexer': no WillowIndexers " +
+              "client was provided. Either pass one to WillowSubscriptions " +
+              "directly, or construct via WillowClient which wires it up.",
+          ),
+        );
+        return () => {
+          closedByClient = true;
+        };
       }
 
-      switch (msg.type) {
-        case "connection_ack":
-          initialized = true;
-          send({
-            type: "subscribe",
-            id,
-            payload: {
-              query,
-              ...(options.variables ? { variables: options.variables } : {}),
-              ...(options.operationName ? { operationName: options.operationName } : {}),
-            },
-          });
-          break;
-        case "next":
-          if (msg.id === id && msg.payload) onNext(msg.payload);
-          break;
-        case "error":
-          if (msg.id === id) options.onError?.(msg.payload);
-          break;
-        case "complete":
-          if (msg.id === id) options.onComplete?.();
-          break;
-        case "ping":
-          send({ type: "pong" });
-          break;
-        case "pong":
-          // no-op
-          break;
-        default:
-          // Unknown type — ignore
-          break;
-      }
-    });
-
-    socket.addEventListener("error", (ev) => {
-      options.onError?.(ev);
-    });
-
-    socket.addEventListener("close", () => {
-      if (!closedByClient) options.onComplete?.();
-    });
+      void (async () => {
+        try {
+          const candidates = await this.indexers!.forSubgrove(subgroveId);
+          if (candidates.length === 0) {
+            options.onError?.(
+              new Error(
+                `No indexer serves subgrove "${subgroveId}" — cannot open ` +
+                  "indexer subscription",
+              ),
+            );
+            return;
+          }
+          // Use the best-performing candidate. Failover-on-disconnect is a
+          // follow-up — the WebSocket contract makes that nontrivial
+          // because replayed messages from the new socket would duplicate.
+          const endpoint = effectiveQueryEndpoint(candidates[0]).replace(/\/$/, "");
+          wireSocket(toWsUrl(endpoint) + "/graphql/ws");
+        } catch (err) {
+          options.onError?.(err);
+        }
+      })();
+    }
 
     return () => {
       closedByClient = true;
-      if (initialized && socket.readyState === WebSocket.OPEN) {
-        send({ type: "complete", id });
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        sendOn(socket, { type: "complete", id });
       }
       try {
-        socket.close();
+        socket?.close();
       } catch {
         // ignore
       }

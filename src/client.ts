@@ -60,7 +60,7 @@ export class WillowClient {
     });
 
     this.data = new WillowData(config.apiUrl, this.auth, this.indexers, cometUrl);
-    this.subscriptions = new WillowSubscriptions(config.apiUrl);
+    this.subscriptions = new WillowSubscriptions(config.apiUrl, this.indexers);
 
     this.files = new FileOperations(config.apiUrl, () => this.auth.getAuthHeaders('GET', '/files'));
 
