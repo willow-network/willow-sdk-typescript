@@ -369,56 +369,66 @@ export class LightClient {
   /**
    * Fetches `app_hash` for the state AFTER the given block height.
    *
-   * Strategy:
-   *   - If height <= 0: use `/status.latest_app_hash`.
-   *   - Otherwise: try `/block?height=height+1` for `header.app_hash`.
-   *     If H+1 doesn't exist yet, poll `/status` — when the chain catches
-   *     up (latest >= H+1) retry the block fetch; if chain is exactly at H,
-   *     use `status.latest_app_hash` directly.
+   * The canonical source is `block H+1.header.app_hash` — the header of the
+   * next block carries the app_hash that resulted from executing block H.
+   * If block H+1 hasn't been committed yet (i.e. H is the current tip), we
+   * poll until it is, or we hit the timeout.
    *
-   * Retries for up to `requestTimeoutSecs` seconds to handle the common
-   * race where the proof was generated at the current latest height but
-   * H+1 hasn't been produced yet by the time we query.
+   * We deliberately do NOT fall back to `/status.latest_app_hash`:
+   * empirically that value equals `block latest.header.app_hash`, which is
+   * state AFTER block `latest - 1`, not state after `latest`. Using it as a
+   * fallback produces hashes one block behind the proof and causes
+   * "root hash mismatch" on the client. The only correct way to get
+   * state-after-H is the next block's header.
+   *
+   * When `height <= 0`, we interpret this as "give me whatever current
+   * verified app_hash you can" — i.e. the hash for the most recent block
+   * for which a next-block header exists. That's `block latest.header.app_hash`
+   * (= state after latest-1). This is lossy but matches pre-existing callers
+   * of `getVerifiedRootHash()`.
    */
   private async fetchAppHashForHeight(
     endpoint: string,
     height: number
   ): Promise<string | null> {
     const timeoutMs = this.config.requestTimeoutSecs! * 1000;
+    const perAttemptTimeoutMs = Math.max(1000, Math.floor(timeoutMs / 4));
 
     if (height <= 0) {
-      return this.fetchLatestAppHash(endpoint, timeoutMs);
+      // "Latest" semantics: return block <latest>.header.app_hash, which is
+      // state after latest-1. This is the best we can do without knowing
+      // exactly which state the caller is trying to verify against.
+      const status = await this.fetchStatus(endpoint, perAttemptTimeoutMs);
+      return status?.latestAppHash ?? null;
     }
 
     const deadline = Date.now() + timeoutMs;
-    const perAttemptTimeoutMs = Math.max(1000, Math.floor(timeoutMs / 4));
 
     while (Date.now() < deadline) {
-      // Try next block's header first.
-      const fromNextBlock = await this.tryFetchBlockHeaderAppHash(
+      // The only correct source: the header of block H+1.
+      const hash = await this.tryFetchBlockHeaderAppHash(
         endpoint,
         height + 1,
         perAttemptTimeoutMs
       );
-      if (fromNextBlock) return fromNextBlock;
+      if (hash) return hash;
 
-      // Block H+1 not available. Check where the chain is.
+      // Block H+1 not available. Check whether the chain has produced it.
       const status = await this.fetchStatus(endpoint, perAttemptTimeoutMs);
       if (!status) {
+        // Status itself is unreachable — can't make progress.
         return null;
       }
-      if (status.latestHeight === height) {
-        // Chain is exactly at H — status.latest_app_hash is state after H.
-        return status.latestAppHash;
-      }
-      if (status.latestHeight > height) {
-        // Chain advanced past H but /block?height=H+1 still didn't return.
-        // Transient — brief delay then retry.
-        await new Promise(resolve => setTimeout(resolve, 200));
+
+      if (status.latestHeight >= height + 1) {
+        // Chain has produced H+1, but our earlier /block call didn't see
+        // it (transient: cache, indexing lag, etc). Retry quickly.
+        await new Promise(resolve => setTimeout(resolve, 100));
         continue;
       }
-      // Chain is behind H — caller asked for a future block. Wait briefly.
-      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // Chain hasn't produced H+1 yet. Wait for it.
+      await new Promise(resolve => setTimeout(resolve, 300));
     }
 
     return null;
@@ -443,11 +453,6 @@ export class LightClient {
     } catch {
       return null;
     }
-  }
-
-  private async fetchLatestAppHash(endpoint: string, timeoutMs: number): Promise<string | null> {
-    const status = await this.fetchStatus(endpoint, timeoutMs);
-    return status?.latestAppHash ?? null;
   }
 
   private async fetchStatus(

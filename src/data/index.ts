@@ -288,16 +288,16 @@ export class WillowData {
         console.warn(`No proof available for key: ${key}`);
       }
     } catch (error) {
-      if (
-        error instanceof WillowError &&
-        error.code === "PROOF_VERIFICATION_FAILED"
-      ) {
+      if (error instanceof WillowError) {
         throw error;
       }
-      // Log but don't fail if we can't get proof
-      console.warn(
-        `Could not verify proof for key ${key}:`,
-        error instanceof Error ? error.message : String(error),
+      // Any other error during proof fetch or verification is a verification
+      // failure — a previous version swallowed these, which meant the caller
+      // thought they had cryptographic verification when they didn't. If you
+      // explicitly want data without verification, use `getDataUnverified`.
+      throw new WillowError(
+        `Proof verification failed: ${error instanceof Error ? error.message : String(error)}`,
+        "PROOF_VERIFICATION_FAILED",
       );
     }
 
@@ -526,6 +526,9 @@ export class WillowData {
 
         // Compare computed root with verified root
         if (computedRootHash.toLowerCase() !== verifiedRootHash.toLowerCase()) {
+          console.error(
+            `Query proof verification failed: computed=${computedRootHash}, verified=${verifiedRootHash}, height=${proofHeight}`,
+          );
           throw new WillowError(
             "Proof verification failed: root hash mismatch",
             "PROOF_VERIFICATION_FAILED",
