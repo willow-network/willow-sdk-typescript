@@ -15,6 +15,12 @@
 //     when it submits a new chain-tip block). Useful for subgroves where
 //     the validator's retention is too short (or `VerifyOnly`) to see the
 //     tail.
+//
+// Reconnection: by default the subscription reconnects automatically on
+// unexpected disconnect with exponential backoff. For `source: 'indexer'`
+// reconnects pick the next-best indexer via discovery (the failing
+// indexer is evicted from the cache), so a dead indexer won't keep the
+// caller pinned to it. Set `reconnect: false` to opt out.
 
 import type { WillowIndexers } from "../indexers";
 import { effectiveQueryEndpoint } from "../indexers";
@@ -30,7 +36,12 @@ export interface SubscribeOptions {
   operationName?: string;
   /** Called on connection-level errors (parse, transport). */
   onError?: (err: unknown) => void;
-  /** Called when the server sends a `complete` message or the socket closes cleanly. */
+  /**
+   * Called when the subscription is definitively over and will not be
+   * reconnected — either because the server sent `complete`, the caller
+   * unsubscribed, or reconnection gave up / was disabled. Not called on
+   * transient disconnects when `reconnect: true`.
+   */
   onComplete?: () => void;
   /** Arbitrary payload forwarded on `connection_init` (e.g., auth). */
   connectionPayload?: Record<string, any>;
@@ -48,6 +59,40 @@ export interface SubscribeOptions {
    *   indexer's ingest pace rather than the consensus commit pace.
    */
   source?: SubscribeSource;
+  /**
+   * Automatically reconnect on unexpected disconnects. Defaults to
+   * `true`. Set to `false` for the classic "subscription ends on
+   * close" behavior.
+   *
+   * This is reconnect-only — messages that were in flight when the
+   * socket dropped are not replayed, and the new connection may
+   * redeliver events the old one already emitted. Callers that need
+   * exactly-once should dedupe by a stable field (e.g., block number
+   * or entity id) themselves.
+   */
+  reconnect?: boolean;
+  /**
+   * Maximum number of reconnection attempts before giving up. Defaults
+   * to `Infinity` (keep trying forever). When exhausted, `onComplete`
+   * fires.
+   */
+  maxReconnectAttempts?: number;
+  /**
+   * Initial reconnect delay in milliseconds. Doubles on each failure up
+   * to `maxReconnectBackoffMs`. Defaults to 500.
+   */
+  reconnectBackoffMs?: number;
+  /**
+   * Maximum reconnect delay in milliseconds. Defaults to 30 000
+   * (30 seconds).
+   */
+  maxReconnectBackoffMs?: number;
+  /**
+   * Called when a reconnection attempt is scheduled. `attempt` is
+   * 1-indexed (first retry is `1`). Useful for surfacing "reconnecting…"
+   * UI without polluting `onError`.
+   */
+  onReconnect?: (attempt: number, delayMs: number) => void;
 }
 
 interface ClientMessage {
@@ -91,20 +136,23 @@ export class WillowSubscriptions {
   /**
    * Subscribe to a GraphQL subscription and receive streamed updates.
    *
-   * Returns an unsubscribe function that sends `complete` and closes the
-   * WebSocket. Callers should invoke it on component unmount / cleanup.
+   * Returns an unsubscribe function that sends `complete`, closes the
+   * WebSocket, and cancels any pending reconnection. Callers should
+   * invoke it on component unmount / cleanup.
    *
    * With `source: 'indexer'`, this async-resolves the best-performing
-   * indexer for the subgrove via discovery (or the configured indexer URL
-   * override) before opening the socket. Connection failures during
-   * discovery surface through `options.onError`.
+   * indexer for the subgrove via discovery (or the configured
+   * `indexerUrl` override) before opening the socket. On a reconnect,
+   * the SDK re-resolves — the previously-used indexer is evicted from
+   * the discovery cache first so failover to a different indexer is
+   * automatic.
    *
    * @param subgroveId - Subgrove ID — used for indexer selection when
    *   `source: 'indexer'`; otherwise informational.
    * @param query - GraphQL subscription document
    * @param onNext - Called with each incoming data payload
    * @param options - Optional variables, operation name, error handlers,
-   *   and `source` selection
+   *   `source` selection, and reconnection behavior
    */
   subscribe(
     subgroveId: string,
@@ -113,20 +161,59 @@ export class WillowSubscriptions {
     options: SubscribeOptions = {},
   ): UnsubscribeFn {
     const source: SubscribeSource = options.source ?? "validator";
+    const reconnectEnabled = options.reconnect ?? true;
+    const maxAttempts = options.maxReconnectAttempts ?? Infinity;
+    const initialBackoff = options.reconnectBackoffMs ?? 500;
+    const maxBackoff = options.maxReconnectBackoffMs ?? 30_000;
 
-    // For validator mode we can open the socket synchronously. For indexer
-    // mode we need a round-trip (or cache hit) to resolve the endpoint, so
-    // the socket open is deferred. Either way, the returned unsubscribe
-    // function is valid immediately — it cancels a pending connect if
-    // called before the socket is up.
+    // Keep the subscription ID stable across reconnects. The graphql-ws
+    // `id` is only meaningful within a single socket — reusing it on a
+    // new socket is fine (the server treats it as a fresh subscribe).
+    // Using a stable id keeps `next`/`error`/`complete` filtering
+    // consistent across both paths in the switch below.
+    const id = `sub-${++this.counter}-${Date.now()}`;
+
     let socket: WebSocket | null = null;
     let closedByClient = false;
-    const id = `sub-${++this.counter}-${Date.now()}`;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let attempts = 0;
+    // The last indexer we successfully wired up against, so we can evict
+    // it on reconnect failover. `null` for validator mode or before the
+    // first indexer resolve.
+    let lastIndexerDid: string | null = null;
 
     const sendOn = (s: WebSocket, msg: ClientMessage) => {
       if (s.readyState === WebSocket.OPEN) {
         s.send(JSON.stringify(msg));
       }
+    };
+
+    const clearReconnectTimer = () => {
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    };
+
+    const scheduleReconnect = () => {
+      if (closedByClient || !reconnectEnabled) {
+        options.onComplete?.();
+        return;
+      }
+      if (attempts >= maxAttempts) {
+        options.onComplete?.();
+        return;
+      }
+      attempts += 1;
+      const delay = Math.min(
+        initialBackoff * Math.pow(2, attempts - 1),
+        maxBackoff,
+      );
+      options.onReconnect?.(attempts, delay);
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        void openConnection();
+      }, delay);
     };
 
     const wireSocket = (wsUrl: string) => {
@@ -149,6 +236,10 @@ export class WillowSubscriptions {
 
         switch (msg.type) {
           case "connection_ack":
+            // Connection is usable — reset the retry counter so a later
+            // disconnect after a good run doesn't inherit a stale
+            // backoff from earlier failed attempts.
+            attempts = 0;
             sendOn(s, {
               type: "subscribe",
               id,
@@ -166,7 +257,12 @@ export class WillowSubscriptions {
             if (msg.id === id) options.onError?.(msg.payload);
             break;
           case "complete":
-            if (msg.id === id) options.onComplete?.();
+            // Server said the subscription is finished — this is a
+            // definitive end, not a transient failure. Don't reconnect.
+            if (msg.id === id) {
+              closedByClient = true;
+              options.onComplete?.();
+            }
             break;
           case "ping":
             sendOn(s, { type: "pong" });
@@ -185,16 +281,27 @@ export class WillowSubscriptions {
       });
 
       s.addEventListener("close", () => {
-        if (!closedByClient) options.onComplete?.();
+        if (closedByClient) {
+          return;
+        }
+        // Socket closed unexpectedly. Either reconnect, or give up and
+        // surface completion depending on options.
+        scheduleReconnect();
       });
     };
 
-    if (source === "validator") {
-      wireSocket(toWsUrl(this.apiUrl.replace(/\/$/, "")) + "/graphql/ws");
-    } else {
-      // `indexer`: resolve an endpoint, then open. An explicit `indexerUrl`
-      // override on the client surfaces via `WillowIndexers.for_subgrove`
-      // as a single synthetic entry, so we don't need special-casing here.
+    const openConnection = async () => {
+      if (closedByClient) return;
+
+      if (source === "validator") {
+        wireSocket(toWsUrl(this.apiUrl.replace(/\/$/, "")) + "/graphql/ws");
+        return;
+      }
+
+      // `indexer`: resolve an endpoint, then open. An explicit
+      // `indexerUrl` override on the client surfaces via
+      // `WillowIndexers.forSubgrove` as a single synthetic entry, so we
+      // don't need special-casing here.
       if (!this.indexers) {
         options.onError?.(
           new Error(
@@ -203,36 +310,60 @@ export class WillowSubscriptions {
               "directly, or construct via WillowClient which wires it up.",
           ),
         );
-        return () => {
-          closedByClient = true;
-        };
+        closedByClient = true;
+        options.onComplete?.();
+        return;
       }
 
-      void (async () => {
-        try {
-          const candidates = await this.indexers!.forSubgrove(subgroveId);
-          if (candidates.length === 0) {
-            options.onError?.(
-              new Error(
-                `No indexer serves subgrove "${subgroveId}" — cannot open ` +
-                  "indexer subscription",
-              ),
-            );
-            return;
+      // On reconnect, evict the indexer we just lost so the discovery
+      // layer picks a different one. For the first attempt this is a
+      // no-op (lastIndexerDid is null).
+      if (lastIndexerDid) {
+        this.indexers.evict(lastIndexerDid);
+      }
+
+      try {
+        const candidates = await this.indexers.forSubgrove(subgroveId);
+        if (candidates.length === 0) {
+          options.onError?.(
+            new Error(
+              `No indexer serves subgrove "${subgroveId}" — cannot open ` +
+                "indexer subscription",
+            ),
+          );
+          // No indexers reachable. If reconnect is on we'll retry on
+          // backoff (discovery cache may refresh in the meantime); if
+          // off, this is terminal.
+          if (reconnectEnabled) {
+            scheduleReconnect();
+          } else {
+            closedByClient = true;
+            options.onComplete?.();
           }
-          // Use the best-performing candidate. Failover-on-disconnect is a
-          // follow-up — the WebSocket contract makes that nontrivial
-          // because replayed messages from the new socket would duplicate.
-          const endpoint = effectiveQueryEndpoint(candidates[0]).replace(/\/$/, "");
-          wireSocket(toWsUrl(endpoint) + "/graphql/ws");
-        } catch (err) {
-          options.onError?.(err);
+          return;
         }
-      })();
-    }
+        const chosen = candidates[0];
+        lastIndexerDid = chosen.indexer_did;
+        const endpoint = effectiveQueryEndpoint(chosen).replace(/\/$/, "");
+        wireSocket(toWsUrl(endpoint) + "/graphql/ws");
+      } catch (err) {
+        options.onError?.(err);
+        // Discovery itself failed (validator unreachable, etc.). Same
+        // fork: schedule a retry if reconnect is on.
+        if (reconnectEnabled) {
+          scheduleReconnect();
+        } else {
+          closedByClient = true;
+          options.onComplete?.();
+        }
+      }
+    };
+
+    void openConnection();
 
     return () => {
       closedByClient = true;
+      clearReconnectTimer();
       if (socket && socket.readyState === WebSocket.OPEN) {
         sendOn(socket, { type: "complete", id });
       }
