@@ -2,6 +2,7 @@ import { WillowAuth, signEd25519 } from "./auth";
 import { WillowData } from "./data";
 import { FileOperations } from "./files";
 import { ConsensusClient } from "./consensus";
+import { BroadcastResult } from "./consensus/types";
 import { WillowIndexers } from "./indexers";
 import { WillowSubscriptions } from "./subscriptions";
 import {
@@ -131,6 +132,26 @@ export class WillowClient {
       created_at: Math.floor(Date.now() / 1000),
       updated_at: Math.floor(Date.now() / 1000),
     };
+  }
+
+  /**
+   * Deregister a subgrove. Remaining funding is refunded to the owner.
+   *
+   * Re-registering with a different start_block or schema requires
+   * deregistering first — RegisterSubgroveTx is idempotent on the server,
+   * so a second register of the same subgrove_id is a no-op. The server
+   * bumps `deployment_epoch` on deregister, which indexers watch for to
+   * restart their pipelines on the next loop tick.
+   */
+  async deregisterSubgrove(subgroveId: string): Promise<BroadcastResult> {
+    this.requireIdentity();
+    return this.consensus.deregisterSubgrove(
+      subgroveId,
+      this.auth.getDid()!,
+      this.auth.getPrivateKey()!,
+      this.auth.getPublicKeyId()!,
+      signEd25519,
+    );
   }
 
   /**
