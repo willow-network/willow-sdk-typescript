@@ -4,7 +4,7 @@
  * Provides direct transaction broadcasting to CometBFT consensus layer.
  */
 
-import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, RegisterDidTx, RegisterSubgroveTx, SubgroveMode, RetentionWindow, TransferTx, DataStoreTx, StoreFileManifestTx, DeleteFileManifestTx, DeregisterSubgroveTx, Transaction, createTransactionWrapper, createSignMessage, createBroadcastResult, stringToBase64 } from './types';
+import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, RegisterDidTx, RegisterSubgroveTx, SubgroveMode, RetentionWindow, TransferTx, DataStoreTx, StoreFileManifestTx, DeleteFileManifestTx, DeregisterSubgroveTx, Transaction, createTransactionWrapper, createSignMessage } from './types';
 
 /**
  * CometBFT consensus client for direct transaction broadcasting
@@ -305,16 +305,62 @@ export class ConsensusClient {
   }
 
   /**
-   * Broadcast a transaction to CometBFT
+   * Broadcast a transaction to Willow consensus.
+   *
+   * Goes through the API server's `POST /tx/submit` endpoint: the server
+   * accepts the JSON-encoded Transaction, bincode-encodes it, and forwards
+   * to CometBFT's `broadcast_tx_sync`. The chain's on-the-wire format is
+   * bincode (see docs/todo/proposal-bincode-wire.md) — this keeps the SDK
+   * on JSON without implementing a bincode encoder per language.
    */
   private async broadcastTransaction(transaction: any): Promise<BroadcastResult> {
-    // Serialize and encode transaction
-    const txJson = JSON.stringify(transaction);
-    const txBase64 = stringToBase64(txJson);
+    if (!this.config.apiUrl) {
+      throw new ConsensusError(
+        'apiUrl is required for transaction submission. Set it in the SDK config.'
+      );
+    }
 
-    // Broadcast via JSON-RPC
-    const response = await this.rpcRequest('broadcast_tx_sync', { tx: txBase64 });
-    return createBroadcastResult({ result: response });
+    const url = `${this.config.apiUrl.replace(/\/$/, '')}/tx/submit`;
+    for (let attempt = 0; attempt <= this.config.maxRetries!; attempt++) {
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(transaction),
+          signal: AbortSignal.timeout(this.config.requestTimeoutSecs! * 1000)
+        });
+
+        const body = (await response.json()) as {
+          success: boolean;
+          data?: { tx_hash: string; code: number; log: string };
+          error?: string;
+        };
+
+        if (!response.ok || !body.success || !body.data) {
+          const msg = body.error || `HTTP ${response.status}`;
+          return { success: false, errorMessage: msg, rawLog: msg };
+        }
+
+        const code = body.data.code;
+        return {
+          success: code === 0,
+          txHash: body.data.tx_hash,
+          errorCode: code !== 0 ? code : undefined,
+          errorMessage: code !== 0 ? body.data.log : undefined,
+          rawLog: body.data.log
+        };
+      } catch (error) {
+        if (attempt === this.config.maxRetries) {
+          throw new ConsensusError(
+            `tx submit failed after ${this.config.maxRetries! + 1} attempts: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        }
+        // fall through to retry
+      }
+    }
+    throw new ConsensusError('tx submit: exhausted retries');
   }
 
   /**
