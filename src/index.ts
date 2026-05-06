@@ -134,6 +134,26 @@ export type {
   Erc8004ValidationSummary,
 } from "./erc8004";
 
+// Per-(vault, day) ERC-4626 flow aggregate codecs (`vault-daily-stats`
+// template). Pairs with the indexer's verifiable-rpc-range endpoint.
+export {
+  VAULT_DAILY_STATS_KEY_LEN,
+  VAULT_DAILY_STATS_VALUE_LEN,
+  SECONDS_PER_DAY,
+  dayIdFromTimestamp,
+  dayIdFromDate,
+  encodeVaultDailyStatsKey,
+  decodeVaultDailyStatsKey,
+  decodeDayAggregate,
+  encodeDayAggregate,
+  decodeVaultDailyStatsRows,
+  vaultDayRangeKeys,
+} from "./aggregates/vault-daily-stats";
+export type {
+  DayAggregate,
+  VaultDailyStatsRow,
+} from "./aggregates/vault-daily-stats";
+
 // Export version
 export const VERSION = "0.1.0";
 
