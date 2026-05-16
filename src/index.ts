@@ -54,6 +54,28 @@ export {
 // Export GroveDB proof verification
 export * as grovedb from "./grovedb";
 
+// Canonical WillowManifest builder + chain identifiers
+export * as manifest from "./manifest";
+export type {
+  WillowManifest,
+  DataSource,
+  EvmDataSource,
+  SupportedChain,
+  ChainFamily,
+} from "./manifest";
+export {
+  SUPPORTED_CHAINS,
+  MANIFEST_SPEC_VERSION,
+  serializeManifest,
+  parseManifest,
+  validateManifest,
+  ManifestValidationError,
+  isSupportedChain,
+  chainFamily,
+  evmChainId,
+  fromEvmChainId,
+} from "./manifest";
+
 // Export light client (with explicit naming to avoid conflicts)
 export {
   LightClient,
