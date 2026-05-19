@@ -5,7 +5,7 @@
  * 1. Create a client
  * 2. Generate a DID (identity)
  * 3. Register the DID
- * 4. Authenticate
+ * 4. Set identity for per-request signing
  * 5. Store and retrieve data with automatic proof verification
  *
  * Prerequisites:
@@ -18,7 +18,6 @@
 import {
   WillowClient,
   generateEd25519KeyPair,
-  getEd25519PublicKey,
 } from '../src';
 
 async function main() {
@@ -46,17 +45,6 @@ async function main() {
 
   const didDocument = {
     id: did,
-    controller: did,
-    verificationMethod: [
-      {
-        id: publicKeyId,
-        type: 'Ed25519VerificationKey2020',
-        controller: did,
-        publicKeyMultibase: `z${publicKey}`,
-      },
-    ],
-    authentication: [publicKeyId],
-    assertionMethod: [publicKeyId],
     publicKeys: [
       {
         id: publicKeyId,
@@ -64,6 +52,8 @@ async function main() {
         publicKeyHex: publicKey,
       },
     ],
+    created: timestamp,
+    updated: timestamp,
   };
   console.log(`   DID: ${did}\n`);
 
@@ -76,20 +66,14 @@ async function main() {
     console.log(`   Note: ${error}\n`);
   }
 
-  // 5. Authenticate
-  console.log('5. Authenticating...');
-  try {
-    await client.auth.login(did, privateKey, publicKeyId);
-    const session = client.getSession();
-    console.log(`   Authenticated successfully`);
-    console.log(`   Session expires: ${new Date(session!.expires_at * 1000).toISOString()}\n`);
-  } catch (error) {
-    console.log(`   Note: ${error}\n`);
-  }
+  // 5. Set identity for per-request signing (synchronous — no server session).
+  console.log('5. Setting identity...');
+  client.auth.setIdentity(did, privateKey, publicKeyId);
+  console.log('   Identity set — every write will be signed with this key\n');
 
-  // For the following steps, we'll use test values
-  // In production, you'd register your own subgrove first
-  
+  // The remaining steps target a subgrove that needs to be registered + funded
+  // first; see app_registration.ts. Errors here just fall back to printing
+  // a note so the example can be skimmed without a fully provisioned node.
   const datasetId = 'users';
 
   // 6. Store data
@@ -100,7 +84,6 @@ async function main() {
     score: 100,
     created: Date.now(),
   };
-
   try {
     await client.store(datasetId, 'user-1', testData);
     console.log('   Data stored successfully');
@@ -115,7 +98,7 @@ async function main() {
   try {
     const result = await client.get(datasetId, 'user-1');
     console.log('   Data retrieved and VERIFIED:');
-    console.log(`   ${JSON.stringify(result.data, null, 2)}\n`);
+    console.log(`   ${JSON.stringify(result, null, 2)}\n`);
   } catch (error) {
     console.log(`   Note: ${error}\n`);
   }
@@ -125,7 +108,7 @@ async function main() {
   try {
     const result = await client.getUnverified(datasetId, 'user-1');
     console.log('   Data retrieved (unverified):');
-    console.log(`   ${JSON.stringify(result.data, null, 2)}\n`);
+    console.log(`   ${JSON.stringify(result, null, 2)}\n`);
   } catch (error) {
     console.log(`   Note: ${error}\n`);
   }
@@ -152,18 +135,16 @@ async function main() {
     console.log(`   Note: ${error}\n`);
   }
 
-  // Summary
   console.log('Quickstart Summary');
   console.log('==================');
   console.log('- Generated Ed25519 key pair');
   console.log('- Created and registered DID');
-  console.log('- Authenticated with the network');
+  console.log('- Set identity for per-request signing (no server session)');
   console.log('- Stored data with cryptographic proofs');
   console.log('- Retrieved data with automatic verification');
-  console.log('- All operations include Merkle proof verification by default\n');
+  console.log('- All reads include Merkle proof verification by default\n');
 
   console.log('Quickstart example complete!');
 }
 
-// Run the example
 main().catch(console.error);

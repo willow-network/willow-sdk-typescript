@@ -1,17 +1,17 @@
 /**
  * Willow TypeScript SDK - Data Operations Example
  *
- * This example demonstrates comprehensive data operations:
+ * Comprehensive data operations:
  * 1. Store single items
  * 2. Batch store multiple items
  * 3. Get single item (with proof verification)
  * 4. Get unverified (performance mode)
  * 5. Get multiple items
- * 6. Query with filters
+ * 6. Query with filters / range / fulltext / proof
  * 7. Update items
  * 8. Delete items
  *
- * All operations include automatic proof verification by default.
+ * All reads include automatic proof verification by default.
  *
  * Prerequisites:
  * - npm install @willow/sdk
@@ -30,10 +30,7 @@ async function main() {
   console.log('Willow SDK - Data Operations Example');
   console.log('====================================\n');
 
-  // Setup: Create client and authenticate
-  const client = new WillowClient({
-    apiUrl: 'http://localhost:3031',
-  });
+  const client = new WillowClient({ apiUrl: 'http://localhost:3031' });
 
   const { privateKey, publicKey } = generateEd25519KeyPair();
   const timestamp = Date.now();
@@ -42,40 +39,23 @@ async function main() {
 
   const didDocument = {
     id: did,
-    controller: did,
-    verificationMethod: [
-      {
-        id: publicKeyId,
-        type: 'Ed25519VerificationKey2020',
-        controller: did,
-        publicKeyMultibase: `z${publicKey}`,
-      },
-    ],
-    authentication: [publicKeyId],
-    assertionMethod: [publicKeyId],
-    publicKeys: [
-      {
-        id: publicKeyId,
-        type: 'Ed25519',
-        publicKeyHex: publicKey,
-      },
-    ],
+    publicKeys: [{ id: publicKeyId, type: 'Ed25519', publicKeyHex: publicKey }],
+    created: timestamp,
+    updated: timestamp,
   };
 
   console.log('Setting up identity...');
   try {
     await client.registerDid(didDocument);
-    await client.auth.login(did, privateKey, publicKeyId);
+    client.auth.setIdentity(did, privateKey, publicKeyId);
     console.log(`Authenticated as: ${did}\n`);
   } catch (error) {
     console.log(`Note: ${error}\n`);
   }
 
-  // Use test dataset (would be registered in production)
-  
+  // The subgrove "products" needs to be registered and funded before writes
+  // succeed; see app_registration.ts. Errors fall back to printing a note.
   const datasetId = 'products';
-
-  // Create a collection helper for cleaner syntax
   const products = client.collection(datasetId);
 
   // 1. Store single item
@@ -95,59 +75,14 @@ async function main() {
     console.log(`   Note: ${error}\n`);
   }
 
-  // 2. Batch store multiple items
+  // 2. Batch store
   console.log('2. Batch store multiple items...');
   const batchProducts = [
-    {
-      key: 'prod-002',
-      value: {
-        id: 'prod-002',
-        name: 'Wireless Mouse',
-        category: 'electronics',
-        price: 49.99,
-        stock: 200,
-        tags: ['mouse', 'wireless', 'peripheral'],
-        created_at: Date.now(),
-      },
-    },
-    {
-      key: 'prod-003',
-      value: {
-        id: 'prod-003',
-        name: 'USB-C Cable',
-        category: 'accessories',
-        price: 19.99,
-        stock: 500,
-        tags: ['cable', 'usb-c', 'charging'],
-        created_at: Date.now(),
-      },
-    },
-    {
-      key: 'prod-004',
-      value: {
-        id: 'prod-004',
-        name: 'Monitor 27"',
-        category: 'electronics',
-        price: 399.99,
-        stock: 30,
-        tags: ['monitor', 'display', '4k'],
-        created_at: Date.now(),
-      },
-    },
-    {
-      key: 'prod-005',
-      value: {
-        id: 'prod-005',
-        name: 'Mechanical Keyboard',
-        category: 'electronics',
-        price: 149.99,
-        stock: 75,
-        tags: ['keyboard', 'mechanical', 'rgb'],
-        created_at: Date.now(),
-      },
-    },
+    { key: 'prod-002', value: { id: 'prod-002', name: 'Wireless Mouse', category: 'electronics', price: 49.99, stock: 200 } },
+    { key: 'prod-003', value: { id: 'prod-003', name: 'USB-C Cable', category: 'accessories', price: 19.99, stock: 500 } },
+    { key: 'prod-004', value: { id: 'prod-004', name: 'Monitor 27"', category: 'electronics', price: 399.99, stock: 30 } },
+    { key: 'prod-005', value: { id: 'prod-005', name: 'Mechanical Keyboard', category: 'electronics', price: 149.99, stock: 75 } },
   ];
-
   try {
     await products.batchStore(batchProducts);
     console.log(`   Batch stored ${batchProducts.length} products\n`);
@@ -155,14 +90,16 @@ async function main() {
     console.log(`   Note: ${error}\n`);
   }
 
-  // 3. Get single item with proof verification (default)
+  // 3. Get single item (with proof verification — the SDK fetches the
+  // proof, verifies it against the consensus-verified app_hash, and only
+  // then returns the DataRecord).
   console.log('3. Get single item (with proof verification)...');
   try {
     const result = await products.get('prod-001');
     console.log('   Data retrieved and VERIFIED:');
-    console.log(`   Name: ${result.data.name}`);
-    console.log(`   Price: $${result.data.price}`);
-    console.log(`   Stock: ${result.data.stock}\n`);
+    console.log(`   Name:  ${result.name}`);
+    console.log(`   Price: $${result.price}`);
+    console.log(`   Stock: ${result.stock}\n`);
   } catch (error) {
     console.log(`   Note: ${error}\n`);
   }
@@ -172,29 +109,29 @@ async function main() {
   try {
     const result = await products.getUnverified('prod-001');
     console.log('   Data retrieved (unverified, faster):');
-    console.log(`   Name: ${result.data.name}`);
-    console.log(`   Price: $${result.data.price}\n`);
+    console.log(`   Name:  ${result.name}`);
+    console.log(`   Price: $${result.price}\n`);
   } catch (error) {
     console.log(`   Note: ${error}\n`);
   }
 
-  // 5. Get multiple items
+  // 5. Get multiple items (returns Record<key, DataRecord>)
   console.log('5. Get multiple items...');
   try {
     const results = await products.getMultiple(['prod-001', 'prod-002', 'prod-003']);
-    console.log(`   Retrieved ${results.length} items:`);
-    results.forEach((item: any) => {
-      console.log(`   - ${item.data?.name || 'Unknown'}: $${item.data?.price || 0}`);
+    const entries = Object.entries(results);
+    console.log(`   Retrieved ${entries.length} items:`);
+    entries.forEach(([key, item]) => {
+      console.log(`   - ${key}: ${item?.name ?? 'Unknown'} ($${item?.price ?? 0})`);
     });
     console.log();
   } catch (error) {
     console.log(`   Note: ${error}\n`);
   }
 
-  // 6. Query with filters
+  // 6. Queries
   console.log('6. Query with filters...');
 
-  // 6a. Query by category
   console.log('   6a. Products in "electronics" category:');
   try {
     const electronicsQuery: QueryRequest = {
@@ -210,13 +147,10 @@ async function main() {
     console.log(`       Note: ${error}`);
   }
 
-  // 6b. Query by price range
   console.log('\n   6b. Products between $50-$500:');
   try {
     const priceQuery: QueryRequest = {
-      filters: {
-        price: { $gte: 50, $lte: 500 },
-      },
+      filters: { price: { $gte: 50, $lte: 500 } },
       sort: { field: 'price', order: 'asc' },
       limit: 10,
     };
@@ -229,7 +163,6 @@ async function main() {
     console.log(`       Note: ${error}`);
   }
 
-  // 6c. Query with text search
   console.log('\n   6c. Search for "keyboard":');
   try {
     const searchQuery: QueryRequest = {
@@ -245,8 +178,7 @@ async function main() {
     console.log(`       Note: ${error}`);
   }
 
-  // 6d. Query with proof
-  console.log('\n   6d. Query with cryptographic proof:');
+  console.log('\n   6d. Query with cryptographic proof attached:');
   try {
     const proofQuery: QueryRequest = {
       filters: { category: 'electronics' },
@@ -256,10 +188,10 @@ async function main() {
     const results = await products.query(proofQuery);
     console.log(`       Found ${results.documents.length} documents`);
     if (results.proof) {
-      console.log(`       Proof included: ${results.proof.length / 2} bytes`);
+      console.log(`       Proof: ${results.proof.length / 2} bytes`);
     }
-    if (results.root_hash) {
-      console.log(`       Root hash: ${results.root_hash.substring(0, 32)}...`);
+    if (results.verifiedRootHash) {
+      console.log(`       Verified root: ${results.verifiedRootHash.substring(0, 32)}...`);
     }
   } catch (error) {
     console.log(`       Note: ${error}`);
@@ -273,26 +205,22 @@ async function main() {
       id: 'prod-001',
       name: 'Laptop Pro',
       category: 'electronics',
-      price: 1199.99, // Price reduced!
+      price: 1199.99,
       stock: 45,
       tags: ['laptop', 'computer', 'portable', 'on-sale'],
       on_sale: true,
       updated_at: Date.now(),
     });
-    console.log('   Updated prod-001:');
-    console.log('   - Price reduced from $1299.99 to $1199.99');
-    console.log('   - Added "on-sale" tag');
-    console.log('   - Set on_sale: true\n');
+    console.log('   Updated prod-001 (price reduced to $1199.99, on_sale=true)\n');
   } catch (error) {
     console.log(`   Note: ${error}\n`);
   }
 
-  // Verify the update
   console.log('   Verifying update...');
   try {
     const updated = await products.get('prod-001');
-    console.log(`   New price: $${updated.data.price}`);
-    console.log(`   On sale: ${updated.data.on_sale}\n`);
+    console.log(`   New price: $${updated.price}`);
+    console.log(`   On sale: ${updated.on_sale}\n`);
   } catch (error) {
     console.log(`   Note: ${error}\n`);
   }
@@ -306,50 +234,34 @@ async function main() {
     console.log(`   Note: ${error}\n`);
   }
 
-  // Verify deletion
-  console.log('   Verifying deletion...');
-  try {
-    await products.get('prod-005');
-    console.log('   Item still exists (unexpected)\n');
-  } catch (error) {
-    console.log('   Item no longer exists (expected)\n');
-  }
-
-  // 9. Get proof separately
+  // 9. Get proof separately (returns the hex string directly)
   console.log('9. Get proof for item...');
   try {
-    const proof = await products.getProof('prod-001');
-    console.log(`   Proof retrieved: ${proof.length / 2} bytes`);
-    console.log(`   Proof (first 64 chars): ${proof.substring(0, 64)}...\n`);
+    const proofHex = await products.getProof('prod-001');
+    console.log(`   Proof: ${proofHex.length / 2} bytes`);
+    console.log(`   Proof (first 64 chars): ${proofHex.substring(0, 64)}...\n`);
   } catch (error) {
     console.log(`   Note: ${error}\n`);
   }
 
-  // Summary
   console.log('Data Operations Summary');
   console.log('=======================');
-  console.log('CRUD Operations:');
-  console.log('  - store(key, value): Create or overwrite');
-  console.log('  - batchStore(items): Store multiple items atomically');
-  console.log('  - get(key): Retrieve with proof verification (secure)');
-  console.log('  - getUnverified(key): Retrieve without verification (fast)');
-  console.log('  - getMultiple(keys): Batch retrieve');
-  console.log('  - update(key, value): Update existing item');
-  console.log('  - delete(key): Remove item\n');
+  console.log('CRUD:');
+  console.log('  - store(key, value): create or overwrite');
+  console.log('  - batchStore(items): store many atomically');
+  console.log('  - get(key): retrieve with proof verification (secure)');
+  console.log('  - getUnverified(key): retrieve without verification (fast)');
+  console.log('  - getMultiple(keys): batch retrieve');
+  console.log('  - update(key, value): update existing item');
+  console.log('  - delete(key): remove item\n');
 
-  console.log('Query Operations:');
-  console.log('  - query({ filters }): Filter by field values');
-  console.log('  - query({ filters: { field: { $gte, $lte } } }): Range queries');
-  console.log('  - query({ search: { field, query } }): Text search');
-  console.log('  - query({ sort, limit, offset }): Pagination\n');
-
-  console.log('Verification:');
-  console.log('  - get() and query() include automatic verification');
-  console.log('  - getUnverified() and queryUnverified() skip verification');
-  console.log('  - getProof() retrieves proof separately\n');
+  console.log('Query:');
+  console.log('  - query({ filters }): filter by field values');
+  console.log('  - query({ filters: { field: { $gte, $lte } } }): range');
+  console.log('  - query({ search: { field, query } }): text search');
+  console.log('  - query({ sort, limit, offset }): pagination\n');
 
   console.log('Data operations example complete!');
 }
 
-// Run the example
 main().catch(console.error);

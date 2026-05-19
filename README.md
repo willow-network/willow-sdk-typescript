@@ -36,21 +36,21 @@ omitted or pointed at the same endpoint.
 ## Quick Start
 
 ```typescript
-import { WillowClient, generateEd25519KeyPair } from '@willow/sdk';
-import { generateWallet, createDidFromWallet } from '@willow/sdk';
+import { WillowClient, generateWallet, createDidFromWallet } from '@willow/sdk';
 
 // 1. Generate a wallet and DID
 const wallet = generateWallet();
 const didDocument = createDidFromWallet(wallet);
 
-// 2. Initialize the client
+// 2. Initialize the client (pre-seed config.did + privateKey so client.init()
+//    can fetch the key id from the DID document).
 const client = new WillowClient({
   apiUrl: 'http://localhost:3031',
   did: didDocument.id,
   privateKey: wallet.privateKey,
 });
 
-// 3. Register and authenticate
+// 3. Register and bootstrap the identity for per-request signing
 await client.registerDid(didDocument);
 await client.init();
 
@@ -64,6 +64,9 @@ await client.store('users', 'alice', {
 const data = await client.get('users', 'alice');
 console.log(data);
 ```
+
+For ad-hoc identity (no `config.did` baked in) just call
+`client.auth.setIdentity(did, privateKey, publicKeyId)` directly.
 
 ## Secure by Default: Automatic Proof Verification
 
@@ -355,9 +358,8 @@ For trustless verification via CometBFT light client protocol:
 ```typescript
 import { LightClient, LightClientConfigBuilder } from '@willow/sdk';
 
-// Configure light client
-const config = new LightClientConfigBuilder()
-  .chainId('willow-mainnet')
+// Configure light client (chainId is a required constructor arg)
+const config = new LightClientConfigBuilder('willow-mainnet')
   .validatorEndpoints([
     'http://validator1:26657',
     'http://validator2:26657',
@@ -428,15 +430,6 @@ const client = new WillowClient({
 
 ## Registration
 
-
-```typescript
-  name: 'My Application',
-  description: 'Built with Willow',
-  owner_did: didDocument.id,
-  admins: [],
-});
-```
-
 ### Register Dataset
 
 ```typescript
@@ -453,7 +446,7 @@ const dataset = await client.registerDataset({
       active: { type: 'boolean' },
     },
     indexes: [
-      { name: 'by_name', fields: ['name'], unique: false },
+      { name: 'by_name', fields: ['name'], unique: false, type: 'hash' },
     ],
     required_fields: ['name'],
   },
@@ -469,7 +462,7 @@ const dataset = await client.registerDataset({
 import { WillowError } from '@willow/sdk';
 
 try {
-  await client.get('subgrove', 'dataset', 'key');
+  await client.get('dataset-id', 'key');
 } catch (error) {
   if (error instanceof WillowError) {
     switch (error.code) {
@@ -510,7 +503,8 @@ try {
 | `getRootHash()` | Get consensus-verified root hash |
 | `getRootHashLocal()` | Get local node's root hash |
 | `collection(datasetId)` | Create collection helper |
-| `getSession()` | Get current session |
+| `auth.setIdentity(did, privateKey, publicKeyId)` | Set identity for per-request signing |
+| `auth.hasIdentity()` | Check whether an identity is set |
 
 ### Data Client Historical Methods
 
