@@ -17,7 +17,7 @@ import {
   QueryRequest,
 } from '../src/types';
 
-// Your private key (in production, load from secure storage)
+// RFC 8032 §7.1 Test 2 Ed25519 vector. In production, load from secure storage.
 const PRIVATE_KEY = '4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb';
 
 async function main() {
