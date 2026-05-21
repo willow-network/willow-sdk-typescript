@@ -4,11 +4,10 @@
  * Mirrors `willow_types::consensus::manifest::WillowManifest` in the Rust
  * workspace. The consensus validator rejects any `manifest_content` that
  * doesn't decode into this exact shape, so SDK callers should always
- * build their on-chain manifest bytes via `serializeManifest`.
- *
- * v1 scope is EVM-only. Solana data sources have a different shape
- * (`program_id` + `start_slot` + `instructions`) and will be added in a
- * follow-up alongside the indexer pipeline support.
+ * build their on-chain manifest bytes via `serializeManifest`. Each data
+ * source is either EVM (`address` + `abi` + `start_block` + `events`) or
+ * Solana (`program_id` + `start_slot` + `instructions`); the family is
+ * dispatched at parse time from the `network` field.
  */
 
 import {
@@ -49,7 +48,28 @@ export interface EvmDataSource {
   events: string[];
 }
 
-export type DataSource = EvmDataSource;
+/** One indexed Solana program within a manifest. */
+export interface SolanaDataSource {
+  name: string;
+  network: SupportedChain;
+  /** Base58-encoded 32-byte program id. */
+  program_id: string;
+  start_slot: number;
+  /** Variable-length instruction discriminators, `0x` + even hex chars (>=2). */
+  instructions: string[];
+}
+
+export type DataSource = EvmDataSource | SolanaDataSource;
+
+/** Type guard: data source is EVM (has `address` field). */
+export function isEvmDataSource(ds: DataSource): ds is EvmDataSource {
+  return (ds as EvmDataSource).address !== undefined;
+}
+
+/** Type guard: data source is Solana (has `program_id` field). */
+export function isSolanaDataSource(ds: DataSource): ds is SolanaDataSource {
+  return (ds as SolanaDataSource).program_id !== undefined;
+}
 
 export interface WillowManifest {
   spec_version: typeof MANIFEST_SPEC_VERSION;
@@ -66,14 +86,14 @@ export interface WillowManifest {
  */
 export function serializeManifest(m: WillowManifest): Uint8Array {
   validateManifest(m);
-  // Normalize EVM addresses to lowercase to match the Rust round-trip.
   const normalized: WillowManifest = {
     spec_version: m.spec_version,
     ...(m.description !== undefined ? { description: m.description } : {}),
-    data_sources: m.data_sources.map((ds) => ({
-      ...ds,
-      address: ds.address.toLowerCase(),
-    })),
+    data_sources: m.data_sources.map((ds) =>
+      isEvmDataSource(ds)
+        ? { ...ds, address: ds.address.toLowerCase() }
+        : { ...ds, instructions: ds.instructions.map((d) => d.toLowerCase()) },
+    ),
   };
   return new TextEncoder().encode(JSON.stringify(normalized));
 }
@@ -140,33 +160,52 @@ export function validateManifest(m: WillowManifest): void {
 }
 
 function validateDataSource(ds: DataSource, path: string): void {
-  if (!ds.name || ds.name.length === 0) {
-    throw new ManifestValidationError(`${path}.name must not be empty`, `${path}.name`);
-  }
-  if (ds.name.length > MAX_NAME_LEN) {
-    throw new ManifestValidationError(
-      `${path}.name length ${ds.name.length} exceeds maximum ${MAX_NAME_LEN}`,
-      `${path}.name`,
-    );
-  }
-  if (!/^[A-Za-z0-9_-]+$/.test(ds.name)) {
-    throw new ManifestValidationError(
-      `${path}.name ${JSON.stringify(ds.name)} must be alphanumeric, '-', or '_'`,
-      `${path}.name`,
-    );
-  }
+  validateName(ds.name, path);
   if (!isSupportedChain(ds.network)) {
     throw new ManifestValidationError(
       `${path}.network ${JSON.stringify(ds.network)} is not a canonical chain`,
       `${path}.network`,
     );
   }
-  if (chainFamily(ds.network) !== "evm") {
+  const family = chainFamily(ds.network);
+  if (family === "evm") {
+    if (!isEvmDataSource(ds)) {
+      throw new ManifestValidationError(
+        `${path}.network ${JSON.stringify(ds.network)} is EVM-family but data source is missing 'address'`,
+        path,
+      );
+    }
+    validateEvmDataSource(ds, path);
+  } else {
+    if (!isSolanaDataSource(ds)) {
+      throw new ManifestValidationError(
+        `${path}.network ${JSON.stringify(ds.network)} is Solana-family but data source is missing 'program_id'`,
+        path,
+      );
+    }
+    validateSolanaDataSource(ds, path);
+  }
+}
+
+function validateName(name: string, path: string): void {
+  if (!name || name.length === 0) {
+    throw new ManifestValidationError(`${path}.name must not be empty`, `${path}.name`);
+  }
+  if (name.length > MAX_NAME_LEN) {
     throw new ManifestValidationError(
-      `${path}.network ${JSON.stringify(ds.network)} is non-EVM; Solana data sources have a different shape (program_id / start_slot / instructions) and are not yet supported by this builder`,
-      `${path}.network`,
+      `${path}.name length ${name.length} exceeds maximum ${MAX_NAME_LEN}`,
+      `${path}.name`,
     );
   }
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+    throw new ManifestValidationError(
+      `${path}.name ${JSON.stringify(name)} must be alphanumeric, '-', or '_'`,
+      `${path}.name`,
+    );
+  }
+}
+
+function validateEvmDataSource(ds: EvmDataSource, path: string): void {
   if (!/^0x[0-9a-fA-F]{40}$/.test(ds.address)) {
     throw new ManifestValidationError(
       `${path}.address must be 0x + 40 hex chars (got ${JSON.stringify(ds.address)})`,
@@ -201,6 +240,53 @@ function validateDataSource(ds: DataSource, path: string): void {
     );
   }
   ds.events.forEach((sig, eIdx) => validateEventSignature(sig, `${path}.events[${eIdx}]`));
+}
+
+const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+function validateSolanaDataSource(ds: SolanaDataSource, path: string): void {
+  if (!ds.program_id || ds.program_id.length < 32 || ds.program_id.length > 44) {
+    throw new ManifestValidationError(
+      `${path}.program_id must be a base58-encoded 32-byte pubkey (got ${JSON.stringify(ds.program_id)})`,
+      `${path}.program_id`,
+    );
+  }
+  for (const c of ds.program_id) {
+    if (!BASE58_ALPHABET.includes(c)) {
+      throw new ManifestValidationError(
+        `${path}.program_id contains invalid base58 character ${JSON.stringify(c)}`,
+        `${path}.program_id`,
+      );
+    }
+  }
+  if (!Number.isInteger(ds.start_slot) || ds.start_slot < 0) {
+    throw new ManifestValidationError(
+      `${path}.start_slot must be a non-negative integer`,
+      `${path}.start_slot`,
+    );
+  }
+  if (!Array.isArray(ds.instructions) || ds.instructions.length === 0) {
+    throw new ManifestValidationError(
+      `${path}.instructions must declare at least one discriminator`,
+      `${path}.instructions`,
+    );
+  }
+  if (ds.instructions.length > MAX_EVENTS_PER_SOURCE) {
+    throw new ManifestValidationError(
+      `${path}.instructions has ${ds.instructions.length} entries (maximum ${MAX_EVENTS_PER_SOURCE})`,
+      `${path}.instructions`,
+    );
+  }
+  ds.instructions.forEach((d, iIdx) => validateDiscriminator(d, `${path}.instructions[${iIdx}]`));
+}
+
+function validateDiscriminator(d: string, path: string): void {
+  if (!/^0x([0-9a-fA-F]{2})+$/.test(d)) {
+    throw new ManifestValidationError(
+      `${path} must be 0x + an even, non-zero number of hex chars (got ${JSON.stringify(d)})`,
+      path,
+    );
+  }
 }
 
 /**
