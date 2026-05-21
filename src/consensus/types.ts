@@ -275,8 +275,7 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
     }
     case 'DataStore': {
       const t = transaction as DataStoreTx;
-      let data: unknown;
-      try { data = JSON.parse(t.data); } catch { data = t.data; }
+      const data = Array.from(new TextEncoder().encode(t.data));
       return {
         StoreData: {
           subgrove_id: t.subgroveId,
