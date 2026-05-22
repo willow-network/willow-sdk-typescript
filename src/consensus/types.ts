@@ -388,17 +388,8 @@ export function createSignMessage(txType: string, transaction: Transaction): str
     }
 
     case 'DataStore': {
-      // Format: "{subgrove_id}:{key}:{json_data}"
-      // The JSON data must be key-sorted to match Rust's serde_json::to_string
-      // output (serde_json::Value serializes Map keys alphabetically).
       const tx = transaction as DataStoreTx;
-      let sortedData: string;
-      try {
-        sortedData = stableJsonStringify(JSON.parse(tx.data));
-      } catch {
-        sortedData = tx.data;
-      }
-      return `${tx.subgroveId}:${tx.key}:${sortedData}`;
+      return `${tx.subgroveId}:${tx.key}:${tx.data}`;
     }
 
     case 'StoreFileManifest': {

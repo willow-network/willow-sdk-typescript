@@ -122,6 +122,11 @@ export class WillowClient {
       this.auth.getPublicKeyId()!,
       signEd25519,
     );
+    if (!result.success) {
+      throw new Error(
+        `registerDataset failed: ${result.errorMessage ?? result.rawLog ?? 'unknown'}`,
+      );
+    }
     return {
       dataset_id: request.dataset_id,
       name: request.name,
@@ -163,7 +168,7 @@ export class WillowClient {
     value: any,
   ): Promise<void> {
     this.requireIdentity();
-    await this.consensus.storeData(
+    const result = await this.consensus.storeData(
       datasetId,
       key,
       value,
@@ -172,6 +177,11 @@ export class WillowClient {
       this.auth.getPublicKeyId()!,
       signEd25519,
     );
+    if (!result.success) {
+      throw new Error(
+        `store failed: ${result.errorMessage ?? result.rawLog ?? 'unknown'}`,
+      );
+    }
   }
 
   /**
