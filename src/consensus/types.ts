@@ -206,9 +206,33 @@ export interface DeregisterSubgroveTx {
 }
 
 /**
+ * MCP receipt-batch anchor with chain-enforced per-DID monotonicity.
+ * Mirrors `willow_types::consensus::transactions::SubmitAnchorTx`.
+ * `anchorHash` is the SHA-256 of the canonical anchor body (sorted-key
+ * JSON of all fields except signature/publicKeyId/nonce/anchorHash);
+ * `merkleRoot` is the Merkle root over `receiptHashes`. The chain
+ * recomputes both and rejects on mismatch.
+ */
+export interface SubmitAnchorTx {
+  did: string;
+  anchorId: string;
+  sequenceRange: [number, number];
+  merkleRoot: string;
+  count: number;
+  receiptHashes: string[];
+  timestamp: string;
+  previousAnchorHash: string;
+  anchorHash: string;
+  isGenesis: boolean;
+  signature?: string;
+  publicKeyId?: string;
+  nonce?: number;
+}
+
+/**
  * Transaction type union
  */
-export type Transaction = RegisterDidTx | RegisterSubgroveTx | TransferTx | DataStoreTx | StoreFileManifestTx | DeleteFileManifestTx | DeregisterSubgroveTx;
+export type Transaction = RegisterDidTx | RegisterSubgroveTx | TransferTx | DataStoreTx | StoreFileManifestTx | DeleteFileManifestTx | DeregisterSubgroveTx | SubmitAnchorTx;
 
 /**
  * JSON.stringify with keys sorted alphabetically at every level.
@@ -325,6 +349,26 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
         },
       };
     }
+    case 'SubmitAnchor': {
+      const t = transaction as SubmitAnchorTx;
+      return {
+        SubmitAnchor: {
+          did: t.did,
+          anchor_id: t.anchorId,
+          sequence_range: t.sequenceRange,
+          merkle_root: t.merkleRoot,
+          count: t.count,
+          receipt_hashes: t.receiptHashes,
+          timestamp: t.timestamp,
+          previous_anchor_hash: t.previousAnchorHash,
+          anchor_hash: t.anchorHash,
+          is_genesis: t.isGenesis,
+          signature: sig,
+          public_key_id: publicKeyId,
+          nonce,
+        },
+      };
+    }
     default:
       return { [txType]: tx };
   }
@@ -405,6 +449,14 @@ export function createSignMessage(txType: string, transaction: Transaction): str
     case 'DeregisterSubgrove': {
       const tx = transaction as DeregisterSubgroveTx;
       return `DeregisterSubgrove:${tx.subgroveId}:${tx.ownerDid}:${tx.nonce || 0}`;
+    }
+
+    case 'SubmitAnchor': {
+      // Domain-tag the signing message so a SubmitAnchor signature can't
+      // be replayed against another tx type. Matches the prefix used by
+      // `crates/consensus/src/willow_cometbft/anchor_transactions.rs`.
+      const tx = transaction as SubmitAnchorTx;
+      return `SubmitAnchor\n${tx.anchorHash}\n${tx.nonce || 0}`;
     }
 
     default:

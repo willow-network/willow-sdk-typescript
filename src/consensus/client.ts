@@ -4,7 +4,8 @@
  * Provides direct transaction broadcasting to CometBFT consensus layer.
  */
 
-import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, RegisterDidTx, RegisterSubgroveTx, SubgroveMode, RetentionWindow, TransferTx, DataStoreTx, StoreFileManifestTx, DeleteFileManifestTx, DeregisterSubgroveTx, Transaction, createTransactionWrapper, createSignMessage } from './types';
+import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, RegisterDidTx, RegisterSubgroveTx, SubgroveMode, RetentionWindow, TransferTx, DataStoreTx, StoreFileManifestTx, DeleteFileManifestTx, DeregisterSubgroveTx, SubmitAnchorTx, Transaction, createTransactionWrapper, createSignMessage } from './types';
+import { canonicalizeAnchorBody, computeAnchorMerkleRoot, sha256Hex } from './anchor-canonical';
 
 /**
  * CometBFT consensus client for direct transaction broadcasting
@@ -203,6 +204,64 @@ export class ConsensusClient {
     };
 
     return this.signAndBroadcast('DeregisterSubgrove', tx, privateKey, signFunction);
+  }
+
+  /**
+   * Submit an MCP receipt-batch anchor. The chain enforces per-DID
+   * monotonicity (genesis-once, sequence contiguity, prev_anchor_hash
+   * linkage) and recomputes both `anchorHash` and `merkleRoot` from
+   * the canonical body — so the values must match byte-for-byte.
+   * `merkleRoot` is computed automatically if omitted; `anchorHash`
+   * is always computed here.
+   */
+  async submitAnchor(
+    fields: {
+      did: string;
+      anchorId: string;
+      sequenceRange: [number, number];
+      receiptHashes: string[];
+      timestamp: string;
+      previousAnchorHash: string;
+      isGenesis: boolean;
+      merkleRoot?: string;
+    },
+    privateKey: string,
+    publicKeyId: string,
+    signFunction: (message: string, privateKey: string) => string,
+  ): Promise<BroadcastResult> {
+    const count = fields.receiptHashes.length;
+    const merkleRoot = fields.merkleRoot ?? computeAnchorMerkleRoot(fields.receiptHashes);
+
+    const canonical = canonicalizeAnchorBody({
+      anchor_id: fields.anchorId,
+      count,
+      did: fields.did,
+      is_genesis: fields.isGenesis,
+      merkle_root: merkleRoot,
+      previous_anchor_hash: fields.previousAnchorHash,
+      receipt_hashes: fields.receiptHashes,
+      sequence_range: fields.sequenceRange,
+      timestamp: fields.timestamp,
+    });
+    const anchorHash = sha256Hex(canonical);
+
+    const tx: SubmitAnchorTx = {
+      did: fields.did,
+      anchorId: fields.anchorId,
+      sequenceRange: fields.sequenceRange,
+      merkleRoot,
+      count,
+      receiptHashes: fields.receiptHashes,
+      timestamp: fields.timestamp,
+      previousAnchorHash: fields.previousAnchorHash,
+      anchorHash,
+      isGenesis: fields.isGenesis,
+      signature: '',
+      publicKeyId,
+      nonce: await this.getNextNonce(fields.did),
+    };
+
+    return this.signAndBroadcast('SubmitAnchor', tx, privateKey, signFunction);
   }
 
   /**
