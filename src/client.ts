@@ -1,6 +1,7 @@
 import { WillowAuth, signEd25519 } from "./auth";
 import { WillowData } from "./data";
 import { FileOperations } from "./files";
+import { EthOperations } from "./eth-state";
 import { ConsensusClient } from "./consensus";
 import { BroadcastResult } from "./consensus/types";
 import { WillowIndexers } from "./indexers";
@@ -47,6 +48,8 @@ export class WillowClient {
   public indexers: WillowIndexers;
   /** GraphQL subscription client (WebSocket → validator `/graphql/ws`). */
   public subscriptions: WillowSubscriptions;
+  /** Verifiable Ethereum state-read operations (`/verifiable-rpc/eth/*`). */
+  public eth: EthOperations;
 
   constructor(config: WillowConfig) {
     this.config = config;
@@ -64,6 +67,7 @@ export class WillowClient {
     this.subscriptions = new WillowSubscriptions(config.apiUrl, this.indexers);
 
     this.files = new FileOperations(config.apiUrl, () => this.auth.getAuthHeaders('GET', '/files'));
+    this.eth = new EthOperations(config.indexerUrl ?? config.apiUrl);
 
     this.consensus = new ConsensusClient({
       consensusRpcUrl: cometUrl,

@@ -54,6 +54,26 @@ export {
 // Export GroveDB proof verification
 export * as grovedb from "./grovedb";
 
+// Verifiable Ethereum state reads.
+export {
+  EthOperations,
+  StateVerifyMode,
+  verifyMptProof,
+  verifyStateProof,
+} from "./eth-state";
+export type {
+  AccountState,
+  EthCallRequestBody,
+  EthStateRequest,
+  EthVerifiableRpcResponse,
+  MptProof,
+  StateProof,
+  StorageSlotProof,
+  VerifiedCall,
+  VerifiedStateRead,
+  VerifiedStorage,
+} from "./eth-state";
+
 // Canonical WillowManifest builder + chain identifiers
 export * as manifest from "./manifest";
 export type {
