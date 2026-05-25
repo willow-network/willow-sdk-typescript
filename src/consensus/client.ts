@@ -485,10 +485,10 @@ export class ConsensusClient {
   }
 
   /**
-   * Get the next nonce for a DID
-   *
-   * Fetches the current nonce from the blockchain and returns the next value.
-   * Falls back to in-memory cache if API is unavailable.
+   * Get the next nonce for a DID. Falls back to the in-memory cache only
+   * if a prior call populated it — if the API is unreachable on first use
+   * the error is propagated rather than fabricating nonce=1, which would
+   * silently submit txs with a stale nonce.
    */
   private async getNextNonce(did: string): Promise<number> {
     try {
@@ -497,10 +497,12 @@ export class ConsensusClient {
       this.nonceCache.set(did, nextNonce);
       return nextNonce;
     } catch (error) {
-      // Fall back to cache if API unavailable
+      const cached = this.nonceCache.get(did);
+      if (cached === undefined) {
+        throw error;
+      }
       console.warn('Failed to fetch nonce from API, using cache:', error);
-      const currentNonce = this.nonceCache.get(did) || 0;
-      const nextNonce = currentNonce + 1;
+      const nextNonce = cached + 1;
       this.nonceCache.set(did, nextNonce);
       return nextNonce;
     }
