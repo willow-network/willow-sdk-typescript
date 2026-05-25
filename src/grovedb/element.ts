@@ -108,16 +108,17 @@ function readElement(reader: BincodeReader): Element {
 }
 
 /**
- * Read `ReferencePathType`. The 7 variants are documented in
- * grovedb/src/reference_path.rs.
+ * Read `ReferencePathType` and return the path bytes as `Uint8Array[][]`.
  *
- * We don't reconstruct the full typed path tree into our TS `Element.Reference`
- * payload — the consumer of a Reference element typically needs the
- * destination, not the raw path-type variant. For now we decode all variants
- * into a uniform `Uint8Array[][]` by flattening their path fields. Callers who
- * need the structured reference type should call a dedicated helper; this one
- * exists so that `deserializeElement` can walk the full byte stream without
- * throwing on reference elements.
+ * The 7 variants encode the same path in different shapes (some include a
+ * small `u8` height prefix; some carry a single byte-slice instead of a
+ * vector). This reader consumes the correct number of bytes per variant so
+ * `deserializeElement` walks the byte stream and the resulting element hash
+ * is correct — but it deliberately collapses the variant tag, since proof
+ * verification doesn't need it. Callers that need to *resolve* a reference
+ * (follow it to its destination) and therefore care about the variant tag
+ * should add a dedicated typed-reference reader; this one is hash-faithful,
+ * not structure-faithful.
  */
 function readReferencePath(reader: BincodeReader): Uint8Array[][] {
   const variant = reader.readVariant();

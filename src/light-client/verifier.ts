@@ -9,6 +9,7 @@ import { ed25519 } from '@noble/curves/ed25519';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
 import { LightBlock, Header, Commit, ValidatorSet, CommitSig, TrustThreshold, VerificationResult, LightClientError, GroveDBQueryProof, getTrustFraction, bytesToHex } from './types';
+import { verifyGroveDBProof } from '../grovedb';
 
 /**
  * Verifies block headers using CometBFT light client protocol
@@ -298,53 +299,15 @@ export class ProofVerifier {
   }
 
   /**
-   * Verify GroveDB proof and return computed root hash
+   * Verify a GroveDB proof and return the computed root hash.
    *
-   * Note: Full GroveDB proof verification requires parsing the binary proof format.
-   * This implementation extracts the root hash from the proof structure.
-   * For full verification, use the server-assisted /verify-proof endpoint.
+   * Decodes the bincode-encoded proof, walks each Merk layer, and returns
+   * the cryptographically correct root. The caller compares this against a
+   * trusted root (e.g. a light-client-verified app hash) to establish
+   * authenticity.
    */
-  private async verifyGroveDbProof(proofBytes: Uint8Array, queryResult: Uint8Array[]): Promise<Uint8Array> {
-    // GroveDB proofs contain the root hash embedded in the proof structure.
-    // The exact format depends on the GroveDB version.
-    //
-    // For now, we extract the root hash using heuristics.
-    // A full implementation would parse the proof format properly.
-
-    if (proofBytes.length < 32) {
-      throw new Error('Proof too short to contain root hash');
-    }
-
-    // Try to find a 32-byte hash in the proof
-    // The root hash is typically near the beginning of the proof
-    for (let offset = 0; offset <= proofBytes.length - 32; offset++) {
-      const possibleHash = proofBytes.slice(offset, offset + 32);
-      if (this.looksLikeHash(possibleHash)) {
-        return possibleHash;
-      }
-    }
-
-    // Fallback: compute hash of proof + results (for basic validation)
-    const combined = this.concatArrays([proofBytes, ...queryResult]);
-    return sha256(combined);
-  }
-
-  /**
-   * Check if a byte sequence looks like a hash (has reasonable entropy)
-   */
-  private looksLikeHash(bytes: Uint8Array): boolean {
-    if (bytes.length !== 32) return false;
-
-    // Check if all zeros or all ones (unlikely to be a real hash)
-    const allZeros = bytes.every(b => b === 0);
-    const allOnes = bytes.every(b => b === 0xFF);
-    if (allZeros || allOnes) return false;
-
-    // Check for reasonable entropy (at least some variation)
-    const uniqueBytes = new Set(bytes);
-    if (uniqueBytes.size < 8) return false;
-
-    return true;
+  private async verifyGroveDbProof(proofBytes: Uint8Array, _queryResult: Uint8Array[]): Promise<Uint8Array> {
+    return verifyGroveDBProof(proofBytes).rootHash;
   }
 
   /**
@@ -399,19 +362,5 @@ export class ProofVerifier {
       if (a[i] !== b[i]) return false;
     }
     return true;
-  }
-
-  /**
-   * Utility: Concatenate multiple Uint8Arrays
-   */
-  private concatArrays(arrays: Uint8Array[]): Uint8Array {
-    const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0);
-    const result = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const arr of arrays) {
-      result.set(arr, offset);
-      offset += arr.length;
-    }
-    return result;
   }
 }
