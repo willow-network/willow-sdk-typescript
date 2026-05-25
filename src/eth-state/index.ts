@@ -36,8 +36,13 @@ export class EthOperations {
   private http: AxiosInstance;
   private mode: StateVerifyMode = StateVerifyMode.Strict;
 
-  constructor(private indexerBaseUrl: string, http?: AxiosInstance) {
-    this.http = http ?? axios.create({ baseURL: indexerBaseUrl });
+  constructor(private indexerBaseUrl: string, http?: AxiosInstance, apiKey?: string) {
+    this.http =
+      http ??
+      axios.create({
+        baseURL: indexerBaseUrl,
+        headers: apiKey ? { 'X-API-Key': apiKey } : {},
+      });
   }
 
   /** Set the verification mode for subsequent calls. */

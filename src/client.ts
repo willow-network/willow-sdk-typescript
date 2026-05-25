@@ -53,7 +53,7 @@ export class WillowClient {
 
   constructor(config: WillowConfig) {
     this.config = config;
-    this.auth = new WillowAuth(config.apiUrl);
+    this.auth = new WillowAuth(config.apiUrl, config.apiKey);
     const cometUrl = config.consensusRpcUrl ?? deriveCometBftUrl(config.apiUrl);
 
     // Discovery layer. When the caller set `indexerUrl` explicitly, the
@@ -67,7 +67,7 @@ export class WillowClient {
     this.subscriptions = new WillowSubscriptions(config.apiUrl, this.indexers);
 
     this.files = new FileOperations(config.apiUrl, () => this.auth.getAuthHeaders('GET', '/files'));
-    this.eth = new EthOperations(config.indexerUrl ?? config.apiUrl);
+    this.eth = new EthOperations(config.indexerUrl ?? config.apiUrl, undefined, config.apiKey);
 
     this.consensus = new ConsensusClient({
       consensusRpcUrl: cometUrl,

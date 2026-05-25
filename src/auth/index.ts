@@ -152,14 +152,40 @@ export class WillowAuth {
   private privateKey?: string;
   private publicKeyId?: string;
   private algorithm?: SignatureAlgorithm;
+  private apiKey?: string;
 
-  constructor(apiUrl: string) {
+  constructor(apiUrl: string, apiKey?: string) {
+    this.apiKey = apiKey;
     this.api = axios.create({
       baseURL: apiUrl,
       headers: {
         'Content-Type': 'application/json',
+        ...(apiKey ? { 'X-API-Key': apiKey } : {}),
       },
     });
+  }
+
+  /**
+   * Set or rotate the managed-tier API key. Affects all subsequent
+   * requests from this client.
+   */
+  setApiKey(apiKey: string | undefined): void {
+    this.apiKey = apiKey;
+    if (apiKey) {
+      this.api.defaults.headers.common['X-API-Key'] = apiKey;
+    } else {
+      delete this.api.defaults.headers.common['X-API-Key'];
+    }
+  }
+
+  /** Returns the configured API key (if any). */
+  getApiKey(): string | undefined {
+    return this.apiKey;
+  }
+
+  /** Returns `{ 'X-API-Key': key }` when a key is set, else `{}`. */
+  apiKeyHeaders(): Record<string, string> {
+    return this.apiKey ? { 'X-API-Key': this.apiKey } : {};
   }
 
   /**
@@ -265,13 +291,20 @@ export class WillowAuth {
 
   /**
    * Get authentication headers for an API request.
-   * Returns signature headers if identity is set, empty object otherwise.
+   *
+   * Returns the merge of:
+   *  - DID-signature headers (X-DID, X-Public-Key-ID, X-Signature, X-Timestamp)
+   *    when an identity is set via setIdentity().
+   *  - X-API-Key when a key is set via the constructor or setApiKey().
+   *
+   * Either, both, or neither may be present.
    */
   getAuthHeaders(method: string, path: string): Record<string, string> {
+    const apiKeyHeaders = this.apiKeyHeaders();
     if (!this.hasIdentity()) {
-      return {};
+      return apiKeyHeaders;
     }
-    return this.signRequest(method, path);
+    return { ...this.signRequest(method, path), ...apiKeyHeaders };
   }
 
   /**

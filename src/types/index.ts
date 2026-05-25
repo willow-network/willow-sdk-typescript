@@ -20,6 +20,16 @@ export interface WillowConfig {
   consensusRpcUrl?: string;
   did?: string;
   privateKey?: string;
+  /**
+   * Managed-tier API key (`wk_…`). When set, the SDK sends
+   * `X-API-Key: <apiKey>` on every authenticated request alongside any
+   * DID-signature headers. Mint a key at https://dashboard.willow.tech/account.
+   *
+   * Required for queries and writes against `api.willow.tech` /
+   * `indexer.willow.tech`. Public metadata reads work without a key but
+   * are subject to stricter per-IP rate limits.
+   */
+  apiKey?: string;
   proofVerificationOptions?: ProofVerificationOptions;
 }
 
