@@ -67,18 +67,13 @@ export class LightClient {
   /**
    * Initialize the light client using trust-on-first-use.
    *
-   * This fetches the latest block from validators and trusts it as the initial state.
-   * All subsequent blocks are verified against this initial trusted state.
-   *
-   * @important TODO: When mainnet/testnet launches, replace trust-on-first-use
-   * with hardcoded checkpoint headers for true trustless initialization.
-   * Trust-on-first-use is secure for subsequent operations but trusts the
-   * initial block from the connected validators.
+   * Fetches the latest block from validators and trusts it as the initial
+   * state. Every subsequent block is verified against that initial trusted
+   * state. Pin a known-good checkpoint header instead for production
+   * deployments.
    */
   async initializeWithTrustOnFirstUse(): Promise<void> {
     // Fetch the latest block from validators
-    // TODO: When mainnet/testnet launches, use hardcoded checkpoint headers
-    // instead of trust-on-first-use for true trustless initialization from genesis.
     const latestHeader = await this.fetchHeaderFromValidators(0); // 0 = latest
     if (!latestHeader) {
       throw new LightClientError('Could not fetch latest header from validators for trust-on-first-use initialization');

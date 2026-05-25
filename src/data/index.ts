@@ -115,14 +115,10 @@ export class WillowData {
   /**
    * Get or create a light client for trustless verification.
    *
-   * This auto-initializes a light client using trust-on-first-use:
-   * the first block received from validators is trusted, and all subsequent
-   * blocks are verified against it.
-   *
-   * @important TODO: When mainnet/testnet launches, replace trust-on-first-use
-   * with hardcoded checkpoint headers for true trustless initialization.
-   * Trust-on-first-use is secure for subsequent operations but trusts the
-   * initial block from the connected validators.
+   * Auto-initializes a light client using trust-on-first-use: the first
+   * block received from validators is trusted, and every subsequent block
+   * is verified against it. Pin a known-good checkpoint header instead
+   * for production deployments.
    */
   private async getOrCreateLightClient(): Promise<LightClient> {
     if (this.lightClient) {
@@ -135,8 +131,6 @@ export class WillowData {
     }
 
     this.lightClientInitPromise = (async () => {
-      // TODO: When mainnet/testnet launches, use hardcoded checkpoint headers
-      // instead of trust-on-first-use for true trustless initialization from genesis.
       const config: LightClientConfig = {
         chainId: "willow-chain",
         validatorEndpoints: [this.cometbftRpcUrl ?? this.apiUrl.replace(":3031", ":26657")],
@@ -465,11 +459,8 @@ export class WillowData {
   /**
    * Get the verified root hash using the light client.
    *
-   * This uses trustless verification through the light client instead of
-   * asking the node for the root hash.
-   *
-   * @important TODO: When mainnet/testnet launches, the light client will be
-   * initialized with hardcoded checkpoint headers instead of trust-on-first-use.
+   * Uses the light client for trustless verification. Auto-initializes
+   * with trust-on-first-use if no light client is configured.
    *
    * @private
    */

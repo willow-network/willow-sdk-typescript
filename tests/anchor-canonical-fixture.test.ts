@@ -1,13 +1,9 @@
 /**
- * Cross-language fixture test: confirm the TypeScript canonical anchor
- * body emits the same bytes as the pinned fixture in
- * `tests/fixtures/anchor_canonical_body.json`. The Rust validator
- * (crates/consensus/.../tests/anchor_transactions.rs::canonical_body_matches_pinned_fixture)
- * runs the same fixture through its own canonicalize implementation.
- * If either side drifts, its CI fails.
- *
- * Update both sides in lockstep — see `crates/consensus/src/willow_cometbft/anchor_transactions.rs::canonicalize_anchor_body`
- * and `sdk/willow-typescript/src/consensus/anchor-canonical.ts::canonicalizeAnchorBody`.
+ * Cross-language fixture test: confirm the TypeScript canonical anchor body
+ * emits the same bytes as the pinned fixture in
+ * `tests/fixtures/anchor_canonical_body.json`. The Rust validator runs the
+ * same fixture through its own canonicalize implementation; if either side
+ * drifts, its CI fails. Update both sides in lockstep.
  */
 
 import { readFileSync } from 'fs';

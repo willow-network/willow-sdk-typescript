@@ -369,8 +369,8 @@ export class ConsensusClient {
    * Goes through the API server's `POST /tx/submit` endpoint: the server
    * accepts the JSON-encoded Transaction, bincode-encodes it, and forwards
    * to CometBFT's `broadcast_tx_sync`. The chain's on-the-wire format is
-   * bincode (see docs/todo/proposal-bincode-wire.md) — this keeps the SDK
-   * on JSON without implementing a bincode encoder per language.
+   * bincode — letting the API server handle the conversion keeps the SDK on
+   * JSON without implementing a bincode encoder per language.
    */
   private async broadcastTransaction(transaction: any): Promise<BroadcastResult> {
     if (!this.config.apiUrl) {

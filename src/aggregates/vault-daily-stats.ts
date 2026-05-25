@@ -13,8 +13,7 @@
  * The aggregate value isn't directly bound by the GKR `output_root` for
  * the day — each per-block proof commits to per-block totals, and the
  * sidecar sums them locally. To verify a day's value cryptographically,
- * fetch every per-block proof in the day's block range and re-run the
- * sum. See issue #311 for the long-term cryptographic-binding paths.
+ * fetch every per-block proof in the day's block range and re-run the sum.
  */
 
 const KEY_PREFIX_BYTES = new TextEncoder().encode('vds:');

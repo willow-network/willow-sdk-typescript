@@ -3,15 +3,8 @@
  * three subgrove modes.
  *
  * These strings MUST match what the Rust consensus validator reconstructs
- * server-side. If they drift, every registration fails signature
- * validation with no client-side warning — exactly the bug this test
- * caught (BlockchainIndexing was signing the wrong thing).
- *
- * Server-side references:
- *   - DataStorage / FileStorage → crates/consensus/src/transaction_validator.rs
- *     `create_register_subgrove_message` → `validate_register_subgrove_signature`
- *   - BlockchainIndexing → crates/consensus/src/willow_cometbft/subgrove_transactions.rs
- *     `let signing_payload = format!("RegisterSubgrove:{}:{}:{}", ...)`
+ * server-side. If they drift, every registration fails signature validation
+ * with no client-side warning.
  */
 
 import { createSignMessage } from '../src/consensus/types';

@@ -1,9 +1,9 @@
 /**
  * Canonical anchor body + Merkle root helpers.
  *
- * **MUST** produce byte-identical output to the Rust validator in
- * `crates/consensus/src/willow_cometbft/anchor_transactions.rs::canonicalize_anchor_body`
- * and `compute_merkle_root` so the chain accepts the recomputed hashes.
+ * **MUST** produce byte-identical output to the Rust validator's
+ * `canonicalize_anchor_body` and `compute_merkle_root` so the chain
+ * accepts the recomputed hashes.
  */
 
 import { createHash } from 'crypto';
@@ -16,7 +16,7 @@ export function sha256Hex(input: string | Uint8Array): string {
 
 /**
  * Anchor body fields the chain hashes. Keys must be emitted in
- * alphabetical order; the Rust side hardcodes the order in
+ * alphabetical order; the validator hardcodes the order in
  * `canonicalize_anchor_body`.
  */
 export interface AnchorBodyInput {
