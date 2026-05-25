@@ -12,8 +12,7 @@ import axios, { AxiosInstance } from "axios";
 import { ApiResponse } from "../types";
 
 /**
- * Matches `ApiIndexerInfo` on the server side.
- * See `crates/indexing/src/indexing_service.rs`.
+ * Wire shape of indexer registration info returned by the API.
  */
 export interface ApiIndexerInfo {
   indexer_did: string;

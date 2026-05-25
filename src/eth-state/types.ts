@@ -1,10 +1,9 @@
 /**
  * Wire types for verifiable Ethereum state reads.
  *
- * Mirrors `crates/types/src/state_proof.rs`. The Rust server serializes
- * fixed-byte arrays as JSON arrays of numbers (default serde behavior),
- * so we mirror that on the wire here. Hex-string accessors are exposed
- * in `EthOperations` for ergonomics.
+ * Fixed-byte arrays are serialized as JSON arrays of numbers (matching
+ * the server's default serde behavior). Hex-string accessors are
+ * exposed via `EthOperations` for ergonomics.
  */
 
 import { type AddressLike, type BytesLike } from "ethers";

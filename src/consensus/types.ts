@@ -386,11 +386,10 @@ function schemaHash(schema: string): string {
 }
 
 /**
- * Create canonical message for transaction signing.
+ * Create the canonical message a transaction is signed over.
  *
- * IMPORTANT: These formats MUST match the Rust server's
- * `TransactionValidator::create_*_message` exactly, byte-for-byte.
- * See `crates/consensus/src/transaction_validator.rs`.
+ * The byte sequence here must match the format the chain's signature
+ * validator re-derives — any drift causes the signature check to fail.
  */
 export function createSignMessage(txType: string, transaction: Transaction): string {
   switch (txType) {
@@ -404,13 +403,7 @@ export function createSignMessage(txType: string, transaction: Transaction): str
       const mode = tx.mode;
       const sh = schemaHash(tx.schema);
 
-      // BlockchainIndexing uses a simpler payload format. The live
-      // consensus validator at
-      // `crates/consensus/src/willow_cometbft/subgrove_transactions.rs`
-      // signs over `RegisterSubgrove:{id}:{owner}:{nonce}`. The
-      // multi-line format that the other modes use exists in a sibling
-      // file but is dead code for this path — using it here makes every
-      // BlockchainIndexing registration fail signature validation.
+      // BlockchainIndexing signs a simpler payload than the other modes.
       if (mode && 'BlockchainIndexing' in mode) {
         return `RegisterSubgrove:${tx.subgroveId}:${tx.ownerDid}:${tx.nonce || 0}`;
       }
@@ -452,9 +445,8 @@ export function createSignMessage(txType: string, transaction: Transaction): str
     }
 
     case 'SubmitAnchor': {
-      // Domain-tag the signing message so a SubmitAnchor signature can't
-      // be replayed against another tx type. Matches the prefix used by
-      // `crates/consensus/src/willow_cometbft/anchor_transactions.rs`.
+      // Domain-tagged so a SubmitAnchor signature can't be replayed
+      // against another tx type.
       const tx = transaction as SubmitAnchorTx;
       return `SubmitAnchor\n${tx.anchorHash}\n${tx.nonce || 0}`;
     }

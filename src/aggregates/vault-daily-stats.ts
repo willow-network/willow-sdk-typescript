@@ -1,14 +1,12 @@
 /**
  * Codec + fetch helpers for the per-(vault, day) ERC-4626 flow aggregate
- * sidecar persisted by `willow-indexer-node` for the `vault-daily-stats`
- * template. Pairs with the indexer's
+ * sidecar persisted by the indexer for the `vault-daily-stats` template.
+ * Pairs with the indexer's
  * `GET /verifiable-rpc-range/:subgrove_id/:from_key_hex/:to_key_hex`
  * endpoint, which returns raw `(key, value)` byte pairs alongside a
  * GroveDB inclusion proof + the latest GKR proof.
  *
- * The sidecar key + value layouts are pinned by
- * `crates/indexer-node/src/vault_daily_stats_sidecar.rs`. Browser-safe:
- * uses `Uint8Array` and `bigint` only.
+ * Browser-safe: uses `Uint8Array` and `bigint` only.
  *
  * # Trust model
  *
