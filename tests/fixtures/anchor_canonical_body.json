@@ -1,0 +1,22 @@
+{
+  "_comment": "Cross-language fixture for SubmitAnchorTx canonical body byte-equality. Consumed by the Rust validator's anchor canonicalization tests and tests/anchor-canonical-fixture.test.ts. If either implementation drifts, its test fails. Update both sides in lockstep.",
+  "input": {
+    "did": "did:willow:mcp-server-fixture-1",
+    "anchor_id": "anchor_1_5_abc12345",
+    "sequence_range": [1, 5],
+    "merkle_root": "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdef0000",
+    "count": 5,
+    "receipt_hashes": [
+      "0000000000000000000000000000000000000000000000000000000000000001",
+      "0000000000000000000000000000000000000000000000000000000000000002",
+      "0000000000000000000000000000000000000000000000000000000000000003",
+      "0000000000000000000000000000000000000000000000000000000000000004",
+      "0000000000000000000000000000000000000000000000000000000000000005"
+    ],
+    "timestamp": "2026-05-23T12:00:00.000Z",
+    "previous_anchor_hash": "genesis",
+    "is_genesis": true
+  },
+  "expected_canonical": "{\"anchor_id\":\"anchor_1_5_abc12345\",\"count\":5,\"did\":\"did:willow:mcp-server-fixture-1\",\"is_genesis\":true,\"merkle_root\":\"abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdef0000\",\"previous_anchor_hash\":\"genesis\",\"receipt_hashes\":[\"0000000000000000000000000000000000000000000000000000000000000001\",\"0000000000000000000000000000000000000000000000000000000000000002\",\"0000000000000000000000000000000000000000000000000000000000000003\",\"0000000000000000000000000000000000000000000000000000000000000004\",\"0000000000000000000000000000000000000000000000000000000000000005\"],\"sequence_range\":[1,5],\"timestamp\":\"2026-05-23T12:00:00.000Z\"}",
+  "expected_anchor_hash": "081d4708ed25b3f221a760e44cc7898bd9373e832122a944e13dea24e706a1f7"
+}

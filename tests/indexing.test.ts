@@ -1,8 +1,11 @@
 /**
- * Indexing tests for Willow TypeScript SDK
- * 
- * These tests require a running three-node network with funded DID.
- * Run: ./scripts/start_network.sh
+ * Indexing integration tests for the Willow TypeScript SDK.
+ *
+ * These tests require a running three-node Willow network with a funded
+ * DID written to the file pointed at by the `WILLOW_TEST_DID_FILE` env
+ * variable (one line, the DID string). When the env variable is unset
+ * or the file is missing, the suite is skipped — there's nothing
+ * meaningful to assert without live nodes.
  */
 
 import { WillowClient } from '../src/client';
@@ -16,7 +19,6 @@ import {
   FieldType,
 } from '../src/types';
 import * as fs from 'fs';
-import * as path from 'path';
 
 // RFC 8032 §7.1 Test 2 Ed25519 vector.
 const PRIVATE_KEY_HEX = '4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb';
@@ -30,26 +32,20 @@ function getPublicKeyId(did: string): string {
 // Helper to wait for transaction propagation
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-// Helper to read funded DID
-function getFundedDID(): string {
-  try {
-    const didPath = path.join(__dirname, '../../../devnet/test_owner_did.txt');
-    return fs.readFileSync(didPath, 'utf-8').trim();
-  } catch (error) {
-    throw new Error('Test DID file not found - ensure network is running with funding');
-  }
-}
+const didFile = process.env.WILLOW_TEST_DID_FILE;
+const fundedDIDRaw =
+  didFile && fs.existsSync(didFile) ? fs.readFileSync(didFile, 'utf-8').trim() : null;
+const describeIntegration = fundedDIDRaw ? describe : describe.skip;
+// Safe non-null: the describe blocks only execute when fundedDIDRaw is truthy.
+const fundedDID = fundedDIDRaw!;
 
-describe('Willow Tests', () => {
+describeIntegration('Willow Tests', () => {
   let client1: WillowClient;
   let client2: WillowClient;
   let client3: WillowClient;
-  let fundedDID: string;
   const subgroveId = 'blog_posts';
 
   beforeAll(async () => {
-    // Get funded DID
-    fundedDID = getFundedDID();
     console.log('Using funded DID:', fundedDID);
 
     // Create clients for each node
@@ -333,13 +329,11 @@ describe('Willow Tests', () => {
   });
 });
 
-describe('Performance Tests', () => {
+describeIntegration('Performance Tests', () => {
   let client: WillowClient;
-  let fundedDID: string;
   const subgroveId = 'blog_posts';
 
   beforeAll(async () => {
-    fundedDID = getFundedDID();
     client = new WillowClient({ apiUrl: 'http://localhost:3031' });
     client.auth.setIdentity(fundedDID, PRIVATE_KEY_HEX, getPublicKeyId(fundedDID));
   });

@@ -1,5 +1,5 @@
 {
-  "name": "@willow/sdk",
+  "name": "@willow-network/sdk",
   "version": "0.1.0",
   "description": "TypeScript SDK for Willow - Cryptographically authenticated storage platform",
   "main": "dist/index.js",
@@ -58,7 +58,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/willow-network/willow.git",
-    "directory": "sdk/willow-sdk"
+    "url": "https://github.com/willow-network/willow-sdk-typescript.git"
   }
 }

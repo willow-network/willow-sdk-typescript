@@ -8,7 +8,7 @@ TypeScript/JavaScript SDK for interacting with the Willow decentralized data inf
 - **Full Local Verification**: Pure TypeScript GroveDB proof verification — BLAKE3 hashing, Merk proof parser, bincode decoder, full layered verification. Runs in Node and the browser without WASM.
 - **DID Authentication**: Ed25519 and secp256k1 (Ethereum-compatible) signature support
 - **Light Client**: Optional CometBFT light client for trustless header verification
-- **GKR Proof Verification**: Server-side verification via the `/verify-gkr-proof` endpoint. (Full browser-native GKR verification is blocked on upstream Expander support for `wasm32`.)
+- **GKR Proof Verification**: Server-side verification via the `/verify-gkr-proof` endpoint. (A pure-Rust verifier exists and compiles to `wasm32`; binding it into this SDK is on the roadmap.)
 - **File Storage**: Upload, download, list, and delete files with chunk Merkle verification (browser-safe; uses `Uint8Array` and `@noble/hashes`/`@noble/ciphers`)
 - **File Encryption**: XChaCha20-Poly1305 encryption/decryption for private files
 - **Collection Helpers**: Convenient API for working with subgrove/dataset pairs
@@ -16,11 +16,11 @@ TypeScript/JavaScript SDK for interacting with the Willow decentralized data inf
 ## Installation
 
 ```bash
-npm install @willow/sdk
+npm install @willow-network/sdk
 # or
-yarn add @willow/sdk
+yarn add @willow-network/sdk
 # or
-pnpm add @willow/sdk
+pnpm add @willow-network/sdk
 ```
 
 ## Transaction submission
@@ -36,7 +36,7 @@ omitted or pointed at the same endpoint.
 ## Quick Start
 
 ```typescript
-import { WillowClient, generateWallet, createDidFromWallet } from '@willow/sdk';
+import { WillowClient, generateWallet, createDidFromWallet } from '@willow-network/sdk';
 
 // 1. Generate a wallet and DID
 const wallet = generateWallet();
@@ -246,7 +246,7 @@ if (verifiedRoot === localRoot) {
 ### Configure Verification Strategy
 
 ```typescript
-import { configureProofVerification } from '@willow/sdk';
+import { configureProofVerification } from '@willow-network/sdk';
 
 // Verify against a known root hash. When set, every proof verification
 // will throw unless the computed root matches. For trustless operation,
@@ -268,7 +268,7 @@ import {
   verifyQueryResponse,
   verifyProofAdvanced,
   extractRootHashFromProof,
-} from '@willow/sdk';
+} from '@willow-network/sdk';
 
 // Verify a query proof
 const rootHash = await verifyQueryProof(proofHex, documents);
@@ -293,10 +293,10 @@ const rootHash = await extractRootHashFromProof(proofHex);
 
 ### Server-Assisted GKR Verification
 
-GKR proofs cannot currently be verified in the browser because the Expander
-GKR verifier depends on native SIMD intrinsics and an unconditional `mpi`
-C dependency, neither of which compile to `wasm32`. Until upstream Expander
-grows a `wasm32` fallback, browser clients must use the server endpoint:
+GKR proofs are currently verified via the server endpoint. A pure-Rust
+verifier (`willow-gkr-verify-pure`) compiles cleanly to `wasm32` and is
+the planned client-side path; until it's bundled into this SDK, browser
+clients should call:
 
 ```typescript
 const response = await fetch('http://localhost:3031/verify-gkr-proof', {
@@ -326,7 +326,7 @@ requires server trust.
 For low-level proof verification:
 
 ```typescript
-import * as grovedb from '@willow/sdk/grovedb';
+import * as grovedb from '@willow-network/sdk/grovedb';
 
 // Full proof verification
 const result = grovedb.verifyGroveDBProof(proofBytes);
@@ -356,7 +356,7 @@ const equal = grovedb.hashEquals(hash1, hash2);
 For trustless verification via CometBFT light client protocol:
 
 ```typescript
-import { LightClient, LightClientConfigBuilder } from '@willow/sdk';
+import { LightClient, LightClientConfigBuilder } from '@willow-network/sdk';
 
 // Configure light client (chainId is a required constructor arg)
 const config = new LightClientConfigBuilder('willow-mainnet')
@@ -399,7 +399,7 @@ await lightClient.stop();
 ### Ed25519 (Default)
 
 ```typescript
-import { generateEd25519KeyPair, signEd25519, verifyEd25519 } from '@willow/sdk';
+import { generateEd25519KeyPair, signEd25519, verifyEd25519 } from '@willow-network/sdk';
 
 // Generate key pair
 const { privateKey, publicKey } = generateEd25519KeyPair();
@@ -414,7 +414,7 @@ const isValid = verifyEd25519('Hello, Willow!', signature, publicKey);
 ### Secp256k1 (Ethereum-compatible)
 
 ```typescript
-import { generateWallet, createDidFromWallet } from '@willow/sdk';
+import { generateWallet, createDidFromWallet } from '@willow-network/sdk';
 
 // Generate Ethereum-compatible wallet
 const wallet = generateWallet();
@@ -459,7 +459,7 @@ const dataset = await client.registerDataset({
 ## Error Handling
 
 ```typescript
-import { WillowError } from '@willow/sdk';
+import { WillowError } from '@willow-network/sdk';
 
 try {
   await client.get('dataset-id', 'key');
@@ -522,7 +522,7 @@ try {
 | `verifyItemProof(proofHex, key, value, path)` | Verify item proof, returns root hash |
 | `verifyQueryResponse(response)` | Verify QueryResponse object |
 | `verifyProofAdvanced(proofHex, documents, options)` | Advanced verification with options |
-| `extractRootHashFromProof(proofHex)` | Extract root hash without full verification |
+| `extractRootHashFromProof(proofHex)` | Fully verify proof and return root hash (despite the name, performs full verification) |
 | `configureProofVerification(options)` | Configure global verification strategy |
 
 ### Utilities

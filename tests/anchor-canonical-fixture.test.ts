@@ -15,10 +15,6 @@ import {
 
 const FIXTURE_PATH = resolve(
   __dirname,
-  '..',
-  '..',
-  '..',
-  'tests',
   'fixtures',
   'anchor_canonical_body.json',
 );
