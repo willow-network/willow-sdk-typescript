@@ -384,7 +384,10 @@ export class ConsensusClient {
       try {
         const response = await fetch(url, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(this.config.apiKey ? { 'X-API-Key': this.config.apiKey } : {})
+          },
           body: JSON.stringify(transaction),
           signal: AbortSignal.timeout(this.config.requestTimeoutSecs! * 1000)
         });
@@ -437,7 +440,10 @@ export class ConsensusClient {
       try {
         const response = await fetch(this.config.consensusRpcUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(this.config.apiKey ? { 'X-API-Key': this.config.apiKey } : {})
+          },
           body: JSON.stringify(rpcRequest),
           signal: AbortSignal.timeout(this.config.requestTimeoutSecs! * 1000)
         });
@@ -521,7 +527,10 @@ export class ConsensusClient {
       `${this.config.apiUrl}/account/${encodeURIComponent(did)}/nonce`,
       {
         method: 'GET',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(this.config.apiKey ? { 'X-API-Key': this.config.apiKey } : {})
+        },
         signal: AbortSignal.timeout(this.config.requestTimeoutSecs! * 1000)
       }
     );

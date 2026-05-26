@@ -237,7 +237,7 @@ describe('WillowClient', () => {
 
       const result = await client.getRootHash();
       expect(result).toBe(rootHash);
-      expect(mockFetch).toHaveBeenCalledWith(
+      expect(mockFetch.mock.calls.at(-1)?.[0]).toBe(
         'http://localhost:3031/state/root-hash/verified',
       );
     });
@@ -254,7 +254,7 @@ describe('WillowClient', () => {
 
       const result = await client.getRootHashLocal();
       expect(result).toBe(rootHash);
-      expect(mockFetch).toHaveBeenCalledWith(
+      expect(mockFetch.mock.calls.at(-1)?.[0]).toBe(
         'http://localhost:3031/state/root-hash',
       );
     });

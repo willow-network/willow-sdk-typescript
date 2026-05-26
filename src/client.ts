@@ -72,6 +72,7 @@ export class WillowClient {
     this.consensus = new ConsensusClient({
       consensusRpcUrl: cometUrl,
       apiUrl: config.apiUrl,
+      apiKey: config.apiKey,
     });
 
     // Configure proof verification if options provided
@@ -249,6 +250,7 @@ export class WillowClient {
   async getRootHash(): Promise<string> {
     const response = await fetch(
       `${this.config.apiUrl}/state/root-hash/verified`,
+      this.config.apiKey ? { headers: { 'X-API-Key': this.config.apiKey } } : undefined,
     );
     if (!response.ok) {
       throw new Error(
@@ -277,7 +279,10 @@ export class WillowClient {
    * @throws Error if the root hash cannot be retrieved
    */
   async getRootHashLocal(): Promise<string> {
-    const response = await fetch(`${this.config.apiUrl}/state/root-hash`);
+    const response = await fetch(
+      `${this.config.apiUrl}/state/root-hash`,
+      this.config.apiKey ? { headers: { 'X-API-Key': this.config.apiKey } } : undefined,
+    );
     if (!response.ok) {
       throw new Error(`Failed to get local root hash: ${response.statusText}`);
     }
