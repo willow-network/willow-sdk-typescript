@@ -6,12 +6,16 @@
  * accepts the recomputed hashes.
  */
 
-import { createHash } from 'crypto';
+import { sha256 } from '@noble/hashes/sha256';
 
 export function sha256Hex(input: string | Uint8Array): string {
-  const hash = createHash('sha256');
-  hash.update(typeof input === 'string' ? Buffer.from(input, 'utf8') : Buffer.from(input));
-  return hash.digest('hex');
+  const bytes = typeof input === 'string' ? new TextEncoder().encode(input) : input;
+  const digest = sha256(bytes);
+  let hex = '';
+  for (let i = 0; i < digest.length; i++) {
+    hex += digest[i].toString(16).padStart(2, '0');
+  }
+  return hex;
 }
 
 /**
