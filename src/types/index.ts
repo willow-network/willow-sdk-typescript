@@ -289,8 +289,6 @@ export interface MerkleProof {
   value_hash: number[];
   /** Bincode-serialized GroveDB proof bytes; pass to `verifyGroveDBProof`. */
   merkle_proof?: number[];
-  /** Legacy field, always empty; older responses lacked `merkle_proof`. */
-  siblings: number[][];
   path: string;
 }
 
