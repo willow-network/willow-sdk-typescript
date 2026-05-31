@@ -294,7 +294,7 @@ const rootHash = await extractRootHashFromProof(proofHex);
 ### Server-Assisted GKR Verification
 
 GKR proofs are currently verified via the server endpoint. A pure-Rust
-verifier (`willow-gkr-verify-pure`) compiles cleanly to `wasm32` and is
+verifier (`willow-gkr-verify`) compiles cleanly to `wasm32` and is
 the planned client-side path; until it's bundled into this SDK, browser
 clients should call:
 
