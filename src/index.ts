@@ -207,7 +207,7 @@ export const VERSION = "0.1.0";
  *
  * @example
  * ```typescript
- * import { WillowClient, DEVNET_TEST_ACCOUNT } from '@willow/sdk';
+ * import { WillowClient, DEVNET_TEST_ACCOUNT } from '@willow-network/sdk';
  *
  * const client = new WillowClient({ apiUrl: 'http://localhost:3031' });
  * client.auth.setIdentity(

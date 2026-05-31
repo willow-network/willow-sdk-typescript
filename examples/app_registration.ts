@@ -7,7 +7,7 @@
  * 3. Inspect dataset access permissions
  *
  * Prerequisites:
- * - npm install @willow/sdk
+ * - npm install @willow-network/sdk
  * - Run a local Willow node: ./scripts/start_node.sh
  *
  * Run with: npx ts-node examples/app_registration.ts

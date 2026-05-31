@@ -9,7 +9,7 @@
  * 5. Store and retrieve data with automatic proof verification
  *
  * Prerequisites:
- * - npm install @willow/sdk
+ * - npm install @willow-network/sdk
  * - Run a local Willow node: ./scripts/start_node.sh
  *
  * Run with: npx ts-node examples/quickstart.ts

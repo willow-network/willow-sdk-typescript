@@ -358,7 +358,7 @@ export class WillowClient {
    *
    * @example
    * ```typescript
-   * import { WillowClient, UNISWAP_V2_PAIR_FIELDS } from '@willow/sdk';
+   * import { WillowClient, UNISWAP_V2_PAIR_FIELDS } from '@willow-network/sdk';
    *
    * const client = new WillowClient({ apiUrl: 'http://localhost:3031' });
    * client.registerComputedFields('pairs', UNISWAP_V2_PAIR_FIELDS);

@@ -11,7 +11,7 @@
  * node by verifying validator signatures and Merkle proofs.
  *
  * Prerequisites:
- * - npm install @willow/sdk
+ * - npm install @willow-network/sdk
  * - Run a local Willow network with multiple validators
  *
  * Run with: npx ts-node examples/light_client.ts

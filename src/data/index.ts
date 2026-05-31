@@ -93,7 +93,7 @@ export class WillowData {
    *
    * @example
    * ```typescript
-   * import { UNISWAP_V2_PAIR_FIELDS } from '@willow/sdk';
+   * import { UNISWAP_V2_PAIR_FIELDS } from '@willow-network/sdk';
    *
    * client.data.registerComputedFields('pairs', UNISWAP_V2_PAIR_FIELDS);
    * ```

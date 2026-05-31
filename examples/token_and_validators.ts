@@ -15,7 +15,7 @@
  * ConsensusClient (client.consensus.transfer / stake), not these reads.
  *
  * Prerequisites:
- * - npm install @willow/sdk
+ * - npm install @willow-network/sdk
  * - Run a local Willow node
  *
  * Run with: npx ts-node examples/token_and_validators.ts

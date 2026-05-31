@@ -14,7 +14,7 @@
  * All reads include automatic proof verification by default.
  *
  * Prerequisites:
- * - npm install @willow/sdk
+ * - npm install @willow-network/sdk
  * - Run a local Willow node: ./scripts/start_node.sh
  *
  * Run with: npx ts-node examples/data_operations.ts
