@@ -75,6 +75,7 @@ export interface WillowManifest {
   spec_version: typeof MANIFEST_SPEC_VERSION;
   description?: string;
   data_sources: DataSource[];
+  deferred_completeness?: boolean;
 }
 
 /**
@@ -94,6 +95,7 @@ export function serializeManifest(m: WillowManifest): Uint8Array {
         ? { ...ds, address: ds.address.toLowerCase() }
         : { ...ds, instructions: ds.instructions.map((d) => d.toLowerCase()) },
     ),
+    ...(m.deferred_completeness ? { deferred_completeness: true } : {}),
   };
   return new TextEncoder().encode(JSON.stringify(normalized));
 }
