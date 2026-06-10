@@ -48,6 +48,13 @@ export function decodeVarint(bytes: Uint8Array, offset: number = 0): { value: nu
   let bytesRead = 0;
 
   while (offset + bytesRead < bytes.length) {
+    // A value that fits in a JS safe integer needs at most 8 LEB128 bytes
+    // (ceil(53/7)). Cap before `2 ** shift` can reach Infinity and turn the
+    // payload into NaN — past this point the value cannot be exact anyway.
+    if (shift > 49) {
+      throw new VarintError('Varint exceeds Number.MAX_SAFE_INTEGER — use decodeVarint64');
+    }
+
     const byte = bytes[offset + bytesRead];
     bytesRead++;
 

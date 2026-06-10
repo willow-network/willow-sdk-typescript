@@ -17,6 +17,31 @@ export interface SubmitTxOptions {
   headers?: Record<string, string>;
 }
 
+/**
+ * Transport- or HTTP-level failure (non-2xx, or a body the API server can't
+ * have produced). Distinct from a chain-level rejection: it is potentially
+ * transient (proxy 502/504, network blip), so the consensus retry loop should
+ * retry it rather than treat it as a deterministic outcome.
+ */
+export class TxTransportError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TxTransportError';
+  }
+}
+
+/**
+ * Submit a wrapped transaction to `POST /tx/submit`.
+ *
+ * Distinguishes two failure classes so callers can react correctly:
+ *   - **Transport/HTTP failures** (non-2xx, or a non-JSON / malformed body —
+ *     e.g. an HTML 502/504 from a proxy) THROW {@link TxTransportError}. These
+ *     are non-deterministic; the consensus retry loop retries them, and direct
+ *     callers surface them as an error.
+ *   - **Chain-level rejections** (a well-formed JSON envelope reporting failure,
+ *     or a CheckTx `code !== 0`) return `BroadcastResult{ success: false }`.
+ *     These are deterministic, so retrying is pointless.
+ */
 export async function submitTxToApi(
   apiUrl: string,
   txWrapper: Record<string, unknown>,
@@ -34,13 +59,27 @@ export async function submitTxToApi(
     signal: AbortSignal.timeout(opts.timeoutMs ?? 30_000),
   });
 
-  const body = (await response.json().catch(() => ({}))) as {
+  const text = await response.text();
+  let body: {
     success?: boolean;
     data?: { tx_hash: string; code: number; log: string };
     error?: string;
   };
+  try {
+    body = text === '' ? {} : JSON.parse(text);
+  } catch {
+    // A non-JSON body means we didn't reach the API server's tx handler
+    // (proxy/gateway error page) — transport-level, so throw to allow retry.
+    throw new TxTransportError(`HTTP ${response.status} from ${url}: non-JSON response body`);
+  }
 
-  if (!response.ok || !body.success || !body.data) {
+  if (!response.ok) {
+    throw new TxTransportError(
+      `HTTP ${response.status} from ${url}${body.error ? `: ${body.error}` : ''}`,
+    );
+  }
+
+  if (!body.success || !body.data) {
     const msg = body.error || `HTTP ${response.status}`;
     return { success: false, errorMessage: msg, rawLog: msg };
   }

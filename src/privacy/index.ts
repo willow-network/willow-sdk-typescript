@@ -10,7 +10,7 @@ import { ApiResponse, WillowError } from "../types";
 import { WillowAuth, signEd25519 } from "../auth";
 import { BroadcastResult } from "../consensus";
 import { Transaction, createTransactionWrapper } from "../consensus/types";
-import { HttpClient } from "../internal/http";
+import { HttpClient, HttpError } from "../internal/http";
 import { submitTxToApi } from "../internal/tx";
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -172,9 +172,11 @@ export class PrivacyOperations {
     const did = this.requireDid();
     const path = `/key-grants/${encodeURIComponent(subgroveId)}/${encodeURIComponent(did)}`;
     const headers = this.auth.getAuthHeaders("GET", path);
-    const response = await this.api.get<ApiResponse<EncryptedKeyGrant>>(path, {
-      headers,
-    });
+    const response = await this.api
+      .get<ApiResponse<EncryptedKeyGrant>>(path, { headers })
+      .catch((err) => {
+        throw toWillowError(err, "Key grant not found", "KEY_GRANT_NOT_FOUND");
+      });
 
     if (!response.success) {
       throw new WillowError(
@@ -201,9 +203,11 @@ export class PrivacyOperations {
   ): Promise<string[]> {
     const path = `/key-grants/${encodeURIComponent(subgroveId)}`;
     const headers = this.auth.getAuthHeaders("GET", path);
-    const response = await this.api.get<ApiResponse<string[]>>(path, {
-      headers,
-    });
+    const response = await this.api
+      .get<ApiResponse<string[]>>(path, { headers })
+      .catch((err) => {
+        throw toWillowError(err, "Failed to list key grantees", "LIST_GRANTEES_FAILED");
+      });
 
     if (!response.success) {
       throw new WillowError(
@@ -230,9 +234,11 @@ export class PrivacyOperations {
     did: string,
   ): Promise<KeyGrantProofResponse> {
     const path = `/proof/key-grant/${encodeURIComponent(subgroveId)}/${encodeURIComponent(did)}`;
-    const response = await this.api.get<ApiResponse<KeyGrantProofResponse>>(
-      path,
-    );
+    const response = await this.api
+      .get<ApiResponse<KeyGrantProofResponse>>(path)
+      .catch((err) => {
+        throw toWillowError(err, "Failed to get key grant proof", "KEY_GRANT_PROOF_FAILED");
+      });
 
     if (!response.success) {
       throw new WillowError(
@@ -372,11 +378,19 @@ export class PrivacyOperations {
    * which could cause transaction replay or rejection.
    */
   private async getNextNonce(did: string): Promise<number> {
-    const response = await this.api.get<{
-      success: boolean;
-      data?: { nonce: number };
-      error?: string;
-    }>(`/account/${encodeURIComponent(did)}/nonce`);
+    const response = await this.api
+      .get<{
+        success: boolean;
+        data?: { nonce: number };
+        error?: string;
+      }>(`/account/${encodeURIComponent(did)}/nonce`)
+      .catch((err) => {
+        throw toWillowError(
+          err,
+          `Failed to fetch nonce for ${did}`,
+          "NONCE_FETCH_FAILED",
+        );
+      });
 
     if (response.success && response.data !== undefined) {
       return response.data.nonce + 1;
@@ -422,4 +436,32 @@ export class PrivacyOperations {
 
     return result;
   }
+}
+
+/**
+ * Translate an error thrown by {@link HttpClient} into the typed
+ * {@link WillowError} a read method documents. `HttpClient.get` throws
+ * `HttpError` on any non-2xx (the post-fetch behaviour), so a 404/500 must be
+ * mapped here rather than surfacing as an untyped transport error. Re-thrown
+ * WillowErrors pass through unchanged.
+ */
+function toWillowError(
+  err: unknown,
+  fallbackMessage: string,
+  code: string,
+): WillowError {
+  if (err instanceof WillowError) return err;
+  if (err instanceof HttpError) {
+    // Report the real HTTP status (so a 404 stays a 404 and a 500 isn't
+    // masked) while keeping the method's documented WillowError code.
+    return new WillowError(
+      `${fallbackMessage}: ${err.apiError ?? err.message}`,
+      code,
+      err.status,
+    );
+  }
+  return new WillowError(
+    `${fallbackMessage}: ${err instanceof Error ? err.message : String(err)}`,
+    code,
+  );
 }

@@ -8,6 +8,14 @@
  * unrelated data. The returned root hash must still be compared against a
  * trusted source (e.g. a light client's verified block header) to establish
  * that the proven state is the canonical one.
+ *
+ * Binding guarantee: the proven Item bytes are authoritative. A returned
+ * document binds only if it is structurally equal to the JSON those bytes
+ * decode to — whitespace and object key order are normalized away, but numbers
+ * are compared with `Object.is` and must be fidelity-safe (exact safe integers
+ * or finite non-integers below 2^53), so `-0`/`0`, `NaN`, and precision-lossy
+ * big integers (e.g. 2^53+1) never bind. Numbers outside that range should be
+ * carried as strings to bind. A non-JSON stored Item binds only by exact bytes.
  */
 
 import { QueryResponse, DataRecord } from '../types';
@@ -70,11 +78,30 @@ function enforceExpectedRoot(computed: string, expected?: string): void {
 }
 
 /**
- * Structural (deep) equality over JSON values.
+ * A number is fidelity-safe when two distinct JSON source tokens cannot parse
+ * to it: exact safe integers, and finite non-integers below the 2^53 boundary.
+ * `NaN`, `±Infinity`, `-0`, and any integer past `MAX_SAFE_INTEGER` (which
+ * `JSON.parse` silently rounds — e.g. 2^53+1 → 2^53) are NOT fidelity-safe.
+ */
+function isFidelitySafeNumber(n: number): boolean {
+  if (Number.isInteger(n)) return Number.isSafeInteger(n) && !Object.is(n, -0);
+  return Number.isFinite(n) && Math.abs(n) < 2 ** 53;
+}
+
+/**
+ * Structural (deep) equality over JSON values, used to bind returned documents
+ * to the proven bytes. Whitespace and object key order are normalized away by
+ * comparing parsed trees; numbers are compared with `Object.is` (so `-0 !== 0`
+ * and `NaN` never matches) and only when both are {@link isFidelitySafeNumber}
+ * — a precision-unsafe number on either side is a non-match, so two distinct
+ * committed byte sequences can never bind to the same JS value.
  */
 function jsonDeepEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
   if (typeof a !== typeof b) return false;
+  if (typeof a === 'number') {
+    return Object.is(a, b) && isFidelitySafeNumber(a);
+  }
+  if (a === b) return true;
   if (a === null || b === null) return false;
   if (Array.isArray(a) || Array.isArray(b)) {
     if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
@@ -85,6 +112,7 @@ function jsonDeepEqual(a: unknown, b: unknown): boolean {
     const kb = Object.keys(b as object);
     if (ka.length !== kb.length) return false;
     return ka.every((k) =>
+      Object.prototype.hasOwnProperty.call(b as object, k) &&
       jsonDeepEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]),
     );
   }
@@ -92,34 +120,58 @@ function jsonDeepEqual(a: unknown, b: unknown): boolean {
 }
 
 /**
- * Collect the JSON values the proof actually commits to (proven Item element
- * payloads that parse as JSON).
+ * A value the proof commits to: the raw proven Item bytes, decoded as JSON
+ * when they parse, otherwise kept as opaque bytes so a non-JSON stored Item
+ * (raw blob) can still bind to a returned value by exact bytes.
  */
-function provenJsonValues(verification: GroveDBVerificationResult): unknown[] {
-  const values: unknown[] = [];
+type ProvenValue =
+  | { kind: 'json'; value: unknown }
+  | { kind: 'raw'; bytes: Uint8Array };
+
+function decodeProvenValue(raw: Uint8Array): ProvenValue {
+  try {
+    return { kind: 'json', value: JSON.parse(new TextDecoder().decode(raw)) };
+  } catch {
+    return { kind: 'raw', bytes: raw };
+  }
+}
+
+/**
+ * Test whether a returned `document` binds to a proven value. JSON-proven
+ * bytes bind by structural equality (number fidelity enforced); non-JSON
+ * proven bytes bind only when the document is itself raw bytes equal to them
+ * (DataRecord documents are JSON, so they never bind to a raw blob).
+ */
+function documentBindsTo(proven: ProvenValue, document: unknown): boolean {
+  if (proven.kind === 'json') return jsonDeepEqual(proven.value, document);
+  return document instanceof Uint8Array && bytesEqual(proven.bytes, document);
+}
+
+/**
+ * Collect the values the proof actually commits to from its proven Item
+ * element payloads (or raw leaf bytes when the element didn't deserialize).
+ */
+function provenValues(verification: GroveDBVerificationResult): ProvenValue[] {
+  const values: ProvenValue[] = [];
   for (const result of verification.results) {
     const raw = result.element?.type === 'Item' ? result.element.value : result.value;
     if (!raw) continue;
-    try {
-      values.push(JSON.parse(new TextDecoder().decode(raw)));
-    } catch {
-      // Non-JSON payloads can't bind to DataRecord documents; skip.
-    }
+    values.push(decodeProvenValue(raw));
   }
   return values;
 }
 
 /**
- * Require every returned document to deep-equal a value the proof commits to.
+ * Require every returned document to bind to a value the proof commits to.
  */
 function bindDocumentsToProof(
   verification: GroveDBVerificationResult,
   documents: DataRecord[],
 ): void {
   if (documents.length === 0) return;
-  const proven = provenJsonValues(verification);
+  const proven = provenValues(verification);
   for (let i = 0; i < documents.length; i++) {
-    if (!proven.some((v) => jsonDeepEqual(v, documents[i]))) {
+    if (!proven.some((v) => documentBindsTo(v, documents[i]))) {
       throw new Error(
         `Document at index ${i} is not committed by the proof — ` +
           'the server returned data the proof does not cover',
@@ -155,8 +207,11 @@ export async function verifyQueryProof(
  * Beyond computing the root, this enforces that the proof actually contains
  * the requested `key` at the given `path` — rejecting proofs that are
  * internally valid but prove a different (key, path) within the same state
- * tree — and, when `value` is provided, that the proven payload deep-equals
- * it.
+ * tree — and, when `value` is supplied (including JSON `null`), that the proven
+ * payload binds to it: JSON values bind by structural equality with number
+ * fidelity enforced (see {@link jsonDeepEqual}); a non-JSON stored Item binds
+ * by exact bytes (pass a `Uint8Array` as `value`). Pass `undefined` to skip
+ * value binding and check only the (key, path) and root.
  */
 export async function verifyItemProof(
   proofHex: string,
@@ -178,15 +233,9 @@ export async function verifyItemProof(
     throw new Error(`Proof does not contain key "${key}" at path [${path.join(', ')}]`);
   }
 
-  if (value !== undefined && value !== null) {
+  if (value !== undefined) {
     const raw = match.element?.type === 'Item' ? match.element.value : match.value;
-    let proven: unknown;
-    try {
-      proven = raw ? JSON.parse(new TextDecoder().decode(raw)) : undefined;
-    } catch {
-      proven = undefined;
-    }
-    if (proven === undefined || !jsonDeepEqual(proven, value)) {
+    if (!raw || !documentBindsTo(decodeProvenValue(raw), value)) {
       throw new Error(
         `Proven value for key "${key}" does not match the returned data — ` +
           'the server returned data the proof does not cover',

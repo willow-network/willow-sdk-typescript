@@ -37,9 +37,11 @@ describe('ConsensusClient — X-API-Key header forwarded on every fetch', () => 
   });
 
   it('sends X-API-Key on POST /tx/submit when configured', async () => {
+    const body = { success: true, data: { tx_hash: 'ABC', code: 0, log: 'ok' } };
     const spy = jest.fn().mockResolvedValue({
       ok: true, status: 200,
-      json: async () => ({ success: true, data: { tx_hash: 'ABC', code: 0, log: 'ok' } }),
+      json: async () => body,
+      text: async () => JSON.stringify(body),
     });
     global.fetch = spy as any;
     const client = new ConsensusClient({

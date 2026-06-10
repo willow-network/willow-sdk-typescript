@@ -85,6 +85,21 @@ describe('varint bounds', () => {
     expect(() => decodeVarint(huge)).toThrow(VarintError);
   });
 
+  it('throws (never returns NaN) on a long all-0x80 run that would overflow the shift', () => {
+    // 12 continuation bytes: 2**shift would reach Infinity and 0*Infinity=NaN.
+    const allContinuation = new Uint8Array(new Array(12).fill(0x80));
+    expect(() => decodeVarint(allContinuation)).toThrow(VarintError);
+    // And it is a real throw, not a NaN value slipping past the guard.
+    let decoded: number | undefined;
+    try {
+      decoded = decodeVarint(allContinuation).value;
+    } catch {
+      decoded = -1;
+    }
+    expect(Number.isNaN(decoded)).toBe(false);
+    expect(decoded).toBe(-1);
+  });
+
   it('decodes u64::MAX and rejects anything past it', () => {
     const u64max = new Uint8Array([...new Array(9).fill(0xff), 0x01]);
     expect(decodeVarint64(u64max).value).toBe((1n << 64n) - 1n);

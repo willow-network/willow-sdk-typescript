@@ -240,6 +240,60 @@ describe('PrivacyOperations — read operations', () => {
   });
 });
 
+describe('PrivacyOperations — non-2xx HTTP failures map to typed WillowError codes', () => {
+  it('getMyKeyGrant maps a 404 to KEY_GRANT_NOT_FOUND (not an untyped HttpError)', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: 'not found' }, 404));
+
+    const privacy = makePrivacy();
+    const err = await privacy.getMyKeyGrant('private-data').catch((e) => e);
+    expect(err).toBeInstanceOf(WillowError);
+    expect(err.code).toBe('KEY_GRANT_NOT_FOUND');
+    expect(err.statusCode).toBe(404);
+    expect(err.message).toMatch(/not found/);
+  });
+
+  it('getMyKeyGrant keeps the documented code but surfaces the real status on a 500', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: 'boom' }, 500));
+
+    const privacy = makePrivacy();
+    const err = await privacy.getMyKeyGrant('private-data').catch((e) => e);
+    expect(err).toBeInstanceOf(WillowError);
+    expect(err.code).toBe('KEY_GRANT_NOT_FOUND');
+    expect(err.statusCode).toBe(500);
+  });
+
+  it('getKeyGrantProof maps a 404 to KEY_GRANT_PROOF_FAILED', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: 'no proof' }, 404));
+
+    const privacy = makePrivacy();
+    const err = await privacy
+      .getKeyGrantProof('private-data', 'did:willow:reader')
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(WillowError);
+    expect(err.code).toBe('KEY_GRANT_PROOF_FAILED');
+    expect(err.statusCode).toBe(404);
+  });
+
+  it('listKeyGrantees maps a 500 to LIST_GRANTEES_FAILED', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: 'denied' }, 500));
+
+    const privacy = makePrivacy();
+    const err = await privacy.listKeyGrantees('private-data').catch((e) => e);
+    expect(err).toBeInstanceOf(WillowError);
+    expect(err.code).toBe('LIST_GRANTEES_FAILED');
+  });
+
+  it('getNextNonce (via grant) maps a non-2xx nonce fetch to NONCE_FETCH_FAILED', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ error: 'down' }, 503));
+
+    const privacy = makePrivacy();
+    const err = await privacy.grantSubgroveKey('private-data', grant).catch((e) => e);
+    expect(err).toBeInstanceOf(WillowError);
+    expect(err.code).toBe('NONCE_FETCH_FAILED');
+    expect(mockFetch).toHaveBeenCalledTimes(1); // never reached /tx/submit
+  });
+});
+
 describe('CommitmentFrequency constructors', () => {
   it('produce the serde representations the chain expects', () => {
     expect(CommitmentFrequency.everyUpdate()).toBe('EveryUpdate');

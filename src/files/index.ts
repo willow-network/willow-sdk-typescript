@@ -15,7 +15,7 @@ import { bytesToHex, randomBytes } from '@noble/hashes/utils';
 import { xchacha20poly1305 } from '@noble/ciphers/chacha';
 import { WillowError } from '../types';
 import { createTransactionWrapper } from '../consensus/types';
-import { submitTxToApi } from '../internal/tx';
+import { submitTxToApi, SubmitTxOptions } from '../internal/tx';
 
 const DEFAULT_CHUNK_SIZE = 262_144; // 256 KB
 
@@ -117,9 +117,7 @@ export class FileOperations {
       publicKeyId: signing?.publicKeyId ?? '',
       nonce: signing?.nonce ?? 0,
     });
-    const txResult = await submitTxToApi(this.apiUrl, manifestTx, {
-      headers: this.getAuthHeaders('POST', '/tx/submit'),
-    });
+    const txResult = await this.submitTx(manifestTx);
     if (!txResult.success) {
       throw new WillowError(
         `Failed to submit file manifest: ${txResult.rawLog || txResult.errorMessage || 'unknown error'}`,
@@ -257,9 +255,7 @@ export class FileOperations {
       publicKeyId: signing?.publicKeyId ?? '',
       nonce: signing?.nonce ?? 0,
     });
-    const result = await submitTxToApi(this.apiUrl, deleteTx, {
-      headers: this.getAuthHeaders('POST', '/tx/submit'),
-    });
+    const result = await this.submitTx(deleteTx);
     if (!result.success) {
       throw new WillowError(
         `Failed to delete file: ${result.rawLog || result.errorMessage || 'unknown error'}`,
@@ -285,12 +281,27 @@ export class FileOperations {
       publicKeyId: signing?.publicKeyId ?? '',
       nonce: signing?.nonce ?? 0,
     });
-    const result = await submitTxToApi(this.apiUrl, tx, {
-      headers: this.getAuthHeaders('POST', '/tx/submit'),
-    });
+    const result = await this.submitTx(tx);
     if (!result.success) {
       throw new WillowError(
         `Failed to unregister storage node: ${result.rawLog || result.errorMessage || 'unknown error'}`,
+        'TX_SUBMIT_FAILED',
+      );
+    }
+  }
+
+  /**
+   * Submit a tx through `/tx/submit`, folding transport-level failures
+   * (which `submitTxToApi` throws to enable retries elsewhere) into a
+   * `TX_SUBMIT_FAILED` WillowError so file callers see one error type.
+   */
+  private async submitTx(txWrapper: Record<string, unknown>) {
+    const opts: SubmitTxOptions = { headers: this.getAuthHeaders('POST', '/tx/submit') };
+    try {
+      return await submitTxToApi(this.apiUrl, txWrapper, opts);
+    } catch (error) {
+      throw new WillowError(
+        `Failed to submit transaction: ${error instanceof Error ? error.message : String(error)}`,
         'TX_SUBMIT_FAILED',
       );
     }

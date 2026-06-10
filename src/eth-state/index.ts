@@ -244,7 +244,7 @@ function verifyStorageSlot(sp: StorageSlotProof, storageHash: Uint8Array): void 
   const slotBytes = bytesFromArray(sp.slot);
   const slotHash = keccak_256(slotBytes);
   const valueBig = bytesToBigInt(bytesFromArray(sp.value));
-  const valueRlp = getBytes(encodeRlp(valueBig === 0n ? "0x" : "0x" + valueBig.toString(16)));
+  const valueRlp = getBytes(encodeRlp(bigIntToHex(valueBig)));
   const r = verifyMptProof(
     storageHash,
     slotHash,
@@ -260,12 +260,22 @@ function verifyStorageSlot(sp: StorageSlotProof, storageHash: Uint8Array): void 
 
 /** RLP-encode an account leaf: [nonce, balance, storageRoot, codeHash]. */
 function rlpEncodeAccount(state: AccountState): Uint8Array {
-  const nonceHex = state.nonce === 0 ? "0x" : "0x" + state.nonce.toString(16);
-  const balanceBig = bytesToBigInt(bytesFromArray(state.balance));
-  const balanceHex = balanceBig === 0n ? "0x" : "0x" + balanceBig.toString(16);
+  const nonceHex = bigIntToHex(BigInt(state.nonce));
+  const balanceHex = bigIntToHex(bytesToBigInt(bytesFromArray(state.balance)));
   const storageRoot = "0x" + bytesToHex(bytesFromArray(state.storage_hash));
   const codeHash = "0x" + bytesToHex(bytesFromArray(state.code_hash));
   return getBytes(encodeRlp([nonceHex, balanceHex, storageRoot, codeHash]));
+}
+
+/**
+ * RLP scalar as a minimal big-endian hex string. `0x` for zero; otherwise an
+ * even-length hex body — `toString(16)` drops a leading zero nibble, and the
+ * odd-length result is rejected by strict RLP decoders downstream.
+ */
+function bigIntToHex(value: bigint): string {
+  if (value === 0n) return "0x";
+  const hex = value.toString(16);
+  return "0x" + (hex.length % 2 === 0 ? hex : "0" + hex);
 }
 
 /* ---------- conversions ---------- */
