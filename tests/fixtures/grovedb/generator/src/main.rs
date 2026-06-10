@@ -1,9 +1,9 @@
 //! Generates `tests/fixtures/grovedb/partial-proof-live.json`.
 //!
-//! Mirrors the canonical fixture generator in the Willow chain repo
-//! (`crates/storage/tests/generate_ts_fixtures.rs`): it builds a real GroveDB,
-//! produces a proof with `prove_query`, round-trip verifies it with the Rust
-//! verifier, and dumps the bytes as JSON for the TypeScript test suite.
+//! Mirrors the canonical fixture generator used by the Willow chain: it
+//! builds a real GroveDB on the same release the chain pins, produces a proof
+//! with `prove_query`, round-trip verifies it with the Rust verifier, and
+//! dumps the bytes as JSON for the TypeScript test suite.
 //!
 //! This fixture regression-tests the AVL-balance false negative: a single-key
 //! query into a tree with a few hundred keys yields a *partial* reconstruction

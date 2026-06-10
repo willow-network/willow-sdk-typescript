@@ -10,8 +10,8 @@
  *
  * Prerequisites:
  * - npm install @willow-network/sdk
- * - A local Willow node with its API server on port 3031 — see the node
- *   repo for setup: https://github.com/willow-network/willow
+ * - A local Willow node with its API server on port 3031 — see the docs
+ *   for node setup: https://willow.tech
  *
  * Run with: npx ts-node examples/quickstart.ts
  */
@@ -35,7 +35,7 @@ async function main() {
     console.log(`   Current root hash: ${rootHash.substring(0, 16)}...\n`);
   } catch (error) {
     console.error(`   Could not reach a Willow node at ${apiUrl}.`);
-    console.error('   Start a local node first — see https://github.com/willow-network/willow');
+    console.error('   Start a local node first — see https://willow.tech');
     console.error(`   (${error})`);
     process.exit(1);
   }

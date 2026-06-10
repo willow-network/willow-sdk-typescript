@@ -13,8 +13,8 @@
  *
  * Prerequisites:
  * - npm install @willow-network/sdk
- * - A local Willow network with multiple validators — see the node repo
- *   for setup: https://github.com/willow-network/willow
+ * - A local Willow network with multiple validators — see the docs
+ *   for node setup: https://willow.tech
  *
  * Run with: npx ts-node examples/light_client.ts
  */

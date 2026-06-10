@@ -8,8 +8,8 @@
  *
  * Prerequisites:
  * - npm install @willow-network/sdk
- * - A local Willow node with its API server on port 3031 — see the node
- *   repo for setup: https://github.com/willow-network/willow
+ * - A local Willow node with its API server on port 3031 — see the docs
+ *   for node setup: https://willow.tech
  *
  * Run with: npx ts-node examples/app_registration.ts
  */
