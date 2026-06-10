@@ -15,7 +15,8 @@
  *
  * Prerequisites:
  * - npm install @willow-network/sdk
- * - Run a local Willow node: ./scripts/start_node.sh
+ * - A local Willow node with its API server on port 3031 — see the node
+ *   repo for setup: https://github.com/willow-network/willow
  *
  * Run with: npx ts-node examples/data_operations.ts
  */

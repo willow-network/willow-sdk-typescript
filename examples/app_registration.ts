@@ -8,7 +8,8 @@
  *
  * Prerequisites:
  * - npm install @willow-network/sdk
- * - Run a local Willow node: ./scripts/start_node.sh
+ * - A local Willow node with its API server on port 3031 — see the node
+ *   repo for setup: https://github.com/willow-network/willow
  *
  * Run with: npx ts-node examples/app_registration.ts
  */
@@ -16,7 +17,7 @@
 import {
   WillowClient,
   generateEd25519KeyPair,
-  RegisterDatasetRequest,
+  RegisterSubgroveRequest,
   SchemaDefinition,
 } from '../src';
 
@@ -75,7 +76,7 @@ async function main() {
     required_fields: ['sku', 'name', 'category', 'price'],
   };
 
-  const productsDataset: RegisterDatasetRequest = {
+  const productsDataset: RegisterSubgroveRequest = {
     dataset_id: 'products',
     name: 'Product Catalog',
     dataset_path: ['collections'],
@@ -117,7 +118,7 @@ async function main() {
     required_fields: ['order_id', 'customer_did', 'items', 'total', 'status'],
   };
 
-  const ordersDataset: RegisterDatasetRequest = {
+  const ordersDataset: RegisterSubgroveRequest = {
     dataset_id: 'orders',
     name: 'Customer Orders',
     dataset_path: ['collections'],
@@ -157,7 +158,7 @@ async function main() {
     required_fields: ['user_did', 'username'],
   };
 
-  const usersDataset: RegisterDatasetRequest = {
+  const usersDataset: RegisterSubgroveRequest = {
     dataset_id: 'users',
     name: 'User Profiles',
     dataset_path: ['collections'],
