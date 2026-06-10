@@ -134,19 +134,19 @@ describe('Utils', () => {
       expect(isValidDid(DEVNET_TEST_ACCOUNT.did)).toBe(true);
     });
 
-    it('accepts multi-segment DIDs', () => {
-      expect(isValidDid('did:willow:test:123')).toBe(true);
-      expect(isValidDid('did:willow:eth:0xabc123')).toBe(true);
-    });
-
-    it('accepts underscores, hyphens, and multi-segment combinations', () => {
-      // Matches the DIDs the examples actually generate
+    it('accepts the DIDs the examples generate (underscores and hyphens)', () => {
       // (`did:willow:quickstart_${ts}` / `did:willow:owner_${ts}`).
       expect(isValidDid('did:willow:quickstart_1700000000')).toBe(true);
       expect(isValidDid('did:willow:owner_1700000000')).toBe(true);
       expect(isValidDid('did:willow:devnet-test')).toBe(true);
       expect(isValidDid('did:willow:my_org-name')).toBe(true);
-      expect(isValidDid('did:willow:eth:my_account-1:key_2')).toBe(true);
+    });
+
+    it('rejects colon-segmented bodies, matching the chain\'s validate_did', () => {
+      // The chain's body must be a single run of [A-Za-z0-9_-] — no extra colons.
+      expect(isValidDid('did:willow:test:123')).toBe(false);
+      expect(isValidDid('did:willow:eth:0xabc123')).toBe(false);
+      expect(isValidDid('did:willow:eth:my_account-1:key_2')).toBe(false);
     });
 
     it('rejects malformed DIDs', () => {

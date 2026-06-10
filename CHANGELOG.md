@@ -122,7 +122,7 @@ git, read the breaking changes carefully.
 
 ### Tests
 
-- 374 passing (plus 11 skipped live-network tests) across 29 suites: new
+- 430+ passing (plus 11 skipped live-network tests): new
   coverage for the files, privacy, and erc8004 modules; proof/document
   binding accept/reject cases; malformed-proof truncation sweeps; varint
   bounds; recursion-cap rejection.
