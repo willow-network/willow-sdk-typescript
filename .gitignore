@@ -9,3 +9,4 @@ coverage/
 .vscode/
 .idea/
 tests/fixtures/grovedb/generator/target/
+tests/fixtures/tx-wire/target/

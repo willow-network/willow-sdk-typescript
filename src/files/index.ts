@@ -14,6 +14,7 @@ import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex, randomBytes } from '@noble/hashes/utils';
 import { xchacha20poly1305 } from '@noble/ciphers/chacha';
 import { WillowError } from '../types';
+import { createTransactionWrapper } from '../consensus/types';
 import { submitTxToApi } from '../internal/tx';
 
 const DEFAULT_CHUNK_SIZE = 262_144; // 256 KB
@@ -101,23 +102,21 @@ export class FileOperations {
     const signature = signing
       ? signing.signFunction(signMessage, signing.privateKey)
       : '';
-    const manifestTx = {
-      StoreFileManifest: {
-        subgrove_id: subgroveId,
-        file_key: fileKey,
-        filename,
-        content_type: guessContentType(filename),
-        total_size: data.length,
-        content_hash: contentHash,
-        chunk_count: chunkCount,
-        chunk_size: chunkSize,
-        chunk_merkle_root: chunkMerkleRoot,
-        owner_did: ownerDid,
-        signature,
-        public_key_id: signing?.publicKeyId ?? '',
-        nonce: signing?.nonce ?? 0,
-      },
-    };
+    const manifestTx = createTransactionWrapper('StoreFileManifest', {
+      subgroveId,
+      fileKey,
+      filename,
+      contentType: guessContentType(filename),
+      totalSize: data.length,
+      contentHash,
+      chunkCount,
+      chunkSize,
+      chunkMerkleRoot,
+      ownerDid,
+      signature,
+      publicKeyId: signing?.publicKeyId ?? '',
+      nonce: signing?.nonce ?? 0,
+    });
     const txResult = await submitTxToApi(this.apiUrl, manifestTx, {
       headers: this.getAuthHeaders('POST', '/tx/submit'),
     });
@@ -250,16 +249,14 @@ export class FileOperations {
     const signature = signing
       ? signing.signFunction(signMessage, signing.privateKey)
       : '';
-    const deleteTx = {
-      DeleteFileManifest: {
-        subgrove_id: subgroveId,
-        file_key: fileKey,
-        owner_did: signing?.ownerDid ?? '',
-        signature,
-        public_key_id: signing?.publicKeyId ?? '',
-        nonce: signing?.nonce ?? 0,
-      },
-    };
+    const deleteTx = createTransactionWrapper('DeleteFileManifest', {
+      subgroveId,
+      fileKey,
+      ownerDid: signing?.ownerDid ?? '',
+      signature,
+      publicKeyId: signing?.publicKeyId ?? '',
+      nonce: signing?.nonce ?? 0,
+    });
     const result = await submitTxToApi(this.apiUrl, deleteTx, {
       headers: this.getAuthHeaders('POST', '/tx/submit'),
     });
@@ -282,14 +279,12 @@ export class FileOperations {
     const signature = signing
       ? signing.signFunction(signMessage, signing.privateKey)
       : '';
-    const tx = {
-      UnregisterStorageNode: {
-        node_did: nodeDid,
-        signature,
-        public_key_id: signing?.publicKeyId ?? '',
-        nonce: signing?.nonce ?? 0,
-      },
-    };
+    const tx = createTransactionWrapper('UnregisterStorageNode', {
+      nodeDid,
+      signature,
+      publicKeyId: signing?.publicKeyId ?? '',
+      nonce: signing?.nonce ?? 0,
+    });
     const result = await submitTxToApi(this.apiUrl, tx, {
       headers: this.getAuthHeaders('POST', '/tx/submit'),
     });

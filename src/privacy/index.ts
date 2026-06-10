@@ -9,6 +9,7 @@
 import { ApiResponse, WillowError } from "../types";
 import { WillowAuth, signEd25519 } from "../auth";
 import { BroadcastResult } from "../consensus";
+import { Transaction, createTransactionWrapper } from "../consensus/types";
 import { HttpClient } from "../internal/http";
 import { submitTxToApi } from "../internal/tx";
 
@@ -91,36 +92,6 @@ export interface KeyGrantProofResponse {
   subgrove_id: string;
   /** DID of the grantee. */
   grantee_did: string;
-}
-
-// ── Internal transaction field types ──────────────────────────────────
-
-interface GrantSubgroveKeyTxFields {
-  subgrove_id: string;
-  encrypted_key_grant: EncryptedKeyGrant;
-  sender_did: string;
-  signature: string;
-  public_key_id: string;
-  nonce: number;
-}
-
-interface RevokeSubgroveKeyTxFields {
-  subgrove_id: string;
-  revokee_did: string;
-  sender_did: string;
-  signature: string;
-  public_key_id: string;
-  nonce: number;
-}
-
-interface RotateSubgroveKeyTxFields {
-  subgrove_id: string;
-  new_epoch: number;
-  new_grants: EncryptedKeyGrant[];
-  sender_did: string;
-  signature: string;
-  public_key_id: string;
-  nonce: number;
 }
 
 // ── Client ────────────────────────────────────────────────────────────
@@ -298,16 +269,14 @@ export class PrivacyOperations {
     const message = `GrantSubgroveKey:${subgroveId}:${grant.grantee_did}:${did}:${nonce}`;
     const signature = signEd25519(message, this.privateKey);
 
-    const tx: GrantSubgroveKeyTxFields = {
-      subgrove_id: subgroveId,
-      encrypted_key_grant: grant,
-      sender_did: did,
+    return this.broadcastTransaction("GrantSubgroveKey", {
+      subgroveId,
+      encryptedKeyGrant: grant,
+      senderDid: did,
       signature,
-      public_key_id: this.publicKeyId,
+      publicKeyId: this.publicKeyId,
       nonce,
-    };
-
-    return this.broadcastTransaction("GrantSubgroveKey", tx);
+    });
   }
 
   /**
@@ -332,16 +301,14 @@ export class PrivacyOperations {
     const message = `RevokeSubgroveKey:${subgroveId}:${revokeDid}:${did}:${nonce}`;
     const signature = signEd25519(message, this.privateKey);
 
-    const tx: RevokeSubgroveKeyTxFields = {
-      subgrove_id: subgroveId,
-      revokee_did: revokeDid,
-      sender_did: did,
+    return this.broadcastTransaction("RevokeSubgroveKey", {
+      subgroveId,
+      revokeeDid: revokeDid,
+      senderDid: did,
       signature,
-      public_key_id: this.publicKeyId,
+      publicKeyId: this.publicKeyId,
       nonce,
-    };
-
-    return this.broadcastTransaction("RevokeSubgroveKey", tx);
+    });
   }
 
   /**
@@ -372,17 +339,15 @@ export class PrivacyOperations {
     const message = `RotateSubgroveKey:${subgroveId}:${newEpoch}:${did}:${nonce}`;
     const signature = signEd25519(message, this.privateKey);
 
-    const tx: RotateSubgroveKeyTxFields = {
-      subgrove_id: subgroveId,
-      new_epoch: newEpoch,
-      new_grants: newGrants,
-      sender_did: did,
+    return this.broadcastTransaction("RotateSubgroveKey", {
+      subgroveId,
+      newEpoch,
+      newGrants,
+      senderDid: did,
       signature,
-      public_key_id: this.publicKeyId,
+      publicKeyId: this.publicKeyId,
       nonce,
-    };
-
-    return this.broadcastTransaction("RotateSubgroveKey", tx);
+    });
   }
 
   // ── Private helpers ─────────────────────────────────────────────────
@@ -425,13 +390,16 @@ export class PrivacyOperations {
 
   /**
    * Submit a wrapped transaction through the API server's `/tx/submit`.
+   *
+   * Encoding (snake_case keys, hex signature -> byte array) is owned by
+   * `createTransactionWrapper`, the single place the SDK shapes the wire
+   * format the Rust `Transaction` enum deserializes.
    */
   private async broadcastTransaction(
     txType: string,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    transaction: any,
+    transaction: Transaction,
   ): Promise<BroadcastResult> {
-    const txWrapper = { [txType]: transaction };
+    const txWrapper = createTransactionWrapper(txType, transaction);
 
     let result: BroadcastResult;
     try {

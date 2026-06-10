@@ -1,6 +1,12 @@
 import { PrivacyOperations, EncryptedKeyGrant, CommitmentFrequency } from '../src/privacy';
 import { WillowAuth, signEd25519 } from '../src/auth';
 import { WillowError } from '../src/types';
+import { hexToBytes } from '../src/internal/bytes';
+
+/** The wire signature is the byte-array form of the hex signEd25519 output. */
+function sigArray(message: string): number[] {
+  return Array.from(hexToBytes(signEd25519(message, PRIVATE_KEY)));
+}
 
 const API_URL = 'http://api.test';
 const DID = 'did:willow:owner';
@@ -75,16 +81,23 @@ describe('PrivacyOperations — write operations broadcast through /tx/submit', 
     const body = JSON.parse(init.body);
     expect(Object.keys(body)).toEqual(['GrantSubgroveKey']);
     const tx = body.GrantSubgroveKey;
+    // snake_case keys — must match the Rust GrantSubgroveKeyTx field names.
+    expect(Object.keys(tx).sort()).toEqual(
+      ['encrypted_key_grant', 'nonce', 'public_key_id', 'sender_did', 'signature', 'subgrove_id'].sort(),
+    );
     expect(tx.subgrove_id).toBe('private-data');
+    // EncryptedKeyGrant byte fields stay number[] (Rust Vec<u8>, no serde_bytes).
     expect(tx.encrypted_key_grant).toEqual(grant);
+    expect(Array.isArray(tx.encrypted_key_grant.ephemeral_public_key)).toBe(true);
+    expect(Array.isArray(tx.encrypted_key_grant.encrypted_key)).toBe(true);
     expect(tx.sender_did).toBe(DID);
     expect(tx.public_key_id).toBe(KEY_ID);
     expect(tx.nonce).toBe(5); // fetched nonce + 1
-    expect(tx.signature).toBe(
-      signEd25519(
-        `GrantSubgroveKey:private-data:${grant.grantee_did}:${DID}:5`,
-        PRIVATE_KEY,
-      ),
+    // signature is an array of numbers (Rust Vec<u8>), never a hex string.
+    expect(Array.isArray(tx.signature)).toBe(true);
+    expect(tx.signature.every((b: number) => Number.isInteger(b) && b >= 0 && b <= 255)).toBe(true);
+    expect(tx.signature).toEqual(
+      sigArray(`GrantSubgroveKey:private-data:${grant.grantee_did}:${DID}:5`),
     );
   });
 
@@ -97,13 +110,13 @@ describe('PrivacyOperations — write operations broadcast through /tx/submit', 
     await privacy.revokeSubgroveKey('private-data', 'did:willow:reader');
 
     const tx = JSON.parse(mockFetch.mock.calls[1][1].body).RevokeSubgroveKey;
+    expect(tx.subgrove_id).toBe('private-data');
     expect(tx.revokee_did).toBe('did:willow:reader');
+    expect(tx.sender_did).toBe(DID);
     expect(tx.nonce).toBe(10);
-    expect(tx.signature).toBe(
-      signEd25519(
-        `RevokeSubgroveKey:private-data:did:willow:reader:${DID}:10`,
-        PRIVATE_KEY,
-      ),
+    expect(Array.isArray(tx.signature)).toBe(true);
+    expect(tx.signature).toEqual(
+      sigArray(`RevokeSubgroveKey:private-data:did:willow:reader:${DID}:10`),
     );
   });
 
@@ -116,11 +129,12 @@ describe('PrivacyOperations — write operations broadcast through /tx/submit', 
     await privacy.rotateSubgroveKey('private-data', 2, [grant]);
 
     const tx = JSON.parse(mockFetch.mock.calls[1][1].body).RotateSubgroveKey;
+    expect(tx.subgrove_id).toBe('private-data');
     expect(tx.new_epoch).toBe(2);
     expect(tx.new_grants).toEqual([grant]);
-    expect(tx.signature).toBe(
-      signEd25519(`RotateSubgroveKey:private-data:2:${DID}:1`, PRIVATE_KEY),
-    );
+    expect(tx.sender_did).toBe(DID);
+    expect(Array.isArray(tx.signature)).toBe(true);
+    expect(tx.signature).toEqual(sigArray(`RotateSubgroveKey:private-data:2:${DID}:1`));
   });
 
   it('maps a consensus rejection (code !== 0) to BROADCAST_FAILED', async () => {

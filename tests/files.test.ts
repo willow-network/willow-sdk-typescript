@@ -2,6 +2,7 @@ import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex } from '@noble/hashes/utils';
 import { FileOperations, encryptFile, decryptFile } from '../src/files';
 import { WillowError } from '../src/types';
+import { hexToBytes } from '../src/internal/bytes';
 
 const API_URL = 'http://api.test';
 const NODE_URL = 'http://storage.test';
@@ -71,14 +72,24 @@ describe('FileOperations.upload', () => {
     expect(tx.filename).toBe('doc.json');
     expect(tx.content_type).toBe('application/json');
     expect(tx.total_size).toBe(data.length);
-    expect(tx.content_hash).toBe(bytesToHex(sha256(data)));
     expect(tx.chunk_count).toBe(1);
+
+    // content_hash / chunk_merkle_root are [u8; 32] in Rust (no serde_bytes):
+    // the wire shape is a 32-number array, never a hex string.
+    expect(Array.isArray(tx.content_hash)).toBe(true);
+    expect(tx.content_hash).toHaveLength(32);
+    expect(tx.content_hash).toEqual(Array.from(sha256(data)));
 
     // Single-leaf Merkle roots are padded to [leaf, leaf] (anti-forgery).
     const leaf = sha256(data);
-    expect(tx.chunk_merkle_root).toBe(bytesToHex(sha256(concat([leaf, leaf]))));
-    expect(manifest.chunk_merkle_root).toBe(tx.chunk_merkle_root);
-    expect(manifest.content_hash).toBe(tx.content_hash);
+    const expectedRoot = sha256(concat([leaf, leaf]));
+    expect(Array.isArray(tx.chunk_merkle_root)).toBe(true);
+    expect(tx.chunk_merkle_root).toHaveLength(32);
+    expect(tx.chunk_merkle_root).toEqual(Array.from(expectedRoot));
+
+    // The returned manifest still surfaces the hex digests for callers.
+    expect(manifest.chunk_merkle_root).toBe(bytesToHex(expectedRoot));
+    expect(manifest.content_hash).toBe(bytesToHex(sha256(data)));
   });
 
   it('uploads each chunk to the storage node after the manifest is accepted', async () => {
@@ -255,11 +266,14 @@ describe('FileOperations.delete', () => {
     mockFetch.mockResolvedValueOnce(txAccepted());
 
     const { ops, getAuthHeaders } = makeOps();
+    // The signFunction returns hex (as signEd25519 does); the wrapper decodes
+    // it to a Vec<u8> byte array for the wire.
+    const sigHex = 'ab'.repeat(32);
     await ops.delete('sg', 'file-1', {
       ownerDid: 'did:willow:owner',
       privateKey: 'pk',
       publicKeyId: 'did:willow:owner#key-1',
-      signFunction: (message) => `signed(${message})`,
+      signFunction: () => sigHex,
       nonce: 7,
     });
 
@@ -271,10 +285,11 @@ describe('FileOperations.delete', () => {
       subgrove_id: 'sg',
       file_key: 'file-1',
       owner_did: 'did:willow:owner',
-      signature: 'signed(delete_file:sg:file-1)',
+      signature: Array.from(hexToBytes(sigHex)),
       public_key_id: 'did:willow:owner#key-1',
       nonce: 7,
     });
+    expect(Array.isArray(tx.signature)).toBe(true);
   });
 
   it('throws TX_SUBMIT_FAILED when consensus rejects the delete', async () => {

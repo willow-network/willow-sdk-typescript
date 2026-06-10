@@ -245,6 +245,61 @@ export interface DeleteFileManifestTx {
   nonce?: number;
 }
 
+/** Unregister a storage node and begin stake unbonding. */
+export interface UnregisterStorageNodeTx {
+  nodeDid: string;
+  signature?: string; // hex-encoded
+  publicKeyId?: string;
+  nonce?: number;
+}
+
+/**
+ * Encrypted copy of a subgrove's symmetric key, wrapped for a reader DID.
+ * Byte fields are number arrays — the chain's `EncryptedKeyGrant` declares
+ * `ephemeral_public_key`/`encrypted_key` as `Vec<u8>` with no `serde_bytes`,
+ * so JSON must carry arrays of numbers, never hex strings.
+ */
+export interface EncryptedKeyGrant {
+  grantee_did: string;
+  key_epoch: number;
+  grantee_public_key_id: string;
+  ephemeral_public_key: number[];
+  encrypted_key: number[];
+  granted_by: string;
+  granted_at: number;
+}
+
+/** Grant a subgrove encryption key to a DID. */
+export interface GrantSubgroveKeyTx {
+  subgroveId: string;
+  encryptedKeyGrant: EncryptedKeyGrant;
+  senderDid: string;
+  signature?: string; // hex-encoded
+  publicKeyId?: string;
+  nonce?: number;
+}
+
+/** Revoke a subgrove encryption key from a DID. */
+export interface RevokeSubgroveKeyTx {
+  subgroveId: string;
+  revokeeDid: string;
+  senderDid: string;
+  signature?: string; // hex-encoded
+  publicKeyId?: string;
+  nonce?: number;
+}
+
+/** Rotate the subgrove encryption key and re-grant to authorized DIDs. */
+export interface RotateSubgroveKeyTx {
+  subgroveId: string;
+  newEpoch: number;
+  newGrants: EncryptedKeyGrant[];
+  senderDid: string;
+  signature?: string; // hex-encoded
+  publicKeyId?: string;
+  nonce?: number;
+}
+
 /**
  * Deregister (delete) a subgrove transaction.
  * Remaining funding balance is refunded to the owner.
@@ -284,7 +339,19 @@ export interface SubmitAnchorTx {
 /**
  * Transaction type union
  */
-export type Transaction = RegisterDidTx | RegisterSubgroveTx | TransferTx | DataStoreTx | StoreFileManifestTx | DeleteFileManifestTx | DeregisterSubgroveTx | SubmitAnchorTx;
+export type Transaction =
+  | RegisterDidTx
+  | RegisterSubgroveTx
+  | TransferTx
+  | DataStoreTx
+  | StoreFileManifestTx
+  | DeleteFileManifestTx
+  | UnregisterStorageNodeTx
+  | DeregisterSubgroveTx
+  | SubmitAnchorTx
+  | GrantSubgroveKeyTx
+  | RevokeSubgroveKeyTx
+  | RotateSubgroveKeyTx;
 
 /**
  * JSON.stringify with keys sorted alphabetically at every level.
@@ -313,9 +380,16 @@ function hexToByteArray(hex: string): number[] {
 /**
  * Create transaction wrapper for consensus submission.
  *
- * Converts the internal camelCase TypeScript fields to the snake_case JSON
- * the Rust server expects (serde's default), and converts the hex signature
- * string to a byte array (`Vec<u8>` in Rust).
+ * This is the SINGLE place the SDK encodes a transaction to the wire shape
+ * the Rust `Transaction` enum deserializes. The chain's structs declare
+ * `signature: Vec<u8>` and digest fields like `content_hash: [u8; 32]`
+ * without `serde_bytes`, so serde_json requires arrays of numbers — a hex
+ * string is rejected by the axum extractor (422) before the handler runs.
+ * Every byte/digest field is converted hex -> number[] here, and every
+ * field is renamed to the snake_case key the variant declares.
+ *
+ * Unknown tx types throw rather than falling through to a camelCase
+ * passthrough, so a new variant can't silently ship an unparseable shape.
  */
 export function createTransactionWrapper(txType: string, transaction: Transaction): any {
   const tx = transaction as unknown as Record<string, unknown>;
@@ -416,8 +490,92 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
         },
       };
     }
+    case 'StoreFileManifest': {
+      const t = transaction as StoreFileManifestTx;
+      return {
+        StoreFileManifest: {
+          subgrove_id: t.subgroveId,
+          file_key: t.fileKey,
+          filename: t.filename,
+          content_type: t.contentType,
+          total_size: t.totalSize,
+          content_hash: hexToByteArray(t.contentHash),
+          chunk_count: t.chunkCount,
+          chunk_size: t.chunkSize,
+          chunk_merkle_root: hexToByteArray(t.chunkMerkleRoot),
+          owner_did: t.ownerDid,
+          signature: sig,
+          public_key_id: publicKeyId,
+          nonce,
+        },
+      };
+    }
+    case 'DeleteFileManifest': {
+      const t = transaction as DeleteFileManifestTx;
+      return {
+        DeleteFileManifest: {
+          subgrove_id: t.subgroveId,
+          file_key: t.fileKey,
+          owner_did: t.ownerDid,
+          signature: sig,
+          public_key_id: publicKeyId,
+          nonce,
+        },
+      };
+    }
+    case 'UnregisterStorageNode': {
+      const t = transaction as UnregisterStorageNodeTx;
+      return {
+        UnregisterStorageNode: {
+          node_did: t.nodeDid,
+          signature: sig,
+          public_key_id: publicKeyId,
+          nonce,
+        },
+      };
+    }
+    case 'GrantSubgroveKey': {
+      const t = transaction as GrantSubgroveKeyTx;
+      return {
+        GrantSubgroveKey: {
+          subgrove_id: t.subgroveId,
+          encrypted_key_grant: t.encryptedKeyGrant,
+          sender_did: t.senderDid,
+          signature: sig,
+          public_key_id: publicKeyId,
+          nonce,
+        },
+      };
+    }
+    case 'RevokeSubgroveKey': {
+      const t = transaction as RevokeSubgroveKeyTx;
+      return {
+        RevokeSubgroveKey: {
+          subgrove_id: t.subgroveId,
+          revokee_did: t.revokeeDid,
+          sender_did: t.senderDid,
+          signature: sig,
+          public_key_id: publicKeyId,
+          nonce,
+        },
+      };
+    }
+    case 'RotateSubgroveKey': {
+      const t = transaction as RotateSubgroveKeyTx;
+      return {
+        RotateSubgroveKey: {
+          subgrove_id: t.subgroveId,
+          new_epoch: t.newEpoch,
+          new_grants: t.newGrants,
+          sender_did: t.senderDid,
+          signature: sig,
+          public_key_id: publicKeyId,
+          nonce,
+        },
+      };
+    }
     default:
-      return { [txType]: tx };
+      throw new WillowError(`Unknown transaction type: ${txType}`, 'UNKNOWN_TX_TYPE');
   }
 }
 
