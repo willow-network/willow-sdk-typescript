@@ -87,6 +87,13 @@ export interface ProvedKeyValue {
   key: Uint8Array;
   value: Uint8Array | null;
   proof: CryptoHash;
+  /**
+   * Originating Merk node type. Lets the verifier apply the correct
+   * value-to-proof binding when the value is surfaced as a leaf: for
+   * KVValueHash(/FeatureType) the node hash commits only to `proof`
+   * (= valueHash), not the value bytes, so the value must be re-bound.
+   */
+  nodeType: MerkNode['type'];
 }
 
 /**

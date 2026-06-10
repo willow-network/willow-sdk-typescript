@@ -165,7 +165,8 @@ export function executeMerkProofWithQuery(
         resultSet.push({
           key: node.key,
           value: node.value,
-          proof: valueHash(node.value)
+          proof: valueHash(node.value),
+          nodeType: node.type
         });
         if (currentLimit !== null) currentLimit--;
         break;
@@ -175,7 +176,8 @@ export function executeMerkProofWithQuery(
         resultSet.push({
           key: node.key,
           value: node.value,
-          proof: node.valueHash
+          proof: node.valueHash,
+          nodeType: node.type
         });
         if (currentLimit !== null) currentLimit--;
         break;
@@ -184,7 +186,8 @@ export function executeMerkProofWithQuery(
         resultSet.push({
           key: node.key,
           value: node.value,
-          proof: node.valueHash
+          proof: node.valueHash,
+          nodeType: node.type
         });
         if (currentLimit !== null) currentLimit--;
         break;
@@ -195,7 +198,8 @@ export function executeMerkProofWithQuery(
         resultSet.push({
           key: node.key,
           value: null,
-          proof: node.valueHash
+          proof: node.valueHash,
+          nodeType: node.type
         });
         break;
       }

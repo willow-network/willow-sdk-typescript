@@ -313,7 +313,15 @@ export class WillowData {
           );
         }
       } else {
-        this.logger.warn(`No proof available for key: ${key}`);
+        // Fail closed: the server returned data without a proof, so we cannot
+        // verify it. Returning it anyway would silently break the "secure by
+        // default" contract. Callers who knowingly trust the endpoint should
+        // use `getDataUnverified`.
+        throw new WillowError(
+          `No proof returned for key "${key}" — cannot verify the data. ` +
+            "Use `getDataUnverified` to fetch without verification.",
+          "MISSING_PROOF",
+        );
       }
     } catch (error) {
       if (error instanceof WillowError) {
@@ -572,6 +580,15 @@ export class WillowData {
           "PROOF_VERIFICATION_FAILED",
         );
       }
+    } else {
+      // Fail closed: include_proof was requested but the server returned no
+      // proof, so the documents are unverified. Use `queryUnverified` to opt
+      // out of verification explicitly.
+      throw new WillowError(
+        `Query for "${datasetId}" returned no proof — cannot verify the results. ` +
+          "Use `queryUnverified` to query without verification.",
+        "MISSING_PROOF",
+      );
     }
 
     // Apply computed fields if registered for this dataset

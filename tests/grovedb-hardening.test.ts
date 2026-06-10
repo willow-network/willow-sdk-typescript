@@ -10,8 +10,11 @@ import {
   verifyGroveDBProof,
   decodeGroveDBProof,
   decodeMerkOps,
+  executeMerkProofWithQuery,
   hexToBytes,
   hashToHex,
+  valueHash,
+  hashEquals,
   encodeVarint,
   decodeVarint,
   decodeVarint64,
@@ -112,5 +115,66 @@ describe('valid proof still verifies after hardening', () => {
     const { rootHash, results } = verifyGroveDBProof(hexToBytes(fx.proofHex));
     expect(norm(hashToHex(rootHash))).toBe(norm(fx.stateRootHex));
     expect(results.length).toBeGreaterThan(0);
+  });
+});
+
+describe('value-bearing leaf binding', () => {
+  // Encode a single-node Merk proof: Push(KVValueHash(key, value, valueHash)).
+  // The node hash for this variant is kv_digest_to_kv_hash(key, valueHash) —
+  // the `value` bytes never enter the root — so a server can swap `value`
+  // freely while keeping the committed `valueHash` and an identical root.
+  const encodeKVValueHashLeaf = (
+    key: Uint8Array,
+    value: Uint8Array,
+    valHash: Uint8Array,
+  ): Uint8Array =>
+    new Uint8Array([
+      0x04, // OP_PUSH_KVVALUEHASH
+      key.length,
+      ...key,
+      (value.length >> 8) & 0xff,
+      value.length & 0xff,
+      ...value,
+      ...valHash,
+    ]);
+
+  // Wrap a single merk proof as a complete GroveDBProof V0 (bincode 2):
+  // variant 0, root layer = (merk byteVec, empty lower-layer map), prove
+  // options bool = false. The merk proof here is well under 251 bytes, so the
+  // bincode varint length is a single byte.
+  const wrapAsGroveDBProof = (merk: Uint8Array): Uint8Array =>
+    new Uint8Array([0x00, merk.length, ...merk, 0x00, 0x00]);
+
+  const key = new TextEncoder().encode('balance');
+  const realValue = new TextEncoder().encode('1000');
+  const evilValue = new TextEncoder().encode('9999999');
+  const committedHash = valueHash(realValue);
+
+  it('produces a byte-identical root for an honest and a forged leaf', () => {
+    const honestMerk = encodeKVValueHashLeaf(key, realValue, committedHash);
+    const forgedMerk = encodeKVValueHashLeaf(key, evilValue, committedHash);
+
+    // Sanity: the forgery keeps the value bytes distinct from the committed one.
+    expect(hashEquals(valueHash(evilValue), committedHash)).toBe(false);
+
+    // Both proofs reconstruct to the same root — a root-only check is fooled.
+    const honestRoot = hashToHex(executeMerkProofWithQuery(honestMerk).rootHash);
+    const forgedRoot = hashToHex(executeMerkProofWithQuery(forgedMerk).rootHash);
+    expect(forgedRoot).toBe(honestRoot);
+  });
+
+  it('rejects a forged leaf whose value does not hash to its committed valueHash', () => {
+    const forged = wrapAsGroveDBProof(encodeKVValueHashLeaf(key, evilValue, committedHash));
+    expect(() => verifyGroveDBProof(forged)).toThrow(GroveDBVerificationError);
+    expect(() => verifyGroveDBProof(forged)).toThrow(/does not hash to its committed valueHash/);
+  });
+
+  it('accepts the honest leaf and surfaces the real value at the same root', () => {
+    const honestMerk = encodeKVValueHashLeaf(key, realValue, committedHash);
+    const honest = wrapAsGroveDBProof(honestMerk);
+    const { rootHash, results } = verifyGroveDBProof(honest, { deserializeElements: false });
+    expect(hashToHex(rootHash)).toBe(hashToHex(executeMerkProofWithQuery(honestMerk).rootHash));
+    const match = results.find((r) => r.value && hashEquals(r.value, realValue));
+    expect(match).toBeDefined();
   });
 });

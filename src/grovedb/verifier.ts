@@ -95,6 +95,33 @@ function tryDeserializeElement(value: Uint8Array): Element | null {
 }
 
 /**
+ * Bind a surfaced leaf value to the proof that committed it.
+ *
+ * For KVValueHash / KVValueHashFeatureType nodes the node hash is
+ * kv_digest_to_kv_hash(key, valueHash) — the value bytes never enter the root.
+ * A server can therefore re-encode an honest leaf as one of these variants with
+ * a forged `value` but the real `valueHash`, producing a byte-identical root
+ * while surfacing the forged value. Re-derive valueHash(value) and require it to
+ * match. KV self-binds (its value enters kv_hash), and KVRefValueHash binds its
+ * value via combine_hash(valueHash, value_hash(value)) inside the node hash, so
+ * neither needs an extra check.
+ */
+function bindLeafValue(proved: ProvedKeyValue): void {
+  if (
+    proved.value &&
+    (proved.nodeType === 'KVValueHash' || proved.nodeType === 'KVValueHashFeatureType')
+  ) {
+    const computed = valueHash(proved.value);
+    if (!hashEquals(computed, proved.proof)) {
+      throw new GroveDBVerificationError(
+        `Leaf value does not hash to its committed valueHash: ` +
+        `expected ${hashToHex(proved.proof)}, got ${hashToHex(computed)}`
+      );
+    }
+  }
+}
+
+/**
  * Verify a layer proof recursively
  *
  * @param layerProof - The layer proof to verify
@@ -158,7 +185,8 @@ function verifyLayerProof(
         );
       }
     } else if (proved.value) {
-      // Leaf value - add to results
+      // Leaf value - bind the bytes to their committed valueHash, then add.
+      bindLeafValue(proved);
       results.push({
         path: currentPath,
         key: proved.key,
