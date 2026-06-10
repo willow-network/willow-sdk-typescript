@@ -19,7 +19,7 @@ import {
   GraphQLQueryResult,
   GraphQLQueryOptions,
 } from "./types";
-import { configureProofVerification, ProofVerificationOptions } from "./proof";
+import { ProofVerificationOptions } from "./proof";
 import { ComputedFieldSet } from "./computed-fields";
 
 function deriveCometBftUrl(apiUrl: string): string {
@@ -63,7 +63,13 @@ export class WillowClient {
       indexerUrl: config.indexerUrl,
     });
 
-    this.data = new WillowData(config.apiUrl, this.auth, this.indexers, cometUrl);
+    this.data = new WillowData(
+      config.apiUrl,
+      this.auth,
+      this.indexers,
+      cometUrl,
+      config.proofVerificationOptions,
+    );
     this.subscriptions = new WillowSubscriptions(config.apiUrl, this.indexers);
 
     this.files = new FileOperations(config.apiUrl, () => this.auth.getAuthHeaders('GET', '/files'));
@@ -75,10 +81,6 @@ export class WillowClient {
       apiKey: config.apiKey,
     });
 
-    // Configure proof verification if options provided
-    if (config.proofVerificationOptions) {
-      configureProofVerification(config.proofVerificationOptions);
-    }
   }
 
   /**

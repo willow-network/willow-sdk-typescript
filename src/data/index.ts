@@ -19,7 +19,7 @@ import {
   QuerySource,
 } from "../types";
 import { WillowAuth } from "../auth";
-import { verifyQueryProof, verifyItemProof } from "../proof";
+import { verifyQueryProof, verifyItemProof, ProofVerificationOptions } from "../proof";
 import { LightClient, LightClientConfig } from "../light-client";
 import {
   ComputedFieldRegistry,
@@ -61,16 +61,19 @@ export class WillowData {
   private lightClientInitPromise?: Promise<LightClient>;
   private computedFieldRegistry: ComputedFieldRegistry;
   private indexers: WillowIndexers;
+  private proofOptions?: ProofVerificationOptions;
 
   constructor(
     apiUrl: string,
     auth: WillowAuth,
     indexers: WillowIndexers,
     cometbftRpcUrl?: string,
+    proofVerificationOptions?: ProofVerificationOptions,
   ) {
     this.apiUrl = apiUrl;
     this.cometbftRpcUrl = cometbftRpcUrl;
     this.indexers = indexers;
+    this.proofOptions = proofVerificationOptions;
     this.api = axios.create({
       baseURL: apiUrl,
       headers: {
@@ -258,6 +261,7 @@ export class WillowData {
           key,
           data,
           path,
+          this.proofOptions,
         );
 
         // Get verified root hash at the SAME block height as the proof.
@@ -505,6 +509,7 @@ export class WillowData {
         const computedRootHash = await verifyQueryProof(
           result.proof,
           result.documents,
+          this.proofOptions,
         );
 
         // Get verified root hash at the same block height as the proof
@@ -734,7 +739,7 @@ export class WillowData {
         : [result.data];
 
       // Verify proof and get computed root hash
-      const computedRoot = await verifyQueryProof(result.proof, documents);
+      const computedRoot = await verifyQueryProof(result.proof, documents, this.proofOptions);
 
       // Compare with the checkpoint's state root (both should be hex strings)
       const normalizedComputed = computedRoot.toLowerCase().replace(/^0x/, "");
