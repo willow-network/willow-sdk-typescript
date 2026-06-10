@@ -14,11 +14,16 @@ import {
 } from '../src/aggregates/vault-daily-stats';
 
 describe('vault-daily-stats codec', () => {
+  it('exposes SECONDS_PER_DAY as a plain number (no bigint literal in the d.ts)', () => {
+    expect(typeof SECONDS_PER_DAY).toBe('number');
+    expect(SECONDS_PER_DAY).toBe(86_400);
+  });
+
   describe('day_id boundaries', () => {
     it('rounds 2026-04-29 00:00 UTC to its own day', () => {
       // 2026-04-29 00:00:00 UTC = 1777593600
       expect(dayIdFromTimestamp(1_777_593_600)).toBe(
-        BigInt(1_777_593_600) / SECONDS_PER_DAY,
+        BigInt(1_777_593_600) / BigInt(SECONDS_PER_DAY),
       );
     });
 

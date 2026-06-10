@@ -24,8 +24,12 @@ export const VAULT_DAILY_STATS_KEY_LEN = 32;
 /** Length in bytes of an encoded `DayAggregate` value. */
 export const VAULT_DAILY_STATS_VALUE_LEN = 56;
 
-/** Seconds per UTC day — matches the sidecar's `day_id_from_timestamp`. */
-export const SECONDS_PER_DAY = 86_400n;
+/**
+ * Seconds per UTC day — matches the sidecar's `day_id_from_timestamp`.
+ * A plain `number` (not a `bigint` literal) so the emitted `.d.ts` stays
+ * compatible with consumers compiling against pre-ES2020 targets.
+ */
+export const SECONDS_PER_DAY = 86_400;
 
 /**
  * Decoded per-(vault, day) aggregate. `totalIn`, `totalOut`, and `maxIn`
@@ -51,7 +55,7 @@ export interface DayAggregate {
  */
 export function dayIdFromTimestamp(unixSecs: bigint | number): bigint {
   const secs = typeof unixSecs === 'bigint' ? unixSecs : BigInt(unixSecs);
-  return secs / SECONDS_PER_DAY;
+  return secs / BigInt(SECONDS_PER_DAY);
 }
 
 /** Convenience: UTC day index from a JS `Date`. */

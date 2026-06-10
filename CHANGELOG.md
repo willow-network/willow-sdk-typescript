@@ -4,6 +4,7 @@ All notable changes to this package are documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 package adheres to [Semantic Versioning](https://semver.org/).
 
+<!-- REMOVE-ON-PUBLISH: on release, change "[0.1.0] - Unreleased" to "[0.1.0] - <date>", drop "Unreleased", and delete the README pre-publish git-install note (README.md "## Installation"). -->
 ## [0.1.0] - Unreleased
 
 First npm release. Everything below describes changes made while preparing
@@ -112,8 +113,10 @@ git, read the breaking changes carefully.
   sign-bytes never validate real commits).
 - Packaging: `publishConfig.access=public`, per-condition `exports` types,
   `sideEffects: false`, sourcemaps dropped from the tarball (380K → 180K),
-  unused `blake3` dependency removed, `ws` override past advisories
-  (`npm audit --omit=dev` clean), yarn.lock deleted (npm canonical).
+  unused `blake3` dependency removed, `ws` override for local dev (the SDK
+  repo's own `npm audit --omit=dev` is clean), yarn.lock deleted (npm
+  canonical). Note: `overrides` does not reach consumers — see *Known issues*
+  in the README for the transitive `ws` advisory inherited from `ethers`.
 - CI: `npm ci` + build + test on a Node 18/20/22 matrix (the lockfile was
   previously never exercised).
 

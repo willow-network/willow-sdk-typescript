@@ -365,26 +365,6 @@ export type Transaction =
   | RevokeSubgroveKeyTx
   | RotateSubgroveKeyTx;
 
-/**
- * JSON.stringify with keys sorted alphabetically at every level.
- * Matches Rust's `serde_json::to_string(&serde_json::Value)` output,
- * which serializes Map keys in sorted order.
- */
-function stableJsonStringify(value: unknown): string {
-  if (value === null || value === undefined) return 'null';
-  if (typeof value === 'boolean' || typeof value === 'number') return JSON.stringify(value);
-  if (typeof value === 'string') return JSON.stringify(value);
-  if (Array.isArray(value)) return '[' + value.map(stableJsonStringify).join(',') + ']';
-  if (typeof value === 'object') {
-    const keys = Object.keys(value as Record<string, unknown>).sort();
-    const pairs = keys.map(
-      (k) => JSON.stringify(k) + ':' + stableJsonStringify((value as Record<string, unknown>)[k]),
-    );
-    return '{' + pairs.join(',') + '}';
-  }
-  return JSON.stringify(value);
-}
-
 function hexToByteArray(hex: string): number[] {
   return Array.from(hexToBytes(hex));
 }
@@ -427,7 +407,11 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
         nonce,
       };
       if (t.initialFunding) {
-        wrapper.initial_funding = parseInt(t.initialFunding, 10);
+        // The chain's `initial_funding` is u128; its `option_u128_flexible`
+        // deserializer accepts a JSON string for the TS SDK. Send the string
+        // verbatim so values above 2^53 round-trip exactly (parseInt would
+        // lose precision).
+        wrapper.initial_funding = t.initialFunding;
       }
       return { RegisterSubgrove: wrapper };
     }

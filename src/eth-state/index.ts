@@ -20,7 +20,6 @@ import {
   type AccountState,
   type EthCallRequestBody,
   type EthVerifiableRpcResponse,
-  type MptProof,
   type StateProof,
   type StorageSlotProof,
   type VerifiedCall,

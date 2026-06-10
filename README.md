@@ -18,8 +18,10 @@ TypeScript/JavaScript SDK for interacting with the Willow decentralized data inf
 
 ## Installation
 
+<!-- REMOVE-ON-PUBLISH: delete the pre-publish git-install note below once @willow-network/sdk is live on npm. Paired with the CHANGELOG [0.1.0] - Unreleased marker. -->
 > **Not yet published to npm.** Until the first release lands, install from git:
 > `npm install github:willow-network/willow-sdk-typescript`
+<!-- /REMOVE-ON-PUBLISH -->
 
 ```bash
 npm install @willow-network/sdk
@@ -630,6 +632,21 @@ The SDK provides two levels of security:
    - Trusts the node completely
    - Maximum performance
    - Use only with trusted nodes
+
+## Known Issues
+
+- **Transitive `ws` advisory (moderate, not reachable from SDK code).** `ethers`
+  pins `ws@8.17.1` exactly (every published `ethers` 6.x does, including the
+  latest), and that `ws` carries moderate advisory
+  [GHSA-58qx-3vcg-4xpx](https://github.com/advisories/GHSA-58qx-3vcg-4xpx)
+  (uninitialized memory disclosure on the WebSocket *server*). A fresh install
+  of this package therefore reports one moderate finding under `npm audit`.
+  The SDK does not use `ethers`' WebSocket provider or run a `ws` server, so
+  the advisory is not reachable from any SDK code path. There is no `ethers`
+  release that pins a patched `ws`, so it cannot be resolved by bumping the
+  dependency; consumers who want a clean audit can pin a newer `ws` via their
+  own `overrides`/`resolutions` (the SDK's own `overrides.ws` only applies when
+  the SDK is the root project, not when it is installed as a dependency).
 
 ## License
 

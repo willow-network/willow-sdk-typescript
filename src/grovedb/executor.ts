@@ -142,13 +142,14 @@ export function executeMerkProof(
  *
  * @param proofBytes - The Merk proof bytes
  * @param limit - Optional limit on results
- * @param leftToRight - Direction of traversal
+ * @param _leftToRight - Direction of traversal (accepted for API
+ *   compatibility; nodes are visited in proof order regardless)
  * @returns Execution result with root hash and matched values
  */
 export function executeMerkProofWithQuery(
   proofBytes: Uint8Array,
   limit: number | null = null,
-  leftToRight: boolean = true
+  _leftToRight: boolean = true
 ): MerkExecutionResult {
   const resultSet: ProvedKeyValue[] = [];
   let currentLimit = limit;

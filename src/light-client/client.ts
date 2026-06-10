@@ -5,7 +5,7 @@
  * and GroveDB proof verification.
  */
 
-import { LightBlock, LightClientConfig, TrustedHeader, GroveDBQueryProof, VerificationResult, LightClientError, createLightBlock, serializeTrustedHeader, deserializeTrustedHeader, decodeBytes } from './types';
+import { LightBlock, LightClientConfig, TrustedHeader, GroveDBQueryProof, VerificationResult, LightClientError, createLightBlock, decodeBytes } from './types';
 import { HeaderVerifier, ProofVerifier } from './verifier';
 import { WillowLogger, silentLogger } from '../internal/logger';
 
@@ -287,7 +287,7 @@ export class LightClient {
   async exportTrustedState(): Promise<TrustedHeader[]> {
     const trustedState: TrustedHeader[] = [];
 
-    for (const [height, lightBlock] of this.trustedHeaders) {
+    for (const lightBlock of this.trustedHeaders.values()) {
       const trustedHeader: TrustedHeader = {
         header: lightBlock.header,
         validatorsHash: lightBlock.header.validatorsHash,

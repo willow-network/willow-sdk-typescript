@@ -13,9 +13,9 @@ import {
   ProvedKeyValue,
   Element
 } from './types';
-import { bytesToHex, hexToBytes } from './bincode';
+import { bytesToHex } from './bincode';
 import { decodeGroveDBProof } from './decoder';
-import { executeMerkProofWithQuery, MerkExecutionResult } from './executor';
+import { executeMerkProofWithQuery } from './executor';
 import { deserializeElement, isTreeElement, hasRootKey } from './element';
 import { combineHash, valueHash, hashEquals, hashToHex } from './hash';
 

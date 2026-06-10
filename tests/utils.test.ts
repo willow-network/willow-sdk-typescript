@@ -139,6 +139,16 @@ describe('Utils', () => {
       expect(isValidDid('did:willow:eth:0xabc123')).toBe(true);
     });
 
+    it('accepts underscores, hyphens, and multi-segment combinations', () => {
+      // Matches the DIDs the examples actually generate
+      // (`did:willow:quickstart_${ts}` / `did:willow:owner_${ts}`).
+      expect(isValidDid('did:willow:quickstart_1700000000')).toBe(true);
+      expect(isValidDid('did:willow:owner_1700000000')).toBe(true);
+      expect(isValidDid('did:willow:devnet-test')).toBe(true);
+      expect(isValidDid('did:willow:my_org-name')).toBe(true);
+      expect(isValidDid('did:willow:eth:my_account-1:key_2')).toBe(true);
+    });
+
     it('rejects malformed DIDs', () => {
       expect(isValidDid('did:willow:')).toBe(false);
       expect(isValidDid('did:willow:abc:')).toBe(false);

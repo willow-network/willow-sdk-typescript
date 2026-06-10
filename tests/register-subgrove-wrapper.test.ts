@@ -66,4 +66,21 @@ describe('createTransactionWrapper — RegisterSubgrove access lists', () => {
     expect(Array.isArray(wrapper.signature)).toBe(true);
     expect((wrapper.signature as number[]).length).toBe(64);
   });
+
+  it('sends initialFunding as a string so u128 values above 2^53 round-trip exactly', () => {
+    // The chain's `initial_funding` is u128 and its `option_u128_flexible`
+    // deserializer accepts a JSON string; parseInt would lose precision here.
+    const big = '340282366920938463463374607431768211455'; // u128::MAX
+    const wrapper = createTransactionWrapper(
+      'RegisterSubgrove',
+      baseTx({ initialFunding: big }),
+    ).RegisterSubgrove;
+    expect(wrapper.initial_funding).toBe(big);
+    expect(typeof wrapper.initial_funding).toBe('string');
+  });
+
+  it('omits initial_funding entirely when no funding is supplied', () => {
+    const wrapper = createTransactionWrapper('RegisterSubgrove', baseTx()).RegisterSubgrove;
+    expect('initial_funding' in wrapper).toBe(false);
+  });
 });
