@@ -6,16 +6,12 @@
  */
 
 // Main verifier
-export {
-  verifyGroveDBProof,
-  verifyProofAgainstRoot,
-  quickVerify,
-  GroveDBVerificationResult,
-  VerifyOptions
-} from './verifier';
+export { verifyGroveDBProof, verifyProofAgainstRoot, quickVerify } from './verifier';
+export type { GroveDBVerificationResult, VerifyOptions } from './verifier';
 
 // Types
-export {
+export { GroveDBVerificationError, HASH_LENGTH, NULL_HASH } from './types';
+export type {
   GroveDBProof,
   GroveDBProofV0,
   LayerProof,
@@ -26,17 +22,10 @@ export {
   Element,
   CryptoHash,
   ProvedKeyValue,
-  GroveDBVerificationError,
-  HASH_LENGTH,
-  NULL_HASH
 } from './types';
 
 // Bincode 2 reader + hex helpers
-export {
-  BincodeReader,
-  bytesToHex,
-  hexToBytes
-} from './bincode';
+export { BincodeReader, bytesToHex, hexToBytes } from './bincode';
 
 // GroveDBProof decoder (bincode 2)
 export { decodeGroveDBProof } from './decoder';
@@ -51,30 +40,22 @@ export {
   combineHash,
   hashEquals,
   hashToHex,
-  hexToHash
+  hexToHash,
 } from './hash';
 
 // Merk operations
 export { MerkDecoder, decodeMerkOps } from './merk-decoder';
 
 // Executor
-export {
-  executeOps,
-  executeMerkProof,
-  executeMerkProofWithQuery,
-  MerkExecutionResult
-} from './executor';
+export { executeOps, executeMerkProof, executeMerkProofWithQuery } from './executor';
+export type { MerkExecutionResult } from './executor';
 
 // Tree structure
-export { Tree, Child, compareBytes } from './tree';
+export { Tree, compareBytes } from './tree';
+export type { Child } from './tree';
 
 // Element handling
-export {
-  deserializeElement,
-  isTreeElement,
-  hasRootKey,
-  getTreeFeatureType
-} from './element';
+export { deserializeElement, isTreeElement, hasRootKey, getTreeFeatureType } from './element';
 
 // Varint utilities
 export {
@@ -83,5 +64,5 @@ export {
   decodeSignedVarint,
   decodeSignedVarint64,
   decodeVarint64,
-  VarintError
+  VarintError,
 } from './varint';

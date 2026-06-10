@@ -48,6 +48,11 @@ export type MerkOp =
 
 /**
  * Prove options
+ *
+ * Decoded for wire-format completeness. The SDK does not replicate the
+ * `decreaseLimitOnEmptySubQueryResult` limit-accounting detail of the Rust
+ * verifier — proofs verify identically, but the *remaining limit* reported for
+ * proofs generated with that option may differ.
  */
 export interface ProveOptions {
   decreaseLimitOnEmptySubQueryResult: boolean;
@@ -85,36 +90,17 @@ export interface ProvedKeyValue {
 }
 
 /**
- * Proof verification result
- */
-export interface ProofVerificationResult {
-  rootHash: CryptoHash;
-  results: ProvedKeyValue[];
-  limit: number | null;
-}
-
-/**
  * GroveDB Element types (subset needed for verification)
  */
 export type Element =
   | { type: 'Item'; value: Uint8Array; flags: Uint8Array | null }
-  | { type: 'Reference'; path: Uint8Array[][]; flags: Uint8Array | null }
+  | { type: 'Reference'; path: Uint8Array[]; flags: Uint8Array | null }
   | { type: 'Tree'; rootKey: Uint8Array | null; flags: Uint8Array | null }
   | { type: 'SumTree'; rootKey: Uint8Array | null; sumValue: bigint; flags: Uint8Array | null }
   | { type: 'SumItem'; value: bigint; flags: Uint8Array | null }
   | { type: 'BigSumTree'; rootKey: Uint8Array | null; sumValue: bigint; flags: Uint8Array | null }
   | { type: 'CountTree'; rootKey: Uint8Array | null; count: bigint; flags: Uint8Array | null }
   | { type: 'CountSumTree'; rootKey: Uint8Array | null; count: bigint; sum: bigint; flags: Uint8Array | null };
-
-/**
- * Query item for path queries
- */
-export type QueryItem =
-  | { type: 'Key'; key: Uint8Array }
-  | { type: 'Range'; start: Uint8Array; end: Uint8Array; startInclusive: boolean; endInclusive: boolean }
-  | { type: 'RangeFrom'; start: Uint8Array; startInclusive: boolean }
-  | { type: 'RangeTo'; end: Uint8Array; endInclusive: boolean }
-  | { type: 'RangeFull' };
 
 /**
  * Verification error

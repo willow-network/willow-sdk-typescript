@@ -28,14 +28,28 @@ import {
   ProveOptions,
 } from './types';
 
-function decodeLayerProof(reader: BincodeReader): LayerProof {
+/**
+ * Maximum nesting depth for layer proofs. A real GroveDB path is a handful of
+ * segments deep; this cap only exists so a crafted proof (~3 bytes per level)
+ * can't drive the recursive decode — and the recursive verification walks over
+ * the decoded structure — into a stack overflow.
+ */
+const MAX_LAYER_DEPTH = 64;
+
+function decodeLayerProof(reader: BincodeReader, depth: number): LayerProof {
+  if (depth > MAX_LAYER_DEPTH) {
+    throw new GroveDBVerificationError(
+      `Layer proof nesting exceeds maximum depth of ${MAX_LAYER_DEPTH}`,
+    );
+  }
+
   const merkProof = reader.readByteVec();
   const mapLen = reader.readLength();
   const lowerLayers = new Map<string, LayerProof>();
 
   for (let i = 0; i < mapLen; i++) {
     const keyBytes = reader.readByteVec();
-    const value = decodeLayerProof(reader);
+    const value = decodeLayerProof(reader, depth + 1);
     lowerLayers.set(bytesToHex(keyBytes), value);
   }
 
@@ -49,7 +63,7 @@ function decodeProveOptions(reader: BincodeReader): ProveOptions {
 }
 
 function decodeGroveDBProofV0(reader: BincodeReader): GroveDBProofV0 {
-  const rootLayer = decodeLayerProof(reader);
+  const rootLayer = decodeLayerProof(reader, 0);
   const proveOptions = decodeProveOptions(reader);
   return { rootLayer, proveOptions };
 }

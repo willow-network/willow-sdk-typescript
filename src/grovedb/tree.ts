@@ -22,8 +22,6 @@ export class Tree {
   node: MerkNode;
   left: Child | null = null;
   right: Child | null = null;
-  height: number = 1;
-  childHeights: [number, number] = [0, 0];
 
   constructor(node: MerkNode) {
     this.node = node;
@@ -71,8 +69,10 @@ export class Tree {
         return kvDigestToKvHash(this.node.key, combinedValueHash);
       }
 
-      default:
-        throw new GroveDBVerificationError(`Unknown node type: ${(this.node as any).type}`);
+      default: {
+        const exhaustive: never = this.node;
+        throw new GroveDBVerificationError(`Unknown node type: ${JSON.stringify(exhaustive)}`);
+      }
     }
   }
 
@@ -88,15 +88,6 @@ export class Tree {
    * Attach a child to this node
    */
   attach(left: boolean, child: Tree): void {
-    this.attachWithHeight(left, child, child.height);
-  }
-
-  /**
-   * Attach a child to this node with explicit height
-   * This is used when the child may have been collapsed (hash converted)
-   * and we need to preserve the original height for AVL checking
-   */
-  attachWithHeight(left: boolean, child: Tree, originalHeight: number): void {
     if (left && this.left !== null) {
       throw new GroveDBVerificationError('Left child already attached');
     }
@@ -104,13 +95,9 @@ export class Tree {
       throw new GroveDBVerificationError('Right child already attached');
     }
 
-    this.height = Math.max(this.height, originalHeight + 1);
-
     if (left) {
-      this.childHeights[0] = originalHeight;
       this.left = { tree: child, hash: child.hash() };
     } else {
-      this.childHeights[1] = originalHeight;
       this.right = { tree: child, hash: child.hash() };
     }
   }

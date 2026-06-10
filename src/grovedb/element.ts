@@ -54,9 +54,7 @@ function readElement(reader: BincodeReader): Element {
 
     case ELEMENT_REFERENCE: {
       const path = readReferencePath(reader);
-      // MaxReferenceHop = Option<u8>
-      const _maxHop = reader.readOptionU8();
-      void _maxHop;
+      reader.readOptionU8(); // MaxReferenceHop — not needed for verification
       const flags = reader.readOptionByteVec();
       return { type: 'Reference', path, flags };
     }
@@ -108,7 +106,7 @@ function readElement(reader: BincodeReader): Element {
 }
 
 /**
- * Read `ReferencePathType` and return the path bytes as `Uint8Array[][]`.
+ * Read `ReferencePathType` and return the path bytes as `Uint8Array[]`.
  *
  * The 7 variants encode the same path in different shapes (some include a
  * small `u8` height prefix; some carry a single byte-slice instead of a
@@ -120,40 +118,30 @@ function readElement(reader: BincodeReader): Element {
  * should add a dedicated typed-reference reader; this one is hash-faithful,
  * not structure-faithful.
  */
-function readReferencePath(reader: BincodeReader): Uint8Array[][] {
+function readReferencePath(reader: BincodeReader): Uint8Array[] {
   const variant = reader.readVariant();
 
   switch (variant) {
-    case 0: {
+    case 0:
       // AbsolutePathReference(Vec<Vec<u8>>)
-      const path = reader.readVecOfByteVec();
-      return [path];
-    }
+      return reader.readVecOfByteVec();
     case 1:
     case 2:
-    case 3: {
+    case 3:
       // UpstreamRootHeightReference(u8, Vec<Vec<u8>>)
       // UpstreamRootHeightWithParentPathAdditionReference(u8, Vec<Vec<u8>>)
       // UpstreamFromElementHeightReference(u8, Vec<Vec<u8>>)
       reader.readU8();
-      const path = reader.readVecOfByteVec();
-      return [path];
-    }
-    case 4: {
+      return reader.readVecOfByteVec();
+    case 4:
       // CousinReference(Vec<u8>)
-      const single = reader.readByteVec();
-      return [[single]];
-    }
-    case 5: {
+      return [reader.readByteVec()];
+    case 5:
       // RemovedCousinReference(Vec<Vec<u8>>)
-      const path = reader.readVecOfByteVec();
-      return [path];
-    }
-    case 6: {
+      return reader.readVecOfByteVec();
+    case 6:
       // SiblingReference(Vec<u8>)
-      const single = reader.readByteVec();
-      return [[single]];
-    }
+      return [reader.readByteVec()];
     default:
       throw new GroveDBVerificationError(
         `Unknown ReferencePathType variant: ${variant}`,

@@ -71,26 +71,33 @@ function verifyProof(
   }
 
   const results: GroveDBVerificationResult['results'] = [];
-  let limit = options.limit ?? null;
-  const deserializeElements = options.deserializeElements ?? true;
 
   const rootHash = verifyLayerProof(
     proof.proof.rootLayer,
-    proof.proof.proveOptions.decreaseLimitOnEmptySubQueryResult,
     [],
     results,
-    limit,
-    deserializeElements
+    options.limit ?? null,
+    options.deserializeElements ?? true
   );
 
   return { rootHash, results };
 }
 
 /**
+ * Deserialize an element, treating undecodable values as opaque bytes.
+ */
+function tryDeserializeElement(value: Uint8Array): Element | null {
+  try {
+    return deserializeElement(value);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Verify a layer proof recursively
  *
  * @param layerProof - The layer proof to verify
- * @param decreaseLimitOnEmpty - Whether to decrease limit on empty results
  * @param currentPath - Current path in the tree
  * @param results - Accumulator for proven values
  * @param limit - Maximum results (null for unlimited)
@@ -99,7 +106,6 @@ function verifyProof(
  */
 function verifyLayerProof(
   layerProof: LayerProof,
-  decreaseLimitOnEmpty: boolean,
   currentPath: Uint8Array[],
   results: GroveDBVerificationResult['results'],
   limit: number | null,
@@ -120,15 +126,7 @@ function verifyLayerProof(
 
     if (lowerLayer && proved.value) {
       // This is a subtree - verify the lower layer
-      let element: Element | null = null;
-      if (deserializeElements) {
-        try {
-          element = deserializeElement(proved.value);
-        } catch (e) {
-          // If deserialization fails, treat as opaque bytes
-          element = null;
-        }
-      }
+      const element = deserializeElements ? tryDeserializeElement(proved.value) : null;
 
       // Only recurse if element is a tree type with a root key
       if (element && isTreeElement(element) && hasRootKey(element)) {
@@ -137,7 +135,6 @@ function verifyLayerProof(
         // Recursively verify the lower layer
         const lowerHash = verifyLayerProof(
           lowerLayer,
-          decreaseLimitOnEmpty,
           newPath,
           results,
           limit !== null ? limit - results.length : null,
@@ -162,21 +159,11 @@ function verifyLayerProof(
       }
     } else if (proved.value) {
       // Leaf value - add to results
-      let element: Element | null = null;
-      if (deserializeElements) {
-        try {
-          element = deserializeElement(proved.value);
-        } catch (e) {
-          // If deserialization fails, treat as opaque bytes
-          element = null;
-        }
-      }
-
       results.push({
         path: currentPath,
         key: proved.key,
         value: proved.value,
-        element
+        element: deserializeElements ? tryDeserializeElement(proved.value) : null
       });
     }
   }
@@ -240,8 +227,9 @@ function quickVerifyLayer(layerProof: LayerProof): CryptoHash {
   const merkResult = executeMerkProofWithQuery(layerProof.merkProof, null, true);
 
   // Verify any lower layers
+  const provedByKey = new Map(merkResult.resultSet.map(r => [bytesToHex(r.key), r]));
   for (const [keyHex, lowerLayer] of layerProof.lowerLayers) {
-    const proved = merkResult.resultSet.find(r => bytesToHex(r.key) === keyHex);
+    const proved = provedByKey.get(keyHex);
     if (!proved || !proved.value) {
       throw new GroveDBVerificationError(
         `Lower layer key ${keyHex} not found in Merk proof`
