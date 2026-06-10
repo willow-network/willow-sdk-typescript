@@ -74,4 +74,66 @@ describe('WillowClient — propagate consensus rejection', () => {
       ).rejects.toThrow(/Invalid signature/);
     });
   });
+
+  describe('client.registerSubgrove — access lists reach the chain', () => {
+    /** Stub consensus.registerSubgrove and capture the args it was called with. */
+    function makeCapturingClient() {
+      const client = new WillowClient({ apiUrl: 'http://localhost:3031' });
+      client.auth.setIdentity('did:willow:owner', '00'.repeat(32), 'did:willow:owner#key-1');
+      const registerSubgrove = jest
+        .fn()
+        .mockResolvedValue({ success: true, txHash: 'AB12CD' });
+      (client as any).consensus = { registerSubgrove };
+      return { client, registerSubgrove };
+    }
+
+    it('builds a DataStorage mode from name/writers/readers (readers → free_readers)', async () => {
+      const { client, registerSubgrove } = makeCapturingClient();
+      await client.registerSubgrove({
+        dataset_id: 'sg',
+        name: 'My Subgrove',
+        schema: { version: 1, fields: {} },
+        owner_did: 'did:willow:owner',
+        writers: ['did:willow:owner', 'did:willow:writer2'],
+        readers: ['did:willow:reader1'],
+      } as any);
+
+      const options = registerSubgrove.mock.calls[0][4];
+      expect(options.name).toBe('My Subgrove');
+      expect(options.mode).toEqual({
+        DataStorage: {
+          name: 'My Subgrove',
+          writers: ['did:willow:owner', 'did:willow:writer2'],
+          free_readers: ['did:willow:reader1'],
+        },
+      });
+    });
+
+    it('an explicit options.mode overrides the request access lists', async () => {
+      const { client, registerSubgrove } = makeCapturingClient();
+      const mode = {
+        FileStorage: {
+          name: 'files',
+          max_file_size: 1000,
+          replication_factor: 1,
+          writers: ['did:willow:owner'],
+          free_readers: [],
+        },
+      };
+      await client.registerSubgrove(
+        {
+          dataset_id: 'sg',
+          name: 'My Subgrove',
+          schema: { version: 1, fields: {} },
+          owner_did: 'did:willow:owner',
+          writers: ['did:willow:ignored'],
+          readers: ['did:willow:ignored'],
+        } as any,
+        { mode } as any,
+      );
+
+      const options = registerSubgrove.mock.calls[0][4];
+      expect(options.mode).toBe(mode);
+    });
+  });
 });

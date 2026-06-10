@@ -69,6 +69,12 @@ export interface Signer {
 
 /** Optional RegisterSubgrove parameters. */
 export interface RegisterSubgroveOptions {
+  /**
+   * Human-readable subgrove name. This is the top-level name the chain
+   * stores and signs over (the per-mode `name` is ignored by the
+   * validator for the signing message). Defaults to the subgrove id.
+   */
+  name?: string;
   mode?: SubgroveMode;
   retentionWindow?: RetentionWindow;
   initialFunding?: string;
@@ -183,6 +189,12 @@ export type SubgroveMode =
  */
 export interface RegisterSubgroveTx {
   subgroveId: string;
+  /**
+   * Top-level human-readable name. The chain stores this and signs over it
+   * for DataStorage/FileStorage modes (the per-mode `name` is not part of
+   * the signing message). Defaults to `subgroveId` when omitted.
+   */
+  name?: string;
   schema: string; // JSON schema as string
   ownerDid: string;
   mode?: SubgroveMode;
@@ -400,14 +412,15 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
   switch (txType) {
     case 'RegisterSubgrove': {
       const t = transaction as RegisterSubgroveTx;
+      const name = t.name ?? t.subgroveId;
       const wrapper: Record<string, unknown> = {
         subgrove_id: t.subgroveId,
-        name: t.subgroveId,
+        name,
         description: '',
         schema: t.schema,
         owner_did: t.ownerDid,
         admins: [],
-        mode: t.mode ?? { DataStorage: { name: t.subgroveId, writers: [t.ownerDid], free_readers: [] } },
+        mode: t.mode ?? { DataStorage: { name, writers: [t.ownerDid], free_readers: [] } },
         retention_window: t.retention_window,
         signature: sig,
         public_key_id: publicKeyId,
@@ -604,6 +617,10 @@ export function createSignMessage(txType: string, transaction: Transaction): str
       const tx = transaction as RegisterSubgroveTx;
       const mode = tx.mode;
       const sh = schemaHash(tx.schema);
+      // The validator signs over the top-level `name`, not the per-mode one
+      // (`create_register_subgrove_message` reads `params.name`, and the mode
+      // `name` field is `name: _` in the handler).
+      const name = tx.name ?? tx.subgroveId;
 
       // BlockchainIndexing signs a simpler payload than the other modes.
       if (mode && 'BlockchainIndexing' in mode) {
@@ -611,14 +628,14 @@ export function createSignMessage(txType: string, transaction: Transaction): str
       }
 
       if (mode && 'FileStorage' in mode) {
-        const fs = (mode as { FileStorage: { name?: string; writers?: string[]; free_readers?: string[] } }).FileStorage;
-        return `RegisterSubgrove\nID: ${tx.subgroveId}\nMode: FileStorage\nName: ${fs.name ?? tx.subgroveId}\nDescription: \nSchemaHash: ${sh}\nOwner: ${tx.ownerDid}\nAdmins: \nWriters: ${(fs.writers ?? []).join(',')}\nReaders: ${(fs.free_readers ?? []).join(',')}\nNonce: ${tx.nonce || 0}`;
+        const fs = (mode as { FileStorage: { writers?: string[]; free_readers?: string[] } }).FileStorage;
+        return `RegisterSubgrove\nID: ${tx.subgroveId}\nMode: FileStorage\nName: ${name}\nDescription: \nSchemaHash: ${sh}\nOwner: ${tx.ownerDid}\nAdmins: \nWriters: ${(fs.writers ?? []).join(',')}\nReaders: ${(fs.free_readers ?? []).join(',')}\nNonce: ${tx.nonce || 0}`;
       }
       // DataStorage mode (default)
       const ds = mode && 'DataStorage' in mode
-        ? (mode as { DataStorage: { name?: string; writers?: string[]; free_readers?: string[] } }).DataStorage
-        : { name: tx.subgroveId, writers: [tx.ownerDid], free_readers: [] as string[] };
-      return `RegisterSubgrove\nID: ${tx.subgroveId}\nName: ${ds.name ?? tx.subgroveId}\nDescription: \nSchemaHash: ${sh}\nOwner: ${tx.ownerDid}\nAdmins: \nWriters: ${(ds.writers ?? []).join(',')}\nReaders: ${(ds.free_readers ?? []).join(',')}\nNonce: ${tx.nonce || 0}`;
+        ? (mode as { DataStorage: { writers?: string[]; free_readers?: string[] } }).DataStorage
+        : { writers: [tx.ownerDid], free_readers: [] as string[] };
+      return `RegisterSubgrove\nID: ${tx.subgroveId}\nName: ${name}\nDescription: \nSchemaHash: ${sh}\nOwner: ${tx.ownerDid}\nAdmins: \nWriters: ${(ds.writers ?? []).join(',')}\nReaders: ${(ds.free_readers ?? []).join(',')}\nNonce: ${tx.nonce || 0}`;
     }
 
     case 'Transfer': {

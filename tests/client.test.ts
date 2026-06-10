@@ -174,9 +174,7 @@ describe('WillowClient', () => {
     it('should register a dataset with auth headers', async () => {
       const datasetRequest = {
         dataset_id: 'test-dataset',
-
         name: 'Test Dataset',
-        dataset_path: ['collections'],
         schema: {
           version: 1,
           fields: { name: { type: 'string' as const } },

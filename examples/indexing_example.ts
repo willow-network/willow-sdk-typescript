@@ -58,7 +58,6 @@ async function main() {
   const datasetRequest: RegisterSubgroveRequest = {
     dataset_id: 'products',
     name: 'Product Catalog',
-    dataset_path: [],
     schema,
     owner_did: fundedDID,
     writers: [fundedDID],

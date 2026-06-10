@@ -79,7 +79,6 @@ async function main() {
   const productsDataset: RegisterSubgroveRequest = {
     dataset_id: 'products',
     name: 'Product Catalog',
-    dataset_path: ['collections'],
     schema: productsSchema,
     owner_did: did,
     writers: [did],
@@ -121,7 +120,6 @@ async function main() {
   const ordersDataset: RegisterSubgroveRequest = {
     dataset_id: 'orders',
     name: 'Customer Orders',
-    dataset_path: ['collections'],
     schema: ordersSchema,
     owner_did: did,
     writers: [did],
@@ -161,7 +159,6 @@ async function main() {
   const usersDataset: RegisterSubgroveRequest = {
     dataset_id: 'users',
     name: 'User Profiles',
-    dataset_path: ['collections'],
     schema: usersSchema,
     owner_did: did,
     writers: [did],

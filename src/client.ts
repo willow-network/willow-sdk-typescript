@@ -3,7 +3,7 @@ import { WillowData } from "./data";
 import { FileOperations } from "./files";
 import { EthOperations } from "./eth-state";
 import { ConsensusClient } from "./consensus";
-import { BroadcastResult, Signer } from "./consensus/types";
+import { BroadcastResult, RegisterSubgroveOptions, Signer, SubgroveMode } from "./consensus/types";
 import { WillowIndexers } from "./indexers";
 import { WillowSubscriptions } from "./subscriptions";
 import {
@@ -137,19 +137,36 @@ export class WillowClient {
   /**
    * Register a subgrove via a consensus transaction.
    *
+   * The request's `name`, `writers`, and `readers` become a `DataStorage`
+   * subgrove mode (`readers` maps to the on-chain `free_readers`). Pass
+   * `options.mode` to register a non-DataStorage subgrove (FileStorage,
+   * BlockchainIndexing) — an explicit mode takes precedence over the
+   * request's access lists. `options` also carries `retentionWindow` and
+   * `initialFunding`.
+   *
    * Returns the consensus `BroadcastResult` (tx hash, height, raw log) —
    * the SDK does not synthesize a registration record; read the subgrove
    * back from the chain if you need its stored state.
    */
   async registerSubgrove(
     request: RegisterSubgroveRequest,
+    options?: RegisterSubgroveOptions,
   ): Promise<BroadcastResult> {
     this.requireIdentity();
+    const mode: SubgroveMode =
+      options?.mode ?? {
+        DataStorage: {
+          name: request.name,
+          writers: request.writers,
+          free_readers: request.readers,
+        },
+      };
     const result = await this.consensus.registerSubgrove(
       request.dataset_id,
       JSON.stringify(request.schema ?? {}),
       this.auth.getDid()!,
       this.signer(),
+      { name: request.name, ...options, mode },
     );
     if (!result.success) {
       throw new Error(
@@ -162,8 +179,9 @@ export class WillowClient {
   /** @deprecated Use {@link registerSubgrove} — "subgrove" is the on-chain term. */
   async registerDataset(
     request: RegisterSubgroveRequest,
+    options?: RegisterSubgroveOptions,
   ): Promise<BroadcastResult> {
-    return this.registerSubgrove(request);
+    return this.registerSubgrove(request, options);
   }
 
   /**

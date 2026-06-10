@@ -513,7 +513,6 @@ funded DID). `registerDataset` is a deprecated alias of `registerSubgrove`;
 const result = await client.registerSubgrove({
   dataset_id: 'users',
   name: 'User Data',
-  dataset_path: ['collections'],
   schema: {
     version: 1,
     fields: {

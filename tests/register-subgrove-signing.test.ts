@@ -43,7 +43,10 @@ describe('createSignMessage — RegisterSubgrove', () => {
   });
 
   it('FileStorage mode uses the multi-line format with Mode: FileStorage', () => {
+    // The server's FileStorage signing line reads the top-level name
+    // (params.name), so the SDK must too — the per-mode name is not signed.
     const tx = baseTx({
+      name: 'my-files',
       mode: {
         FileStorage: {
           name: 'my-files',
@@ -97,5 +100,25 @@ describe('createSignMessage — RegisterSubgrove', () => {
     expect(msg).toContain('RegisterSubgrove\n');
     expect(msg).toContain('Name: test-sg');
     expect(msg).not.toContain('Mode:');
+  });
+
+  it('signs over the top-level name, which the validator reads (not the per-mode name)', () => {
+    // The Rust validator's create_register_subgrove_message uses params.name
+    // (the top-level RegisterSubgroveTx.name); the DataStorage mode `name`
+    // is `name: _` in the handler. Signing over the mode name instead would
+    // diverge from the server whenever a human-readable name is supplied.
+    const tx = baseTx({
+      name: 'Human Name',
+      mode: {
+        DataStorage: {
+          name: 'mode-only-name',
+          writers: ['did:willow:validator1'],
+          free_readers: [],
+        },
+      },
+    });
+    const msg = createSignMessage('RegisterSubgrove', tx);
+    expect(msg).toContain('Name: Human Name');
+    expect(msg).not.toContain('mode-only-name');
   });
 });

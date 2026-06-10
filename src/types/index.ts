@@ -179,10 +179,11 @@ export interface SchemaDefinition {
 export interface RegisterSubgroveRequest {
   dataset_id: string;
   name: string;
-  dataset_path: string[];
   schema: SchemaDefinition;
   owner_did: string;
+  /** DIDs with write permission. Maps to the subgrove mode's `writers`. */
   writers: string[];
+  /** DIDs with free read permission. Maps to the subgrove mode's `free_readers`. */
   readers: string[];
 }
 

@@ -128,6 +128,7 @@ export class ConsensusClient {
 
     const tx: RegisterSubgroveTx = {
       subgroveId,
+      name: options.name,
       schema,
       ownerDid,
       mode: options.mode,
