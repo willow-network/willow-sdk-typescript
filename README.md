@@ -30,8 +30,10 @@ Transactions submitted through this SDK go to the API server's
 transaction, bincode-encodes it (the chain's on-the-wire format), and
 forwards to CometBFT's `broadcast_tx_sync`. `apiUrl` is therefore
 **required** whenever you submit a tx; `consensusRpcUrl` is only used
-for read-only RPC queries (status, block, validators) and may be
-omitted or pointed at the same endpoint.
+for read-only RPC queries (status, block, validators). For localhost
+devnets it is derived from `apiUrl` automatically; for any other host,
+set it explicitly — operations that need CometBFT RPC throw with code
+`CONSENSUS_RPC_URL_REQUIRED` when it is missing.
 
 ## Quick Start
 

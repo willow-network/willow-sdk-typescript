@@ -9,11 +9,8 @@
 import axios, { AxiosInstance } from "axios";
 import { ApiResponse, WillowError } from "../types";
 import { WillowAuth, signEd25519 } from "../auth";
-import {
-  BroadcastResult,
-  stringToBase64,
-  createBroadcastResult,
-} from "../consensus";
+import { BroadcastResult } from "../consensus";
+import { submitTxToApi } from "../internal/tx";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -90,7 +87,6 @@ export interface EncryptedKeyGrant {
 export interface KeyGrantProofResponse {
   /** Hex-encoded GroveDB Merkle proof. */
   proof: string;
-  /** Application ID. */
   /** Subgrove ID. */
   subgrove_id: string;
   /** DID of the grantee. */
@@ -134,7 +130,7 @@ interface RotateSubgroveKeyTxFields {
  *
  * Read operations (get/list/proof) go through the REST API using auth headers.
  * Write operations (grant/revoke/rotate) build signed transactions and
- * broadcast them to CometBFT via the consensus JSON-RPC endpoint.
+ * submit them through the API server's `/tx/submit` endpoint.
  *
  * @example
  * ```typescript
@@ -164,7 +160,6 @@ export class PrivacyOperations {
   private auth: WillowAuth;
   private privateKey: string;
   private publicKeyId: string;
-  private consensusRpcUrl: string;
   private apiUrl: string;
 
   /**
@@ -174,15 +169,12 @@ export class PrivacyOperations {
    * @param auth - WillowAuth instance with identity set (used for REST auth headers)
    * @param privateKey - Ed25519 private key hex (used for signing consensus transactions)
    * @param publicKeyId - Public key ID for the DID (e.g. "did:willow:abc#key-1")
-   * @param consensusRpcUrl - CometBFT JSON-RPC URL. If omitted, derived from
-   *   apiUrl by replacing port 3031 with 26657.
    */
   constructor(
     apiUrl: string,
     auth: WillowAuth,
     privateKey: string,
     publicKeyId: string,
-    consensusRpcUrl?: string,
   ) {
     this.apiUrl = apiUrl.replace(/\/+$/, "");
     this.api = axios.create({
@@ -192,8 +184,6 @@ export class PrivacyOperations {
     this.auth = auth;
     this.privateKey = privateKey;
     this.publicKeyId = publicKeyId;
-    this.consensusRpcUrl =
-      consensusRpcUrl || this.apiUrl.replace(":3031", ":26657");
   }
 
   // ── Read operations (REST API) ─────────────────────────────────────
@@ -204,7 +194,6 @@ export class PrivacyOperations {
    * Calls GET /key-grants/:subgrove_id/:did where the DID is
    * the caller's own DID from the auth instance.
    *
-   * 
    * @param subgroveId - Subgrove ID
    * @returns The encrypted key grant for the caller's DID
    * @throws {WillowError} if no identity is set or the grant is not found
@@ -236,7 +225,6 @@ export class PrivacyOperations {
    * Calls GET /key-grants/:subgrove_id.
    * Requires the caller to be the subgrove owner or admin.
    *
-   * 
    * @param subgroveId - Subgrove ID
    * @returns Array of grantee DIDs
    */
@@ -265,7 +253,6 @@ export class PrivacyOperations {
    * Calls GET /proof/key-grant/:subgrove_id/:did.
    * This endpoint is public (proofs are non-sensitive).
    *
-   * 
    * @param subgroveId - Subgrove ID
    * @param did - DID of the grantee
    * @returns Proof response with hex-encoded Merkle proof
@@ -298,7 +285,6 @@ export class PrivacyOperations {
    * Builds a GrantSubgroveKey transaction, signs it with Ed25519, and
    * broadcasts to the CometBFT consensus layer.
    *
-   * 
    * @param subgroveId - Subgrove ID
    * @param grant - The encrypted key grant for the grantee
    * @returns Broadcast result with transaction hash
@@ -333,7 +319,6 @@ export class PrivacyOperations {
    * Builds a RevokeSubgroveKey transaction, signs it with Ed25519, and
    * broadcasts to the CometBFT consensus layer.
    *
-   * 
    * @param subgroveId - Subgrove ID
    * @param revokeDid - DID to revoke access from
    * @returns Broadcast result with transaction hash
@@ -372,7 +357,6 @@ export class PrivacyOperations {
    * exactly current_epoch + 1. All existing grants are deleted and
    * replaced with the provided new grants.
    *
-   * 
    * @param subgroveId - Subgrove ID
    * @param newEpoch - New key epoch (must be current_epoch + 1)
    * @param newGrants - New encrypted key grants for all authorized DIDs
@@ -443,7 +427,7 @@ export class PrivacyOperations {
   }
 
   /**
-   * Broadcast a wrapped transaction to CometBFT via JSON-RPC broadcast_tx_sync.
+   * Submit a wrapped transaction through the API server's `/tx/submit`.
    */
   private async broadcastTransaction(
     txType: string,
@@ -451,53 +435,26 @@ export class PrivacyOperations {
     transaction: any,
   ): Promise<BroadcastResult> {
     const txWrapper = { [txType]: transaction };
-    const txJson = JSON.stringify(txWrapper);
-    const txBase64 = stringToBase64(txJson);
 
-    const rpcRequest = {
-      jsonrpc: "2.0",
-      id: 1,
-      method: "broadcast_tx_sync",
-      params: { tx: txBase64 },
-    };
-
+    let result: BroadcastResult;
     try {
-      const response = await fetch(this.consensusRpcUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(rpcRequest),
-        signal: AbortSignal.timeout(30_000),
+      result = await submitTxToApi(this.apiUrl, txWrapper, {
+        headers: this.auth.getAuthHeaders("POST", "/tx/submit"),
       });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new WillowError(
-          `Consensus RPC error: HTTP ${response.status}: ${errorText}`,
-          "BROADCAST_FAILED",
-        );
-      }
-
-      const data = (await response.json()) as {
-        error?: { message?: string };
-        result?: Record<string, unknown>;
-      };
-
-      if (data.error) {
-        throw new WillowError(
-          `Consensus RPC error: ${data.error.message || JSON.stringify(data.error)}`,
-          "BROADCAST_FAILED",
-        );
-      }
-
-      return createBroadcastResult({ result: data.result || {} });
     } catch (error) {
-      if (error instanceof WillowError) {
-        throw error;
-      }
       throw new WillowError(
         `Failed to broadcast transaction: ${error instanceof Error ? error.message : String(error)}`,
         "BROADCAST_FAILED",
       );
     }
+
+    if (!result.success) {
+      throw new WillowError(
+        `Transaction rejected: ${result.rawLog || result.errorMessage || "unknown error"}`,
+        "BROADCAST_FAILED",
+      );
+    }
+
+    return result;
   }
 }

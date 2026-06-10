@@ -16,7 +16,15 @@ export interface WillowConfig {
    * - Debugging: isolate which indexer is serving a request.
    */
   indexerUrl?: string;
-  /** Optional CometBFT RPC URL for consensus transactions. Derived from apiUrl if omitted. */
+  /**
+   * CometBFT RPC URL for consensus reads (transaction status, light-client
+   * headers). Transactions are submitted via the API server's `/tx/submit`
+   * and do not need this. When omitted, the SDK derives it from `apiUrl`
+   * only for localhost/127.0.0.1 devnet setups (API port 3031..3040 →
+   * RPC port 26657..27557); for any other host it stays unset and
+   * operations that need CometBFT RPC throw with code
+   * `CONSENSUS_RPC_URL_REQUIRED`.
+   */
   consensusRpcUrl?: string;
   did?: string;
   privateKey?: string;

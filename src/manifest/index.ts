@@ -10,6 +10,7 @@
  * dispatched at parse time from the `network` field.
  */
 
+import { WillowError } from "../types";
 import {
   SupportedChain,
   chainFamily,
@@ -119,12 +120,12 @@ export function parseManifest(input: Uint8Array | string): WillowManifest {
   return parsed as WillowManifest;
 }
 
-export class ManifestValidationError extends Error {
+export class ManifestValidationError extends WillowError {
   constructor(
     message: string,
     public readonly field: string,
   ) {
-    super(message);
+    super(message, "MANIFEST_VALIDATION_FAILED");
     this.name = "ManifestValidationError";
   }
 }

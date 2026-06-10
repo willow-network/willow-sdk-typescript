@@ -1,15 +1,17 @@
 /**
  * Light Client Types
- * 
+ *
  * Core data structures for CometBFT light client protocol and GroveDB proof verification.
  */
+
+import { WillowError } from '../types';
 
 /**
  * Base exception for light client operations
  */
-export class LightClientError extends Error {
-  constructor(message: string) {
-    super(message);
+export class LightClientError extends WillowError {
+  constructor(message: string, code?: string) {
+    super(message, code);
     this.name = 'LightClientError';
   }
 }

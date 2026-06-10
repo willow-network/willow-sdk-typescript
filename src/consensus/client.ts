@@ -6,6 +6,12 @@
 
 import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, RegisterDidTx, RegisterSubgroveTx, SubgroveMode, RetentionWindow, TransferTx, DataStoreTx, StoreFileManifestTx, DeleteFileManifestTx, DeregisterSubgroveTx, SubmitAnchorTx, Transaction, createTransactionWrapper, createSignMessage } from './types';
 import { canonicalizeAnchorBody, computeAnchorMerkleRoot, sha256Hex } from './anchor-canonical';
+import { submitTxToApi } from '../internal/tx';
+
+/** Misconfiguration (no consensusRpcUrl) must surface, never degrade to a fallback. */
+function isRpcUrlMissingError(error: unknown): boolean {
+  return error instanceof ConsensusError && error.code === 'CONSENSUS_RPC_URL_REQUIRED';
+}
 
 /**
  * CometBFT consensus client for direct transaction broadcasting
@@ -281,13 +287,18 @@ export class ConsensusClient {
       return code === 0 ? TransactionStatus.SUCCESS : TransactionStatus.FAILED;
 
     } catch (error) {
+      if (isRpcUrlMissingError(error)) throw error;
       console.warn('Failed to get transaction status:', error);
       return TransactionStatus.NOT_FOUND;
     }
   }
 
   /**
-   * Wait for a transaction to be confirmed
+   * Wait for a transaction to be confirmed.
+   *
+   * Resolves with SUCCESS or FAILED once the transaction lands in a block.
+   * Throws a ConsensusError with code `TX_CONFIRM_TIMEOUT` if the
+   * transaction is still unconfirmed when the timeout elapses.
    */
   async waitForTransaction(
     txHash: string,
@@ -307,7 +318,10 @@ export class ConsensusClient {
       await this.sleep(pollInterval * 1000);
     }
 
-    return TransactionStatus.PENDING;
+    throw new ConsensusError(
+      `Transaction ${txHash} not confirmed within ${timeoutSecs}s`,
+      'TX_CONFIRM_TIMEOUT'
+    );
   }
 
   /**
@@ -318,6 +332,7 @@ export class ConsensusClient {
       const result = await this.rpcRequest('status', {});
       return result.node_info?.network || this.config.chainId!;
     } catch (error) {
+      if (isRpcUrlMissingError(error)) throw error;
       console.warn('Failed to get chain ID:', error);
       return this.config.chainId!;
     }
@@ -331,6 +346,7 @@ export class ConsensusClient {
       const result = await this.rpcRequest('status', {});
       return parseInt(result.sync_info?.latest_block_height || '0');
     } catch (error) {
+      if (isRpcUrlMissingError(error)) throw error;
       console.warn('Failed to get latest height:', error);
       return undefined;
     }
@@ -375,60 +391,44 @@ export class ConsensusClient {
   private async broadcastTransaction(transaction: any): Promise<BroadcastResult> {
     if (!this.config.apiUrl) {
       throw new ConsensusError(
-        'apiUrl is required for transaction submission. Set it in the SDK config.'
+        'apiUrl is required for transaction submission. Set it in the SDK config.',
+        'API_URL_REQUIRED'
       );
     }
 
-    const url = `${this.config.apiUrl.replace(/\/$/, '')}/tx/submit`;
     for (let attempt = 0; attempt <= this.config.maxRetries!; attempt++) {
       try {
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(this.config.apiKey ? { 'X-API-Key': this.config.apiKey } : {})
-          },
-          body: JSON.stringify(transaction),
-          signal: AbortSignal.timeout(this.config.requestTimeoutSecs! * 1000)
+        return await submitTxToApi(this.config.apiUrl, transaction, {
+          apiKey: this.config.apiKey,
+          timeoutMs: this.config.requestTimeoutSecs! * 1000,
         });
-
-        const body = (await response.json()) as {
-          success: boolean;
-          data?: { tx_hash: string; code: number; log: string };
-          error?: string;
-        };
-
-        if (!response.ok || !body.success || !body.data) {
-          const msg = body.error || `HTTP ${response.status}`;
-          return { success: false, errorMessage: msg, rawLog: msg };
-        }
-
-        const code = body.data.code;
-        return {
-          success: code === 0,
-          txHash: body.data.tx_hash,
-          errorCode: code !== 0 ? code : undefined,
-          errorMessage: code !== 0 ? body.data.log : undefined,
-          rawLog: body.data.log
-        };
       } catch (error) {
         if (attempt === this.config.maxRetries) {
           throw new ConsensusError(
             `tx submit failed after ${this.config.maxRetries! + 1} attempts: ${
               error instanceof Error ? error.message : String(error)
-            }`
+            }`,
+            'TX_SUBMIT_FAILED'
           );
         }
         // fall through to retry
       }
     }
-    throw new ConsensusError('tx submit: exhausted retries');
+    throw new ConsensusError('tx submit: exhausted retries', 'TX_SUBMIT_FAILED');
   }
 
   /**
    * Make a JSON-RPC request to CometBFT
    */
   private async rpcRequest(method: string, params: any): Promise<any> {
+    const rpcUrl = this.config.consensusRpcUrl;
+    if (!rpcUrl) {
+      throw new ConsensusError(
+        'CometBFT RPC URL is not configured. Set `consensusRpcUrl` in the SDK config to use consensus reads (transaction status, chain info).',
+        'CONSENSUS_RPC_URL_REQUIRED'
+      );
+    }
+
     const rpcRequest = {
       jsonrpc: '2.0',
       id: 1,
@@ -438,7 +438,7 @@ export class ConsensusClient {
 
     for (let attempt = 0; attempt <= this.config.maxRetries!; attempt++) {
       try {
-        const response = await fetch(this.config.consensusRpcUrl, {
+        const response = await fetch(rpcUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -486,6 +486,7 @@ export class ConsensusClient {
       const result = await this.rpcRequest('tx', { hash: txHash, prove: false });
       return result;
     } catch (error) {
+      if (isRpcUrlMissingError(error)) throw error;
       return undefined;
     }
   }

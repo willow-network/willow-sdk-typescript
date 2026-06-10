@@ -1,15 +1,18 @@
 /**
  * Consensus Client Types
- * 
+ *
  * Transaction structures and types for direct blockchain interaction.
  */
+
+import { keccak_256 } from '@noble/hashes/sha3';
+import { WillowError } from '../types';
 
 /**
  * Base exception for consensus client operations
  */
-export class ConsensusError extends Error {
-  constructor(message: string) {
-    super(message);
+export class ConsensusError extends WillowError {
+  constructor(message: string, code?: string) {
+    super(message, code);
     this.name = 'ConsensusError';
   }
 }
@@ -28,8 +31,8 @@ export enum TransactionStatus {
  * Configuration for consensus client
  */
 export interface ConsensusConfig {
-  consensusRpcUrl: string;
-  apiUrl?: string; // REST API URL for account queries (nonce, etc.)
+  consensusRpcUrl?: string; // CometBFT RPC URL for consensus reads (tx status, chain info)
+  apiUrl?: string; // REST API URL for tx submission and account queries (nonce, etc.)
   apiKey?: string; // Managed-tier API key sent as X-API-Key
   chainId?: string;
   requestTimeoutSecs?: number;
@@ -374,8 +377,6 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
       return { [txType]: tx };
   }
 }
-
-import { keccak_256 } from '@noble/hashes/sha3';
 
 /**
  * Keccak256 hash of a string, matching the Rust server's

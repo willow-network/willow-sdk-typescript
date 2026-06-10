@@ -133,10 +133,18 @@ export class WillowData {
       return this.lightClientInitPromise;
     }
 
+    if (!this.cometbftRpcUrl) {
+      throw new WillowError(
+        "CometBFT RPC URL is not configured, so the light client cannot verify headers. Set `consensusRpcUrl` in the WillowClient config to your validator's CometBFT RPC endpoint.",
+        "CONSENSUS_RPC_URL_REQUIRED",
+      );
+    }
+    const cometbftRpcUrl = this.cometbftRpcUrl;
+
     this.lightClientInitPromise = (async () => {
       const config: LightClientConfig = {
         chainId: "willow-chain",
-        validatorEndpoints: [this.cometbftRpcUrl ?? this.apiUrl.replace(":3031", ":26657")],
+        validatorEndpoints: [cometbftRpcUrl],
         trustThreshold: { numerator: 2, denominator: 3 },
         trustingPeriodSecs: 86400, // 24 hours
         maxClockDriftSecs: 30,

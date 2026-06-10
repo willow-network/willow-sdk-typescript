@@ -22,7 +22,23 @@ import {
 import { ProofVerificationOptions } from "./proof";
 import { ComputedFieldSet } from "./computed-fields";
 
-function deriveCometBftUrl(apiUrl: string): string {
+/**
+ * Derive the CometBFT RPC URL from the API URL for local devnets only
+ * (API port 3030+N → RPC port 26557+N*100). For any non-localhost host the
+ * mapping is deployment-specific, so no URL is derived — operations that
+ * need CometBFT RPC then throw `CONSENSUS_RPC_URL_REQUIRED` until the
+ * caller sets `consensusRpcUrl` in the config.
+ */
+function deriveCometBftUrl(apiUrl: string): string | undefined {
+  let hostname: string;
+  try {
+    hostname = new URL(apiUrl).hostname;
+  } catch {
+    return undefined;
+  }
+  if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
+    return undefined;
+  }
   const match = apiUrl.match(/:(\d+)(\/)?$/);
   if (match) {
     const apiPort = parseInt(match[1]);
@@ -32,7 +48,7 @@ function deriveCometBftUrl(apiUrl: string): string {
       return apiUrl.replace(`:${apiPort}`, `:${rpcPort}`);
     }
   }
-  return apiUrl.replace(/:3031/, ':26657');
+  return undefined;
 }
 
 /**
@@ -72,7 +88,9 @@ export class WillowClient {
     );
     this.subscriptions = new WillowSubscriptions(config.apiUrl, this.indexers);
 
-    this.files = new FileOperations(config.apiUrl, () => this.auth.getAuthHeaders('GET', '/files'));
+    this.files = new FileOperations(config.apiUrl, (method, path) =>
+      this.auth.getAuthHeaders(method, path),
+    );
     this.eth = new EthOperations(config.indexerUrl ?? config.apiUrl, undefined, config.apiKey);
 
     this.consensus = new ConsensusClient({
