@@ -1,4 +1,3 @@
-import axios, { AxiosInstance } from 'axios';
 import { ethers } from 'ethers';
 import { ed25519 } from '@noble/curves/ed25519';
 import {
@@ -6,6 +5,8 @@ import {
   WillowError,
   DidDocument,
 } from '../types';
+import { HttpClient } from '../internal/http';
+import { bytesToHex, hexToBytes } from '../internal/bytes';
 
 /**
  * Supported signature algorithms
@@ -36,28 +37,6 @@ export function detectAlgorithm(did: string, privateKey?: string): SignatureAlgo
 
   // Default to Ed25519 for Willow DIDs
   return 'Ed25519';
-}
-
-/**
- * Convert hex string to Uint8Array
- */
-function hexToBytes(hex: string): Uint8Array {
-  const clean = hex.replace(/^0x/, '');
-  if (clean.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(clean)) {
-    throw new Error('Invalid hex string');
-  }
-  const bytes = new Uint8Array(clean.length / 2);
-  for (let i = 0; i < clean.length; i += 2) {
-    bytes[i / 2] = parseInt(clean.substr(i, 2), 16);
-  }
-  return bytes;
-}
-
-/**
- * Convert Uint8Array to hex string
- */
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
 /**
@@ -147,7 +126,7 @@ export interface SignedRequestHeaders {
 }
 
 export class WillowAuth {
-  private api: AxiosInstance;
+  private api: HttpClient;
   private did?: string;
   private privateKey?: string;
   private publicKeyId?: string;
@@ -156,12 +135,9 @@ export class WillowAuth {
 
   constructor(apiUrl: string, apiKey?: string) {
     this.apiKey = apiKey;
-    this.api = axios.create({
+    this.api = new HttpClient({
       baseURL: apiUrl,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(apiKey ? { 'X-API-Key': apiKey } : {}),
-      },
+      headers: apiKey ? { 'X-API-Key': apiKey } : {},
     });
   }
 
@@ -171,11 +147,7 @@ export class WillowAuth {
    */
   setApiKey(apiKey: string | undefined): void {
     this.apiKey = apiKey;
-    if (apiKey) {
-      this.api.defaults.headers.common['X-API-Key'] = apiKey;
-    } else {
-      delete this.api.defaults.headers.common['X-API-Key'];
-    }
+    this.api.setHeader('X-API-Key', apiKey);
   }
 
   /** Returns the configured API key (if any). */
@@ -233,11 +205,11 @@ export class WillowAuth {
   async registerDid(didDocument: DidDocument): Promise<DidDocument> {
     const response = await this.api.post<ApiResponse<DidDocument>>('/did', didDocument);
 
-    if (!response.data.success) {
-      throw new WillowError(response.data.error || 'Failed to register DID', 'REGISTRATION_FAILED');
+    if (!response.success) {
+      throw new WillowError(response.error || 'Failed to register DID', 'REGISTRATION_FAILED');
     }
 
-    return response.data.data!;
+    return response.data!;
   }
 
   /**
@@ -246,11 +218,11 @@ export class WillowAuth {
   async getDid_(did: string): Promise<DidDocument> {
     const response = await this.api.get<ApiResponse<DidDocument>>(`/did/${did}`);
 
-    if (!response.data.success) {
-      throw new WillowError(response.data.error || 'Failed to get DID', 'DID_NOT_FOUND', 404);
+    if (!response.success) {
+      throw new WillowError(response.error || 'Failed to get DID', 'DID_NOT_FOUND', 404);
     }
 
-    return response.data.data!;
+    return response.data!;
   }
 
   /**

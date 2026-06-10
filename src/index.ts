@@ -27,6 +27,11 @@ export type { SubscribeOptions, SubscribeSource, UnsubscribeFn } from "./subscri
 // Export all types
 export * from "./types";
 
+// HTTP client used by all SDK modules; HttpError is thrown on non-2xx
+// API responses that a module doesn't map to a WillowError itself.
+export { HttpClient, HttpError } from "./internal/http";
+export type { HttpClientOptions, HttpRequestOptions } from "./internal/http";
+
 // Export utilities
 export * from "./utils";
 

@@ -1,19 +1,18 @@
 import { WillowIndexers, effectiveQueryEndpoint, ApiIndexerInfo } from '../src/indexers';
 
-// Mock axios so tests don't hit the network. Because WillowIndexers calls
-// `axios.create(...)` in its constructor and stores the returned instance,
-// we return a shared instance whose `get` we can poke from the test body.
-jest.mock('axios', () => {
-  const mockInstance = { get: jest.fn() };
-  return {
-    __esModule: true,
-    default: { create: jest.fn(() => mockInstance) },
-    _mockInstance: mockInstance,
-  };
-});
+// Mock the global fetch used by the SDK's HttpClient so tests don't hit
+// the network. Each test resolves it with a JSON envelope as the
+// validator's `/indexers` endpoint would.
+const mockFetch = jest.fn();
+global.fetch = mockFetch as unknown as typeof fetch;
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const getMockAxios = () => require('axios')._mockInstance;
+function jsonResponse(body: unknown, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => JSON.stringify(body),
+  } as Response;
+}
 
 const active = (
   did: string,
@@ -47,26 +46,24 @@ describe('effectiveQueryEndpoint', () => {
 
 describe('WillowIndexers — discovery mode', () => {
   it('fetches /indexers and caches the response within TTL', async () => {
-    const axios = getMockAxios();
-    axios.get.mockResolvedValue({
-      data: { success: true, data: [active('a', ['sg-1'], 90)] },
-    });
+    mockFetch.mockResolvedValue(
+      jsonResponse({ success: true, data: [active('a', ['sg-1'], 90)] }),
+    );
 
     const client = new WillowIndexers('http://validator:3031', { cacheTtlMs: 10_000 });
     const first = await client.list();
     const second = await client.list();
 
-    expect(axios.get).toHaveBeenCalledTimes(1);
-    expect(axios.get).toHaveBeenCalledWith('/indexers');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch.mock.calls[0][0]).toBe('http://validator:3031/indexers');
     expect(first).toEqual(second);
     expect(first[0].indexer_did).toBe('a');
   });
 
   it('re-fetches after the cache expires', async () => {
-    const axios = getMockAxios();
-    axios.get.mockResolvedValue({
-      data: { success: true, data: [active('a', ['sg-1'], 90)] },
-    });
+    mockFetch.mockResolvedValue(
+      jsonResponse({ success: true, data: [active('a', ['sg-1'], 90)] }),
+    );
 
     const client = new WillowIndexers('http://validator:3031', { cacheTtlMs: 1 });
     await client.list();
@@ -74,13 +71,12 @@ describe('WillowIndexers — discovery mode', () => {
     await new Promise((resolve) => setTimeout(resolve, 5));
     await client.list();
 
-    expect(axios.get).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
   it('forSubgrove filters active indexers serving the subgrove, sorted by performance', async () => {
-    const axios = getMockAxios();
-    axios.get.mockResolvedValue({
-      data: {
+    mockFetch.mockResolvedValue(
+      jsonResponse({
         success: true,
         data: [
           active('best', ['sg-shared'], 99),
@@ -88,8 +84,8 @@ describe('WillowIndexers — discovery mode', () => {
           active('inactive', ['sg-shared'], 100, { status: 'inactive' }),
           active('worst', ['sg-shared'], 20),
         ],
-      },
-    });
+      }),
+    );
 
     const client = new WillowIndexers('http://validator:3031');
     const picks = await client.forSubgrove('sg-shared');
@@ -98,13 +94,12 @@ describe('WillowIndexers — discovery mode', () => {
   });
 
   it('evict removes a specific indexer from the cache', async () => {
-    const axios = getMockAxios();
-    axios.get.mockResolvedValue({
-      data: {
+    mockFetch.mockResolvedValue(
+      jsonResponse({
         success: true,
         data: [active('a', ['sg-1'], 90), active('b', ['sg-1'], 80)],
-      },
-    });
+      }),
+    );
 
     const client = new WillowIndexers('http://validator:3031');
     await client.list();
@@ -117,22 +112,20 @@ describe('WillowIndexers — discovery mode', () => {
   });
 
   it('invalidate forces the next call to re-fetch', async () => {
-    const axios = getMockAxios();
-    axios.get.mockResolvedValue({
-      data: { success: true, data: [active('a', ['sg-1'], 90)] },
-    });
+    mockFetch.mockResolvedValue(
+      jsonResponse({ success: true, data: [active('a', ['sg-1'], 90)] }),
+    );
 
     const client = new WillowIndexers('http://validator:3031');
     await client.list();
     client.invalidate();
     await client.list();
 
-    expect(axios.get).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
   it('returns empty array when the validator has no indexers registered', async () => {
-    const axios = getMockAxios();
-    axios.get.mockResolvedValue({ data: { success: true, data: [] } });
+    mockFetch.mockResolvedValue(jsonResponse({ success: true, data: [] }));
 
     const client = new WillowIndexers('http://validator:3031');
     expect(await client.list()).toEqual([]);
@@ -140,9 +133,8 @@ describe('WillowIndexers — discovery mode', () => {
   });
 
   it('defends against a missing `data` field in the response envelope', async () => {
-    const axios = getMockAxios();
     // Simulate a malformed response (unlikely but we mustn't throw)
-    axios.get.mockResolvedValue({ data: { success: false } });
+    mockFetch.mockResolvedValue(jsonResponse({ success: false }));
 
     const client = new WillowIndexers('http://validator:3031');
     expect(await client.list()).toEqual([]);
@@ -151,8 +143,7 @@ describe('WillowIndexers — discovery mode', () => {
 
 describe('WillowIndexers — explicit indexerUrl override', () => {
   it('skips discovery entirely when indexerUrl is set', async () => {
-    const axios = getMockAxios();
-    axios.get.mockResolvedValue({ data: { success: true, data: [] } });
+    mockFetch.mockResolvedValue(jsonResponse({ success: true, data: [] }));
 
     const client = new WillowIndexers('http://validator:3031', {
       indexerUrl: 'http://my-indexer.test:3032',
@@ -162,7 +153,7 @@ describe('WillowIndexers — explicit indexerUrl override', () => {
     const all = await client.list();
     const sg = await client.forSubgrove('whatever');
 
-    expect(axios.get).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
     expect(all).toHaveLength(1);
     expect(all[0].endpoint).toBe('http://my-indexer.test:3032');
     expect(all[0].query_endpoint).toBe('http://my-indexer.test:3032');

@@ -1,4 +1,3 @@
-import axios, { AxiosInstance } from "axios";
 import {
   ApiResponse,
   WillowError,
@@ -31,6 +30,7 @@ import {
   ApiIndexerInfo,
   effectiveQueryEndpoint,
 } from "../indexers";
+import { HttpClient, HttpError } from "../internal/http";
 
 export class ValidatorHasNoDataError extends WillowError {
   constructor(subgroveId: string, reason: string) {
@@ -53,7 +53,7 @@ export class NoIndexersReachableError extends WillowError {
 }
 
 export class WillowData {
-  private api: AxiosInstance;
+  private api: HttpClient;
   private auth: WillowAuth;
   private apiUrl: string;
   private cometbftRpcUrl?: string;
@@ -74,12 +74,7 @@ export class WillowData {
     this.cometbftRpcUrl = cometbftRpcUrl;
     this.indexers = indexers;
     this.proofOptions = proofVerificationOptions;
-    this.api = axios.create({
-      baseURL: apiUrl,
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
+    this.api = new HttpClient({ baseURL: apiUrl });
     this.auth = auth;
     this.computedFieldRegistry = new ComputedFieldRegistry();
   }
@@ -194,14 +189,14 @@ export class WillowData {
       { headers },
     );
 
-    if (!response.data.success) {
+    if (!response.success) {
       throw new WillowError(
-        response.data.error || "Failed to register dataset",
+        response.error || "Failed to register dataset",
         "DATASET_REGISTRATION_FAILED",
       );
     }
 
-    return response.data.data!;
+    return response.data!;
   }
 
   /**
@@ -218,9 +213,9 @@ export class WillowData {
       { headers },
     );
 
-    if (!response.data.success) {
+    if (!response.success) {
       throw new WillowError(
-        response.data.error || "Failed to store data",
+        response.error || "Failed to store data",
         "STORE_FAILED",
       );
     }
@@ -241,15 +236,15 @@ export class WillowData {
       { headers },
     );
 
-    if (!response.data.success) {
+    if (!response.success) {
       throw new WillowError(
-        response.data.error || "Data not found",
+        response.error || "Data not found",
         "DATA_NOT_FOUND",
         404,
       );
     }
 
-    const data = response.data.data!;
+    const data = response.data!;
 
     // Now get the proof for verification
     try {
@@ -259,8 +254,8 @@ export class WillowData {
         { headers: proofHeaders },
       );
 
-      if (proofResponse.data.success && proofResponse.data.data?.proof) {
-        const proofData = proofResponse.data.data;
+      if (proofResponse.success && proofResponse.data?.proof) {
+        const proofData = proofResponse.data;
 
         // Verify the proof and compute root hash
         const path = ["subgroves", datasetId, "data"];
@@ -323,15 +318,15 @@ export class WillowData {
       { headers },
     );
 
-    if (!response.data.success) {
+    if (!response.success) {
       throw new WillowError(
-        response.data.error || "Data not found",
+        response.error || "Data not found",
         "DATA_NOT_FOUND",
         404,
       );
     }
 
-    return response.data.data!;
+    return response.data!;
   }
 
   /**
@@ -349,9 +344,9 @@ export class WillowData {
       { headers },
     );
 
-    if (!response.data.success) {
+    if (!response.success) {
       throw new WillowError(
-        response.data.error || "Failed to update data",
+        response.error || "Failed to update data",
         "UPDATE_FAILED",
       );
     }
@@ -370,9 +365,9 @@ export class WillowData {
       { headers },
     );
 
-    if (!response.data.success) {
+    if (!response.success) {
       throw new WillowError(
-        response.data.error || "Failed to delete data",
+        response.error || "Failed to delete data",
         "DELETE_FAILED",
       );
     }
@@ -389,14 +384,14 @@ export class WillowData {
       `/proof/${datasetId}/${key}`,
     );
 
-    if (!response.data.success) {
+    if (!response.success) {
       throw new WillowError(
-        response.data.error || "Failed to get proof",
+        response.error || "Failed to get proof",
         "PROOF_FAILED",
       );
     }
 
-    return response.data.data!.proof;
+    return response.data!.proof;
   }
 
   /**
@@ -501,14 +496,14 @@ export class WillowData {
       { headers },
     );
 
-    if (!response.data.success) {
+    if (!response.success) {
       throw new WillowError(
-        response.data.error || "Query failed",
+        response.error || "Query failed",
         "QUERY_FAILED",
       );
     }
 
-    const result = response.data.data!;
+    const result = response.data!;
 
     // Verify proof if present
     if (result.proof) {
@@ -581,14 +576,14 @@ export class WillowData {
       { headers },
     );
 
-    if (!response.data.success) {
+    if (!response.success) {
       throw new WillowError(
-        response.data.error || "Query failed",
+        response.error || "Query failed",
         "QUERY_FAILED",
       );
     }
 
-    let result = response.data.data!;
+    let result = response.data!;
 
     // Apply computed fields if registered for this dataset
     const computedFields = this.computedFieldRegistry.get(datasetId);
@@ -618,15 +613,15 @@ export class WillowData {
       `/checkpoints/${subgroveId}/${checkpointId}/state-root`,
     );
 
-    if (!response.data.success) {
+    if (!response.success) {
       throw new WillowError(
-        response.data.error || "Checkpoint not found",
+        response.error || "Checkpoint not found",
         "CHECKPOINT_NOT_FOUND",
         404,
       );
     }
 
-    return response.data.data!;
+    return response.data!;
   }
 
   /**
@@ -676,12 +671,10 @@ export class WillowData {
     );
 
     // Make the historical query
-    const response = await this.api.post<HistoricalQueryResponse>(
+    const result = await this.api.post<HistoricalQueryResponse>(
       `/historical/query/${subgroveId}/${checkpointId}`,
       query,
     );
-
-    const result = response.data;
 
     // If query failed due to no providers, throw with can_reindex info
     if (!result.success) {
@@ -856,15 +849,19 @@ export class WillowData {
 
     const callValidator = async (): Promise<T> => {
       try {
-        const resp = await this.api.post<T>(httpPath, body, { headers });
-        return resp.data;
-      } catch (err: any) {
+        return await this.api.post<T>(httpPath, body, { headers });
+      } catch (err) {
         // When the validator refuses because the data isn't available
         // here (VerifyOnly retention, pruned, not indexed by consensus),
-        // surface a typed error rather than a raw axios failure so
+        // surface a typed error rather than a raw HTTP failure so
         // callers can react programmatically.
-        const status = err?.response?.status as number | undefined;
-        const msg = err?.response?.data?.error ?? err?.message ?? "unknown error";
+        const status = err instanceof HttpError ? err.status : undefined;
+        const msg =
+          err instanceof HttpError
+            ? err.apiError ?? err.message
+            : err instanceof Error
+              ? err.message
+              : "unknown error";
         if (status === 403 || status === 404 || /VerifyOnly|not indexed|not available/i.test(String(msg))) {
           throw new ValidatorHasNoDataError(subgroveId, String(msg));
         }
@@ -874,8 +871,7 @@ export class WillowData {
 
     const callIndexer = async (info: ApiIndexerInfo): Promise<T> => {
       const url = `${effectiveQueryEndpoint(info).replace(/\/$/, "")}${httpPath}`;
-      const resp = await axios.post<T>(url, body, { headers });
-      return resp.data;
+      return this.api.post<T>(url, body, { headers });
     };
 
     if (source === "validator") {
@@ -896,10 +892,9 @@ export class WillowData {
         try {
           const result = await callIndexer(info);
           return { result, source: "indexer", indexerDid: info.indexer_did, fallback: false };
-        } catch (err: any) {
-          const status = err?.response?.status as number | undefined;
-          if (status && status >= 500) this.indexers.evict(info.indexer_did);
-          errors.push(`${info.indexer_did}: ${err?.message ?? err}`);
+        } catch (err) {
+          if (err instanceof HttpError && err.status >= 500) this.indexers.evict(info.indexer_did);
+          errors.push(`${info.indexer_did}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
       throw new NoIndexersReachableError(subgroveId, errors.join("; "));
@@ -911,9 +906,8 @@ export class WillowData {
       try {
         const result = await callIndexer(info);
         return { result, source: "indexer", indexerDid: info.indexer_did, fallback: false };
-      } catch (err: any) {
-        const status = err?.response?.status as number | undefined;
-        if (status && status >= 500) this.indexers.evict(info.indexer_did);
+      } catch (err) {
+        if (err instanceof HttpError && err.status >= 500) this.indexers.evict(info.indexer_did);
         // continue to next indexer / fall back to validator
       }
     }

@@ -6,10 +6,10 @@
  * key grants and their cryptographic proofs.
  */
 
-import axios, { AxiosInstance } from "axios";
 import { ApiResponse, WillowError } from "../types";
 import { WillowAuth, signEd25519 } from "../auth";
 import { BroadcastResult } from "../consensus";
+import { HttpClient } from "../internal/http";
 import { submitTxToApi } from "../internal/tx";
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -156,7 +156,7 @@ interface RotateSubgroveKeyTxFields {
  * ```
  */
 export class PrivacyOperations {
-  private api: AxiosInstance;
+  private api: HttpClient;
   private auth: WillowAuth;
   private privateKey: string;
   private publicKeyId: string;
@@ -177,10 +177,7 @@ export class PrivacyOperations {
     publicKeyId: string,
   ) {
     this.apiUrl = apiUrl.replace(/\/+$/, "");
-    this.api = axios.create({
-      baseURL: this.apiUrl,
-      headers: { "Content-Type": "application/json" },
-    });
+    this.api = new HttpClient({ baseURL: this.apiUrl });
     this.auth = auth;
     this.privateKey = privateKey;
     this.publicKeyId = publicKeyId;
@@ -208,15 +205,15 @@ export class PrivacyOperations {
       headers,
     });
 
-    if (!response.data.success) {
+    if (!response.success) {
       throw new WillowError(
-        response.data.error || "Key grant not found",
+        response.error || "Key grant not found",
         "KEY_GRANT_NOT_FOUND",
         404,
       );
     }
 
-    return response.data.data!;
+    return response.data!;
   }
 
   /**
@@ -237,14 +234,14 @@ export class PrivacyOperations {
       headers,
     });
 
-    if (!response.data.success) {
+    if (!response.success) {
       throw new WillowError(
-        response.data.error || "Failed to list key grantees",
+        response.error || "Failed to list key grantees",
         "LIST_GRANTEES_FAILED",
       );
     }
 
-    return response.data.data!;
+    return response.data!;
   }
 
   /**
@@ -266,15 +263,15 @@ export class PrivacyOperations {
       path,
     );
 
-    if (!response.data.success) {
+    if (!response.success) {
       throw new WillowError(
-        response.data.error || "Failed to get key grant proof",
+        response.error || "Failed to get key grant proof",
         "KEY_GRANT_PROOF_FAILED",
         404,
       );
     }
 
-    return response.data.data!;
+    return response.data!;
   }
 
   // ── Write operations (CometBFT broadcast) ──────────────────────────
@@ -416,12 +413,12 @@ export class PrivacyOperations {
       error?: string;
     }>(`/account/${encodeURIComponent(did)}/nonce`);
 
-    if (response.data.success && response.data.data !== undefined) {
-      return response.data.data.nonce + 1;
+    if (response.success && response.data !== undefined) {
+      return response.data.nonce + 1;
     }
 
     throw new WillowError(
-      `Failed to fetch nonce for ${did}: ${response.data.error || "unknown error"}`,
+      `Failed to fetch nonce for ${did}: ${response.error || "unknown error"}`,
       "NONCE_FETCH_FAILED",
     );
   }

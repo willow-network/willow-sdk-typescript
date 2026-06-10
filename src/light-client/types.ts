@@ -5,6 +5,7 @@
  */
 
 import { WillowError } from '../types';
+import { base64ToBytes, bytesToBase64, hexToBytes } from '../internal/bytes';
 
 /**
  * Base exception for light client operations
@@ -403,69 +404,10 @@ export function createLightClientConfig(config: Partial<LightClientConfig> & Pic
 export function decodeBytes(s: string): Uint8Array {
   if (!s) return new Uint8Array(0);
   if (/^[0-9a-fA-F]*$/.test(s) && s.length % 2 === 0) {
-    return hexToByteArray(s);
+    return hexToBytes(s);
   }
   return base64ToBytes(s);
 }
 
-function hexToByteArray(hex: string): Uint8Array {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
-  }
-  return bytes;
-}
-
-/**
- * Convert base64 string to Uint8Array
- */
-export function base64ToBytes(base64: string): Uint8Array {
-  if (typeof Buffer !== 'undefined') {
-    // Node.js environment
-    return new Uint8Array(Buffer.from(base64, 'base64'));
-  } else {
-    // Browser environment
-    const binaryString = atob(base64);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
-    }
-    return bytes;
-  }
-}
-
-/**
- * Convert Uint8Array to base64 string
- */
-export function bytesToBase64(bytes: Uint8Array): string {
-  if (typeof Buffer !== 'undefined') {
-    // Node.js environment
-    return Buffer.from(bytes).toString('base64');
-  } else {
-    // Browser environment
-    const binaryString = Array.from(bytes, byte => String.fromCharCode(byte)).join('');
-    return btoa(binaryString);
-  }
-}
-
-/**
- * Convert Uint8Array to hex string
- */
-export function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
-}
-
-/**
- * Convert hex string to Uint8Array
- */
-export function hexToBytes(hex: string): Uint8Array {
-  const clean = hex.replace(/^0x/, '');
-  if (clean.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(clean)) {
-    throw new Error('Invalid hex string');
-  }
-  const bytes = new Uint8Array(clean.length / 2);
-  for (let i = 0; i < clean.length; i += 2) {
-    bytes[i / 2] = parseInt(clean.substr(i, 2), 16);
-  }
-  return bytes;
-}
+// Shared byte codecs, re-exported for existing importers.
+export { base64ToBytes, bytesToBase64, bytesToHex, hexToBytes } from '../internal/bytes';

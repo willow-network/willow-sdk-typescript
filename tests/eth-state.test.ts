@@ -2,7 +2,7 @@ import { keccak_256 } from "@noble/hashes/sha3";
 import { encodeRlp, getBytes } from "ethers";
 
 import { verifyMptProof } from "../src/eth-state/mpt";
-import { verifyStateProof } from "../src/eth-state";
+import { EthOperations, StateVerifyMode, verifyStateProof } from "../src/eth-state";
 import type { StateProof } from "../src/eth-state/types";
 
 describe("mpt", () => {
@@ -72,5 +72,81 @@ describe("verifyStateProof", () => {
       storage_proofs: [],
     };
     expect(() => verifyStateProof(proof)).toThrow();
+  });
+});
+
+describe("EthOperations", () => {
+  const mockFetch = jest.fn();
+  global.fetch = mockFetch as unknown as typeof fetch;
+
+  // Minimal envelope: one account proof carrying one storage slot whose
+  // value is 1. Verification is skipped via StateVerifyMode.Disabled.
+  const envelope = {
+    state_proofs: [
+      {
+        address: Array.from({ length: 20 }, () => 0),
+        block_number: 1,
+        block_hash: Array.from({ length: 32 }, () => 0),
+        state_root: Array.from({ length: 32 }, () => 0),
+        account_proof: { key: [], value: [], proof_nodes: [] },
+        account_state: {
+          nonce: 0,
+          balance: [],
+          storage_hash: Array.from({ length: 32 }, () => 0),
+          code_hash: Array.from({ length: 32 }, () => 0),
+        },
+        storage_proofs: [
+          {
+            slot: Array.from({ length: 32 }, () => 0),
+            value: [1],
+            proof: { key: [], value: [], proof_nodes: [] },
+          },
+        ],
+      },
+    ],
+  };
+
+  beforeEach(() => {
+    mockFetch.mockReset();
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(envelope),
+    } as Response);
+  });
+
+  it("withMode returns a new instance and leaves the original untouched", () => {
+    const strict = new EthOperations("http://indexer:3032");
+    const anchorOnly = strict.withMode(StateVerifyMode.AnchorOnly);
+
+    expect(anchorOnly).not.toBe(strict);
+    expect(anchorOnly).toBeInstanceOf(EthOperations);
+    // The original still verifies strictly: the all-zero proof in the
+    // envelope must fail its MPT walk.
+    return expect(
+      strict.getState("0x" + "11".repeat(20), [], 1),
+    ).rejects.toThrow();
+  });
+
+  it("encodes slot indexes > 255 as full 32-byte big-endian words", async () => {
+    const eth = new EthOperations("http://indexer:3032").withMode(
+      StateVerifyMode.Disabled,
+    );
+    await eth.erc20TotalSupply("0x" + "11".repeat(20), 300, 1);
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.slots).toEqual(["0x" + "00".repeat(30) + "012c"]);
+  });
+
+  it("rejects negative or non-integer slot indexes", async () => {
+    const eth = new EthOperations("http://indexer:3032").withMode(
+      StateVerifyMode.Disabled,
+    );
+    await expect(
+      eth.erc20TotalSupply("0x" + "11".repeat(20), -1, 1),
+    ).rejects.toThrow(/non-negative integer/);
+    await expect(
+      eth.erc20Balance("0x" + "11".repeat(20), "0x" + "22".repeat(20), 1.5, 1),
+    ).rejects.toThrow(/non-negative integer/);
   });
 });

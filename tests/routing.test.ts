@@ -1,9 +1,9 @@
 // Tests for WillowData.graphqlQuery / sqlQuery source routing.
 //
-// Mocking strategy: axios is mocked at the module level. We inspect the
-// underlying `post` mock to verify which URL the routing layer actually
-// contacted, so we can tell apart validator vs indexer requests by the
-// request URL.
+// Mocking strategy: the global fetch used by the SDK's HttpClient is
+// mocked. We inspect the requested URLs to tell apart validator vs
+// indexer requests (the validator is `http://validator:3031`, indexers
+// are absolute URLs from discovery).
 
 import {
   WillowData,
@@ -13,22 +13,16 @@ import {
 import { WillowAuth } from '../src/auth';
 import { WillowIndexers } from '../src/indexers';
 
-// A mutable mock backing the axios module. `create()` returns the same
-// instance as the top-level methods so that whether the code uses
-// `axios.create().post(...)` (validator) or `axios.post(...)` (indexer),
-// both land in the same spy.
-jest.mock('axios', () => {
-  const fn = {
-    post: jest.fn(),
-    get: jest.fn(),
-    create: undefined as any,
-  };
-  fn.create = jest.fn(() => fn);
-  return { __esModule: true, default: fn, _mock: fn };
-});
+const mockFetch = jest.fn();
+global.fetch = mockFetch as unknown as typeof fetch;
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const getAxios = () => require('axios')._mock;
+function jsonResponse(body: unknown, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => JSON.stringify(body),
+  } as Response;
+}
 
 const auth = new WillowAuth('http://validator:3031');
 
@@ -37,28 +31,49 @@ function makeData(indexerUrl?: string): WillowData {
   return new WillowData('http://validator:3031', auth, indexers);
 }
 
-// Stub the validator's /indexers response via the get() mock.
-function stubDiscovery(entries: Array<{ did: string; subgroves: string[]; endpoint: string; perf?: number; status?: string }>) {
-  getAxios().get.mockImplementation((path: string) => {
-    if (path === '/indexers') {
-      return Promise.resolve({
-        data: {
-          success: true,
-          data: entries.map((e) => ({
-            indexer_did: e.did,
-            subgroves: e.subgroves,
-            stake_amount: 100,
-            endpoint: e.endpoint,
-            query_endpoint: e.endpoint,
-            status: e.status ?? 'active',
-            performance_score: e.perf ?? 100,
-            last_update: 0,
-          })),
-        },
-      });
+interface StubEntry {
+  did: string;
+  subgroves: string[];
+  endpoint: string;
+  perf?: number;
+  status?: string;
+}
+
+function discoveryBody(entries: StubEntry[]) {
+  return {
+    success: true,
+    data: entries.map((e) => ({
+      indexer_did: e.did,
+      subgroves: e.subgroves,
+      stake_amount: 100,
+      endpoint: e.endpoint,
+      query_endpoint: e.endpoint,
+      status: e.status ?? 'active',
+      performance_score: e.perf ?? 100,
+      last_update: 0,
+    })),
+  };
+}
+
+// Route fetch by URL: `/indexers` serves discovery, everything else is
+// handled by `onPost` (the GraphQL/SQL POST under test).
+function stubFetch(
+  entries: StubEntry[],
+  onPost: (url: string, init: RequestInit) => Promise<Response> | Response,
+) {
+  mockFetch.mockImplementation((url: string, init: RequestInit) => {
+    if (url === 'http://validator:3031/indexers') {
+      return Promise.resolve(jsonResponse(discoveryBody(entries)));
     }
-    return Promise.reject(new Error(`Unexpected GET ${path}`));
+    return Promise.resolve(onPost(url, init));
   });
+}
+
+/** URLs of all non-discovery requests, in call order. */
+function postUrls(): string[] {
+  return mockFetch.mock.calls
+    .map((c) => c[0] as string)
+    .filter((u) => u !== 'http://validator:3031/indexers');
 }
 
 beforeEach(() => {
@@ -67,27 +82,23 @@ beforeEach(() => {
 
 describe("source: 'validator'", () => {
   it('POSTs to the validator apiUrl and returns validator source', async () => {
-    getAxios().post.mockResolvedValue({ data: { data: { hello: 'world' } } });
+    stubFetch([], () => jsonResponse({ data: { hello: 'world' } }));
 
     const data = makeData();
     const res = await data.graphqlQuery('sg-1', '{ hello }', { source: 'validator' });
 
     expect(res.source).toBe('validator');
     expect(res.fallback).toBe(false);
-    // Axios was given the relative path; verify the axios.create() baseURL
-    // by checking the call URL.
-    expect(getAxios().post).toHaveBeenCalledWith(
-      '/graphql/sg-1',
-      expect.objectContaining({ query: '{ hello }' }),
-      expect.any(Object),
-    );
+    expect(postUrls()).toEqual(['http://validator:3031/graphql/sg-1']);
+    const init = mockFetch.mock.calls[0][1] as RequestInit;
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toMatchObject({ query: '{ hello }' });
   });
 
   it('throws ValidatorHasNoDataError on 404 (VerifyOnly subgrove)', async () => {
-    getAxios().post.mockRejectedValue({
-      response: { status: 404, data: { error: 'subgrove uses VerifyOnly retention' } },
-      message: 'Request failed',
-    });
+    stubFetch([], () =>
+      jsonResponse({ error: 'subgrove uses VerifyOnly retention' }, 404),
+    );
 
     const data = makeData();
     await expect(
@@ -96,10 +107,7 @@ describe("source: 'validator'", () => {
   });
 
   it('throws ValidatorHasNoDataError on 403 (private/forbidden)', async () => {
-    getAxios().post.mockRejectedValue({
-      response: { status: 403, data: { error: 'not available' } },
-      message: 'Forbidden',
-    });
+    stubFetch([], () => jsonResponse({ error: 'not available' }, 403));
 
     const data = makeData();
     await expect(
@@ -110,43 +118,46 @@ describe("source: 'validator'", () => {
 
 describe("source: 'indexer' — discovered", () => {
   it('routes to the best-performing indexer that serves the subgrove', async () => {
-    stubDiscovery([
-      { did: 'indexer-slow', subgroves: ['sg-1'], endpoint: 'http://slow:3032', perf: 50 },
-      { did: 'indexer-fast', subgroves: ['sg-1'], endpoint: 'http://fast:3032', perf: 99 },
-    ]);
-    getAxios().post.mockResolvedValue({ data: { data: { ok: true } } });
+    stubFetch(
+      [
+        { did: 'indexer-slow', subgroves: ['sg-1'], endpoint: 'http://slow:3032', perf: 50 },
+        { did: 'indexer-fast', subgroves: ['sg-1'], endpoint: 'http://fast:3032', perf: 99 },
+      ],
+      () => jsonResponse({ data: { ok: true } }),
+    );
 
     const data = makeData();
     const res = await data.graphqlQuery('sg-1', '{ ok }', { source: 'indexer' });
 
     expect(res.source).toBe('indexer');
     expect(res.indexerDid).toBe('indexer-fast');
-    // URL of the indexer POST should start with the fast indexer's endpoint
-    expect(getAxios().post).toHaveBeenCalledWith(
-      expect.stringContaining('http://fast:3032/graphql/sg-1'),
-      expect.any(Object),
-      expect.any(Object),
-    );
+    expect(postUrls()).toEqual(['http://fast:3032/graphql/sg-1']);
   });
 
   it('falls through to next indexer on network failure', async () => {
-    stubDiscovery([
-      { did: 'down', subgroves: ['sg-1'], endpoint: 'http://down:3032', perf: 100 },
-      { did: 'up', subgroves: ['sg-1'], endpoint: 'http://up:3032', perf: 50 },
-    ]);
-    getAxios()
-      .post.mockRejectedValueOnce({ message: 'ECONNREFUSED' })
-      .mockResolvedValueOnce({ data: { data: { ok: true } } });
+    stubFetch(
+      [
+        { did: 'down', subgroves: ['sg-1'], endpoint: 'http://down:3032', perf: 100 },
+        { did: 'up', subgroves: ['sg-1'], endpoint: 'http://up:3032', perf: 50 },
+      ],
+      (url) => {
+        if (url.startsWith('http://down:3032')) throw new Error('ECONNREFUSED');
+        return jsonResponse({ data: { ok: true } });
+      },
+    );
 
     const data = makeData();
     const res = await data.sqlQuery('sg-1', 'SELECT 1', { source: 'indexer' });
 
     expect(res.indexerDid).toBe('up');
-    expect(getAxios().post).toHaveBeenCalledTimes(2);
+    expect(postUrls()).toHaveLength(2);
   });
 
   it('throws NoIndexersReachableError when no indexer serves the subgrove', async () => {
-    stubDiscovery([{ did: 'other', subgroves: ['other-sg'], endpoint: 'http://x:3032' }]);
+    stubFetch(
+      [{ did: 'other', subgroves: ['other-sg'], endpoint: 'http://x:3032' }],
+      () => jsonResponse({ data: {} }),
+    );
 
     const data = makeData();
     await expect(
@@ -155,11 +166,15 @@ describe("source: 'indexer' — discovered", () => {
   });
 
   it('throws NoIndexersReachableError when all indexers fail', async () => {
-    stubDiscovery([
-      { did: 'a', subgroves: ['sg-1'], endpoint: 'http://a:3032' },
-      { did: 'b', subgroves: ['sg-1'], endpoint: 'http://b:3032' },
-    ]);
-    getAxios().post.mockRejectedValue({ message: 'boom' });
+    stubFetch(
+      [
+        { did: 'a', subgroves: ['sg-1'], endpoint: 'http://a:3032' },
+        { did: 'b', subgroves: ['sg-1'], endpoint: 'http://b:3032' },
+      ],
+      () => {
+        throw new Error('boom');
+      },
+    );
 
     const data = makeData();
     await expect(
@@ -170,26 +185,25 @@ describe("source: 'indexer' — discovered", () => {
 
 describe("source: 'indexer' — explicit indexerUrl override", () => {
   it('skips discovery and routes directly to the configured URL', async () => {
-    getAxios().post.mockResolvedValue({ data: { data: { ok: true } } });
+    mockFetch.mockResolvedValue(jsonResponse({ data: { ok: true } }));
 
     const data = makeData('http://pinned-indexer:3032');
     const res = await data.graphqlQuery('sg-1', '{ ok }', { source: 'indexer' });
 
     expect(res.source).toBe('indexer');
     // Discovery endpoint must not have been called
-    expect(getAxios().get).not.toHaveBeenCalled();
-    expect(getAxios().post).toHaveBeenCalledWith(
+    expect(mockFetch.mock.calls.map((c) => c[0])).toEqual([
       'http://pinned-indexer:3032/graphql/sg-1',
-      expect.any(Object),
-      expect.any(Object),
-    );
+    ]);
   });
 });
 
 describe("source: 'auto'", () => {
   it('prefers an indexer when one serves the subgrove', async () => {
-    stubDiscovery([{ did: 'idx', subgroves: ['sg-1'], endpoint: 'http://idx:3032' }]);
-    getAxios().post.mockResolvedValue({ data: { data: { ok: true } } });
+    stubFetch(
+      [{ did: 'idx', subgroves: ['sg-1'], endpoint: 'http://idx:3032' }],
+      () => jsonResponse({ data: { ok: true } }),
+    );
 
     const data = makeData();
     const res = await data.graphqlQuery('sg-1', '{ ok }');
@@ -199,8 +213,7 @@ describe("source: 'auto'", () => {
   });
 
   it('falls back to validator when no indexer serves the subgrove', async () => {
-    stubDiscovery([]);
-    getAxios().post.mockResolvedValue({ data: { data: { ok: true } } });
+    stubFetch([], () => jsonResponse({ data: { ok: true } }));
 
     const data = makeData();
     const res = await data.graphqlQuery('unserved', '{ ok }');
@@ -210,11 +223,14 @@ describe("source: 'auto'", () => {
   });
 
   it('falls back to validator with fallback=true when indexer lookup fails', async () => {
-    stubDiscovery([{ did: 'broken', subgroves: ['sg-1'], endpoint: 'http://broken:3032' }]);
-    getAxios()
-      .post.mockRejectedValueOnce({ message: 'indexer down' })
-      // Validator fallback call succeeds
-      .mockResolvedValueOnce({ data: { data: { ok: true } } });
+    stubFetch(
+      [{ did: 'broken', subgroves: ['sg-1'], endpoint: 'http://broken:3032' }],
+      (url) => {
+        if (url.startsWith('http://broken:3032')) throw new Error('indexer down');
+        // Validator fallback call succeeds
+        return jsonResponse({ data: { ok: true } });
+      },
+    );
 
     const data = makeData();
     const res = await data.graphqlQuery('sg-1', '{ ok }');

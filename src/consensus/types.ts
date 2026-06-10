@@ -6,6 +6,14 @@
 
 import { keccak_256 } from '@noble/hashes/sha3';
 import { WillowError } from '../types';
+import {
+  base64ToBytes,
+  bytesToBase64,
+  bytesToHex,
+  bytesToUtf8,
+  hexToBytes,
+  utf8ToBytes,
+} from '../internal/bytes';
 
 /**
  * Base exception for consensus client operations
@@ -259,12 +267,7 @@ function stableJsonStringify(value: unknown): string {
 }
 
 function hexToByteArray(hex: string): number[] {
-  const clean = hex.replace(/^0x/, '');
-  const out: number[] = [];
-  for (let i = 0; i < clean.length; i += 2) {
-    out.push(parseInt(clean.substr(i, 2), 16));
-  }
-  return out;
+  return Array.from(hexToBytes(hex));
 }
 
 /**
@@ -383,8 +386,7 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
  * `TransactionValidator::hash_string` (uses `sha3::Keccak256`).
  */
 function schemaHash(schema: string): string {
-  const hash: Uint8Array = keccak_256(new TextEncoder().encode(schema));
-  return Array.from(hash, (b) => b.toString(16).padStart(2, '0')).join('');
+  return bytesToHex(keccak_256(utf8ToBytes(schema)));
 }
 
 /**
@@ -462,24 +464,12 @@ export function createSignMessage(txType: string, transaction: Transaction): str
  * Utility: Convert string to base64
  */
 export function stringToBase64(str: string): string {
-  if (typeof Buffer !== 'undefined') {
-    // Node.js environment
-    return Buffer.from(str, 'utf-8').toString('base64');
-  } else {
-    // Browser environment
-    return btoa(unescape(encodeURIComponent(str)));
-  }
+  return bytesToBase64(utf8ToBytes(str));
 }
 
 /**
  * Utility: Convert base64 to string
  */
 export function base64ToString(base64: string): string {
-  if (typeof Buffer !== 'undefined') {
-    // Node.js environment
-    return Buffer.from(base64, 'base64').toString('utf-8');
-  } else {
-    // Browser environment
-    return decodeURIComponent(escape(atob(base64)));
-  }
+  return bytesToUtf8(base64ToBytes(base64));
 }
