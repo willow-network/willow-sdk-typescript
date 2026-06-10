@@ -10,21 +10,37 @@ import { secp256k1 } from '@noble/curves/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
 import { LightBlock, Header, Commit, ValidatorSet, CommitSig, TrustThreshold, VerificationResult, LightClientError, GroveDBQueryProof, getTrustFraction, bytesToHex } from './types';
 import { verifyGroveDBProof } from '../grovedb';
+import { WillowLogger, silentLogger } from '../internal/logger';
 
 /**
- * Verifies block headers using CometBFT light client protocol
+ * Verifies block headers using CometBFT light client protocol.
+ *
+ * @experimental Commit-signature verification does NOT yet work against
+ * real CometBFT chains: votes are verified over a canonical-JSON encoding,
+ * but CometBFT 0.34+ signs the protobuf `CanonicalVote` message (see
+ * `createVoteSignBytes`). Until protobuf sign-bytes are implemented, every
+ * real commit signature fails verification and `verifyHeader` reports
+ * insufficient voting power.
  */
 export class HeaderVerifier {
   private chainId: string;
   private trustThreshold: TrustThreshold;
+  private logger: WillowLogger;
 
-  constructor(chainId: string, trustThreshold: TrustThreshold) {
+  constructor(chainId: string, trustThreshold: TrustThreshold, logger?: WillowLogger) {
     this.chainId = chainId;
     this.trustThreshold = trustThreshold;
+    this.logger = logger ?? silentLogger;
   }
 
   /**
-   * Verify an untrusted header against a trusted state
+   * Verify an untrusted header against a trusted state.
+   *
+   * @experimental This will NOT validate real CometBFT commits yet — the
+   * sign-bytes encoding is canonical JSON while CometBFT 0.34+ signs
+   * protobuf `CanonicalVote`, so genuine validator signatures fail the
+   * check and the trust threshold is never met. Do not rely on this for
+   * security until protobuf sign-bytes land.
    */
   async verifyHeader(
     untrustedHeader: LightBlock,
@@ -154,7 +170,7 @@ export class HeaderVerifier {
         }
       } catch (error) {
         // Invalid signature - skip this validator
-        console.debug(`Signature verification failed for validator ${i}:`, error);
+        this.logger.debug(`Signature verification failed for validator ${i}:`, error);
         continue;
       }
     }
@@ -194,20 +210,25 @@ export class HeaderVerifier {
         const messageHash = sha256(signBytes);
         return secp256k1.verify(sig.signature, messageHash, validator.pubKey);
       } else {
-        console.warn(`Unknown public key length: ${validator.pubKey.length}`);
+        this.logger.warn(`Unknown public key length: ${validator.pubKey.length}`);
         return false;
       }
     } catch (error) {
-      console.debug('Signature verification error:', error);
+      this.logger.debug('Signature verification error:', error);
       return false;
     }
   }
 
   /**
-   * Create canonical sign bytes for CometBFT vote signature verification
+   * Create sign bytes for CometBFT vote signature verification.
    *
-   * This follows the CometBFT canonical JSON encoding for votes.
-   * See: https://github.com/cometbft/cometbft/blob/main/types/canonical.go
+   * KNOWN LIMITATION: this builds a canonical-JSON encoding, but CometBFT
+   * 0.34+ signs the protobuf-encoded `CanonicalVote` message
+   * (https://github.com/cometbft/cometbft/blob/main/types/canonical.go),
+   * NOT canonical JSON. The bytes produced here therefore never match what
+   * real validators signed, and signature verification against a live
+   * chain always fails. Kept as a placeholder until protobuf sign-bytes
+   * are implemented.
    */
   private createVoteSignBytes(commit: Commit, header: Header, sig: CommitSig): Uint8Array {
     // CometBFT uses a specific canonical JSON format for vote signing

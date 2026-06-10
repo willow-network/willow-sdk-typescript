@@ -1,4 +1,5 @@
-import { generateId, sleep, retry } from '../src/utils';
+import { generateId, sleep, retry, isValidDid } from '../src/utils';
+import { DEVNET_TEST_ACCOUNT } from '../src';
 
 describe('Utils', () => {
   describe('generateId', () => {
@@ -125,6 +126,25 @@ describe('Utils', () => {
 
       expect(result).toBe('async success');
       expect(attempts).toBe(2);
+    });
+  });
+
+  describe('isValidDid', () => {
+    it('accepts the SDK devnet test account DID (single segment with hyphen)', () => {
+      expect(isValidDid(DEVNET_TEST_ACCOUNT.did)).toBe(true);
+    });
+
+    it('accepts multi-segment DIDs', () => {
+      expect(isValidDid('did:willow:test:123')).toBe(true);
+      expect(isValidDid('did:willow:eth:0xabc123')).toBe(true);
+    });
+
+    it('rejects malformed DIDs', () => {
+      expect(isValidDid('did:willow:')).toBe(false);
+      expect(isValidDid('did:willow:abc:')).toBe(false);
+      expect(isValidDid('did:other:abc')).toBe(false);
+      expect(isValidDid('willow:abc')).toBe(false);
+      expect(isValidDid('did:willow:has space')).toBe(false);
     });
   });
 });

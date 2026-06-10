@@ -30,8 +30,36 @@ describe('WillowClient — propagate consensus rejection', () => {
     });
   });
 
-  describe('client.registerDataset', () => {
+  describe('client.registerSubgrove', () => {
     it('throws when the consensus tx is rejected', async () => {
+      const client = makeClient({
+        success: false,
+        errorMessage: 'Invalid signature',
+        rawLog: 'Invalid signature',
+      });
+      await expect(
+        client.registerSubgrove({
+          dataset_id: 'sg',
+          name: 'test',
+          owner_did: 'did:willow:test',
+        } as any),
+      ).rejects.toThrow(/Invalid signature/);
+    });
+
+    it('returns the BroadcastResult on success (no fabricated registration object)', async () => {
+      const broadcast = { success: true, txHash: 'AB12CD', height: 42 };
+      const client = makeClient(broadcast);
+      const result = await client.registerSubgrove({
+        dataset_id: 'sg',
+        name: 'test',
+        owner_did: 'did:willow:test',
+      } as any);
+      expect(result).toBe(broadcast);
+    });
+  });
+
+  describe('client.registerDataset (deprecated alias)', () => {
+    it('delegates to registerSubgrove and throws when the consensus tx is rejected', async () => {
       const client = makeClient({
         success: false,
         errorMessage: 'Invalid signature',

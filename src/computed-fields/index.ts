@@ -476,20 +476,3 @@ export const LP_SHARE_FIELDS: ComputedFieldSet = [
   },
 ];
 
-// Global registry instance
-export const globalComputedFieldRegistry = new ComputedFieldRegistry();
-
-// Export for convenience
-export default {
-  ComputedFieldRegistry,
-  applyComputedFields,
-  applyComputedFieldsToResponse,
-  globalComputedFieldRegistry,
-  // Pre-built field sets
-  UNISWAP_V2_PAIR_FIELDS,
-  UNISWAP_V2_TOKEN_FIELDS,
-  UNISWAP_V2_AGGREGATION_FIELDS,
-  GENERIC_AMM_PAIR_FIELDS,
-  LENDING_PROTOCOL_FIELDS,
-  LP_SHARE_FIELDS,
-};

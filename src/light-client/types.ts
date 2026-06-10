@@ -6,6 +6,7 @@
 
 import { WillowError } from '../types';
 import { base64ToBytes, bytesToBase64, hexToBytes } from '../internal/bytes';
+import type { WillowLogger } from '../internal/logger';
 
 /**
  * Base exception for light client operations
@@ -363,6 +364,7 @@ export interface LightClientConfig {
   syncIntervalSecs?: number;
   maxRetries?: number;
   requestTimeoutSecs?: number;
+  logger?: WillowLogger;
 }
 
 /**
@@ -391,7 +393,8 @@ export function createLightClientConfig(config: Partial<LightClientConfig> & Pic
     autoSync: config.autoSync ?? true,
     syncIntervalSecs: config.syncIntervalSecs || 300, // 5 minutes
     maxRetries: config.maxRetries || 3,
-    requestTimeoutSecs: config.requestTimeoutSecs || 30
+    requestTimeoutSecs: config.requestTimeoutSecs || 30,
+    logger: config.logger
   };
 }
 

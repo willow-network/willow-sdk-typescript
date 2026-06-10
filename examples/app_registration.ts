@@ -86,9 +86,9 @@ async function main() {
   };
 
   try {
-    const dataset = await client.registerDataset(productsDataset);
-    console.log('   Products dataset created');
-    console.log(`   Dataset ID: ${dataset.dataset_id}`);
+    const result = await client.registerSubgrove(productsDataset);
+    console.log('   Products subgrove registered');
+    console.log(`   Tx hash: ${result.txHash}`);
     console.log(`   Indexes:    ${productsSchema.indexes?.length ?? 0}\n`);
   } catch (error) {
     console.log(`   Note: ${error}\n`);
@@ -128,9 +128,9 @@ async function main() {
   };
 
   try {
-    const dataset = await client.registerDataset(ordersDataset);
-    console.log('   Orders dataset created');
-    console.log(`   Dataset ID: ${dataset.dataset_id}`);
+    const result = await client.registerSubgrove(ordersDataset);
+    console.log('   Orders subgrove registered');
+    console.log(`   Tx hash: ${result.txHash}`);
     console.log('   Access: private (owner only)\n');
   } catch (error) {
     console.log(`   Note: ${error}\n`);
@@ -168,9 +168,9 @@ async function main() {
   };
 
   try {
-    const dataset = await client.registerDataset(usersDataset);
-    console.log('   Users dataset created');
-    console.log(`   Dataset ID: ${dataset.dataset_id}`);
+    const result = await client.registerSubgrove(usersDataset);
+    console.log('   Users subgrove registered');
+    console.log(`   Tx hash: ${result.txHash}`);
     console.log('   Access: public read, owner write\n');
   } catch (error) {
     console.log(`   Note: ${error}\n`);

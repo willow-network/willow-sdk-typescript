@@ -14,6 +14,7 @@ import {
   hexToBytes,
   utf8ToBytes,
 } from '../internal/bytes';
+import type { WillowLogger } from '../internal/logger';
 
 /**
  * Base exception for consensus client operations
@@ -46,6 +47,45 @@ export interface ConsensusConfig {
   requestTimeoutSecs?: number;
   maxRetries?: number;
   retryDelaySecs?: number;
+  logger?: WillowLogger; // Diagnostics logger; defaults to silent
+}
+
+/** Signs a canonical message with a hex private key, returning a hex signature. */
+export type SignFunction = (message: string, privateKey: string) => string;
+
+/**
+ * Key material for signing consensus transactions. Accepted by every
+ * ConsensusClient write method in place of the positional
+ * (privateKey, publicKeyId, signFunction) tail.
+ */
+export interface Signer {
+  /** Hex-encoded private key. */
+  privateKey: string;
+  /** Public key ID registered in the DID document (e.g. `did:willow:x#key-1`). */
+  publicKeyId: string;
+  /** Defaults to the SDK's `signEd25519`. */
+  signFunction?: SignFunction;
+}
+
+/** Optional RegisterSubgrove parameters. */
+export interface RegisterSubgroveOptions {
+  mode?: SubgroveMode;
+  retentionWindow?: RetentionWindow;
+  initialFunding?: string;
+}
+
+/** Manifest fields for `storeFileManifest`. */
+export interface StoreFileManifestFields {
+  subgroveId: string;
+  fileKey: string;
+  filename: string;
+  contentType: string;
+  totalSize: number;
+  contentHash: string;
+  chunkCount: number;
+  chunkSize: number;
+  chunkMerkleRoot: string;
+  ownerDid: string;
 }
 
 /**

@@ -1,26 +1,49 @@
 /**
  * Consensus Client Implementation
- * 
+ *
  * Provides direct transaction broadcasting to CometBFT consensus layer.
  */
 
-import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, RegisterDidTx, RegisterSubgroveTx, SubgroveMode, RetentionWindow, TransferTx, DataStoreTx, StoreFileManifestTx, DeleteFileManifestTx, DeregisterSubgroveTx, SubmitAnchorTx, Transaction, createTransactionWrapper, createSignMessage } from './types';
+import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, RegisterDidTx, RegisterSubgroveTx, RegisterSubgroveOptions, SubgroveMode, RetentionWindow, Signer, SignFunction, StoreFileManifestFields, TransferTx, DataStoreTx, StoreFileManifestTx, DeleteFileManifestTx, DeregisterSubgroveTx, SubmitAnchorTx, Transaction, createTransactionWrapper, createSignMessage } from './types';
 import { canonicalizeAnchorBody, computeAnchorMerkleRoot, sha256Hex } from './anchor-canonical';
 import { submitTxToApi } from '../internal/tx';
+import { signEd25519 } from '../auth';
+import { WillowLogger, silentLogger } from '../internal/logger';
 
 /** Misconfiguration (no consensusRpcUrl) must surface, never degrade to a fallback. */
 function isRpcUrlMissingError(error: unknown): boolean {
   return error instanceof ConsensusError && error.code === 'CONSENSUS_RPC_URL_REQUIRED';
 }
 
+/** Normalize a Signer object or deprecated positional tail into resolved key material. */
+function resolveSigner(
+  signerOrPrivateKey: Signer | string,
+  publicKeyId?: string,
+  signFunction?: SignFunction,
+): Required<Signer> {
+  if (typeof signerOrPrivateKey === 'string') {
+    return {
+      privateKey: signerOrPrivateKey,
+      publicKeyId: publicKeyId!,
+      signFunction: signFunction ?? signEd25519,
+    };
+  }
+  return {
+    privateKey: signerOrPrivateKey.privateKey,
+    publicKeyId: signerOrPrivateKey.publicKeyId,
+    signFunction: signerOrPrivateKey.signFunction ?? signEd25519,
+  };
+}
+
 /**
  * CometBFT consensus client for direct transaction broadcasting
- * 
+ *
  * Enables full-featured blockchain interactions without relying on data nodes.
  */
 export class ConsensusClient {
   private config: ConsensusConfig;
   private nonceCache: Map<string, number> = new Map();
+  private logger: WillowLogger;
 
   constructor(config: ConsensusConfig) {
     this.config = {
@@ -29,56 +52,93 @@ export class ConsensusClient {
       maxRetries: config.maxRetries ?? 3,
       retryDelaySecs: config.retryDelaySecs ?? 1,
     };
+    this.logger = config.logger ?? silentLogger;
   }
 
   /**
    * Register a DID on the blockchain
    */
+  async registerDid(didDocument: any, signer: Signer): Promise<BroadcastResult>;
+  /** @deprecated Pass a {@link Signer} options object instead of positional key material. */
   async registerDid(
     didDocument: any,
     privateKey: string,
     publicKeyId: string,
-    signFunction: (message: string, privateKey: string) => string
+    signFunction: SignFunction
+  ): Promise<BroadcastResult>;
+  async registerDid(
+    didDocument: any,
+    signerOrPrivateKey: Signer | string,
+    publicKeyId?: string,
+    signFunction?: SignFunction
   ): Promise<BroadcastResult> {
-    // Create transaction
+    const signer = resolveSigner(signerOrPrivateKey, publicKeyId, signFunction);
     const tx: RegisterDidTx = {
       didDocument,
       signature: '', // Will be filled by signing
-      publicKeyId,
+      publicKeyId: signer.publicKeyId,
       nonce: await this.getNextNonce(didDocument.id || '')
     };
 
-    // Sign and broadcast
-    return this.signAndBroadcast('RegisterDid', tx, privateKey, signFunction);
+    return this.signAndBroadcast('RegisterDid', tx, signer.privateKey, signer.signFunction);
   }
 
   /**
-   * Register a subgrove (dataset) on the blockchain
+   * Register a subgrove on the blockchain
    */
+  async registerSubgrove(
+    subgroveId: string,
+    schema: string,
+    ownerDid: string,
+    signer: Signer,
+    options?: RegisterSubgroveOptions
+  ): Promise<BroadcastResult>;
+  /** @deprecated Pass a {@link Signer} options object instead of positional key material. */
   async registerSubgrove(
     subgroveId: string,
     schema: string,
     ownerDid: string,
     privateKey: string,
     publicKeyId: string,
-    signFunction: (message: string, privateKey: string) => string,
+    signFunction: SignFunction,
+    mode?: SubgroveMode,
+    retentionWindow?: RetentionWindow,
+    initialFunding?: string
+  ): Promise<BroadcastResult>;
+  async registerSubgrove(
+    subgroveId: string,
+    schema: string,
+    ownerDid: string,
+    signerOrPrivateKey: Signer | string,
+    publicKeyIdOrOptions?: string | RegisterSubgroveOptions,
+    signFunction?: SignFunction,
     mode?: SubgroveMode,
     retentionWindow?: RetentionWindow,
     initialFunding?: string
   ): Promise<BroadcastResult> {
+    const positional = typeof signerOrPrivateKey === 'string';
+    const signer = resolveSigner(
+      signerOrPrivateKey,
+      positional ? (publicKeyIdOrOptions as string) : undefined,
+      signFunction,
+    );
+    const options: RegisterSubgroveOptions = positional
+      ? { mode, retentionWindow, initialFunding }
+      : (publicKeyIdOrOptions as RegisterSubgroveOptions | undefined) ?? {};
+
     const tx: RegisterSubgroveTx = {
       subgroveId,
       schema,
       ownerDid,
-      mode,
-      retention_window: retentionWindow,
-      initialFunding,
+      mode: options.mode,
+      retention_window: options.retentionWindow,
+      initialFunding: options.initialFunding,
       signature: '',
-      publicKeyId,
+      publicKeyId: signer.publicKeyId,
       nonce: await this.getNextNonce(ownerDid)
     };
 
-    return this.signAndBroadcast('RegisterSubgrove', tx, privateKey, signFunction);
+    return this.signAndBroadcast('RegisterSubgrove', tx, signer.privateKey, signer.signFunction);
   }
 
   /**
@@ -88,22 +148,47 @@ export class ConsensusClient {
     fromDid: string,
     toDid: string,
     amount: number,
+    signer: Signer,
+    memo?: string
+  ): Promise<BroadcastResult>;
+  /** @deprecated Pass a {@link Signer} options object instead of positional key material. */
+  async transfer(
+    fromDid: string,
+    toDid: string,
+    amount: number,
     privateKey: string,
     publicKeyId: string,
-    signFunction: (message: string, privateKey: string) => string,
+    signFunction: SignFunction,
+    memo?: string
+  ): Promise<BroadcastResult>;
+  async transfer(
+    fromDid: string,
+    toDid: string,
+    amount: number,
+    signerOrPrivateKey: Signer | string,
+    publicKeyIdOrMemo?: string,
+    signFunction?: SignFunction,
     memo?: string
   ): Promise<BroadcastResult> {
+    const positional = typeof signerOrPrivateKey === 'string';
+    const signer = resolveSigner(
+      signerOrPrivateKey,
+      positional ? publicKeyIdOrMemo : undefined,
+      signFunction,
+    );
+    const txMemo = positional ? memo : publicKeyIdOrMemo;
+
     const tx: TransferTx = {
       fromDid,
       toDid,
       amount,
-      memo,
+      memo: txMemo,
       signature: '',
-      publicKeyId,
+      publicKeyId: signer.publicKeyId,
       nonce: await this.getNextNonce(fromDid)
     };
 
-    return this.signAndBroadcast('Transfer', tx, privateKey, signFunction);
+    return this.signAndBroadcast('Transfer', tx, signer.privateKey, signer.signFunction);
   }
 
   /**
@@ -114,26 +199,49 @@ export class ConsensusClient {
     key: string,
     data: any,
     ownerDid: string,
+    signer: Signer
+  ): Promise<BroadcastResult>;
+  /** @deprecated Pass a {@link Signer} options object instead of positional key material. */
+  async storeData(
+    subgroveId: string,
+    key: string,
+    data: any,
+    ownerDid: string,
     privateKey: string,
     publicKeyId: string,
-    signFunction: (message: string, privateKey: string) => string
+    signFunction: SignFunction
+  ): Promise<BroadcastResult>;
+  async storeData(
+    subgroveId: string,
+    key: string,
+    data: any,
+    ownerDid: string,
+    signerOrPrivateKey: Signer | string,
+    publicKeyId?: string,
+    signFunction?: SignFunction
   ): Promise<BroadcastResult> {
+    const signer = resolveSigner(signerOrPrivateKey, publicKeyId, signFunction);
     const tx: DataStoreTx = {
       subgroveId,
       key,
       data: JSON.stringify(data),
       ownerDid,
       signature: '',
-      publicKeyId,
+      publicKeyId: signer.publicKeyId,
       nonce: await this.getNextNonce(ownerDid)
     };
 
-    return this.signAndBroadcast('DataStore', tx, privateKey, signFunction);
+    return this.signAndBroadcast('DataStore', tx, signer.privateKey, signer.signFunction);
   }
 
   /**
    * Store a file manifest on the blockchain
    */
+  async storeFileManifest(
+    manifest: StoreFileManifestFields,
+    signer: Signer
+  ): Promise<BroadcastResult>;
+  /** @deprecated Pass {@link StoreFileManifestFields} and a {@link Signer} instead of 13 positional arguments. */
   async storeFileManifest(
     subgroveId: string,
     fileKey: string,
@@ -147,25 +255,52 @@ export class ConsensusClient {
     ownerDid: string,
     privateKey: string,
     publicKeyId: string,
-    signFunction: (message: string, privateKey: string) => string
+    signFunction: SignFunction
+  ): Promise<BroadcastResult>;
+  async storeFileManifest(
+    manifestOrSubgroveId: StoreFileManifestFields | string,
+    signerOrFileKey: Signer | string,
+    filename?: string,
+    contentType?: string,
+    totalSize?: number,
+    contentHash?: string,
+    chunkCount?: number,
+    chunkSize?: number,
+    chunkMerkleRoot?: string,
+    ownerDid?: string,
+    privateKey?: string,
+    publicKeyId?: string,
+    signFunction?: SignFunction
   ): Promise<BroadcastResult> {
+    let fields: StoreFileManifestFields;
+    let signer: Required<Signer>;
+    if (typeof manifestOrSubgroveId === 'string') {
+      fields = {
+        subgroveId: manifestOrSubgroveId,
+        fileKey: signerOrFileKey as string,
+        filename: filename!,
+        contentType: contentType!,
+        totalSize: totalSize!,
+        contentHash: contentHash!,
+        chunkCount: chunkCount!,
+        chunkSize: chunkSize!,
+        chunkMerkleRoot: chunkMerkleRoot!,
+        ownerDid: ownerDid!,
+      };
+      signer = resolveSigner(privateKey!, publicKeyId, signFunction);
+    } else {
+      fields = manifestOrSubgroveId;
+      signer = resolveSigner(signerOrFileKey as Signer);
+    }
+
     const tx: StoreFileManifestTx = {
-      subgroveId,
-      fileKey,
-      filename,
-      contentType,
-      totalSize,
-      contentHash,
-      chunkCount,
-      chunkSize,
-      chunkMerkleRoot,
-      ownerDid,
+      ...fields,
       signature: '',
-      publicKeyId,
-      nonce: await this.getNextNonce(ownerDid)
+      publicKeyId: signer.publicKeyId,
+      nonce: await this.getNextNonce(fields.ownerDid)
     };
 
-    return this.signAndBroadcast('StoreFileManifest', tx, privateKey, signFunction);
+    return this.signAndBroadcast('StoreFileManifest', tx, signer.privateKey, signer.signFunction);
   }
 
   /**
@@ -175,20 +310,36 @@ export class ConsensusClient {
     subgroveId: string,
     fileKey: string,
     ownerDid: string,
+    signer: Signer
+  ): Promise<BroadcastResult>;
+  /** @deprecated Pass a {@link Signer} options object instead of positional key material. */
+  async deleteFileManifest(
+    subgroveId: string,
+    fileKey: string,
+    ownerDid: string,
     privateKey: string,
     publicKeyId: string,
-    signFunction: (message: string, privateKey: string) => string
+    signFunction: SignFunction
+  ): Promise<BroadcastResult>;
+  async deleteFileManifest(
+    subgroveId: string,
+    fileKey: string,
+    ownerDid: string,
+    signerOrPrivateKey: Signer | string,
+    publicKeyId?: string,
+    signFunction?: SignFunction
   ): Promise<BroadcastResult> {
+    const signer = resolveSigner(signerOrPrivateKey, publicKeyId, signFunction);
     const tx: DeleteFileManifestTx = {
       subgroveId,
       fileKey,
       ownerDid,
       signature: '',
-      publicKeyId,
+      publicKeyId: signer.publicKeyId,
       nonce: await this.getNextNonce(ownerDid)
     };
 
-    return this.signAndBroadcast('DeleteFileManifest', tx, privateKey, signFunction);
+    return this.signAndBroadcast('DeleteFileManifest', tx, signer.privateKey, signer.signFunction);
   }
 
   /**
@@ -197,19 +348,33 @@ export class ConsensusClient {
   async deregisterSubgrove(
     subgroveId: string,
     ownerDid: string,
+    signer: Signer
+  ): Promise<BroadcastResult>;
+  /** @deprecated Pass a {@link Signer} options object instead of positional key material. */
+  async deregisterSubgrove(
+    subgroveId: string,
+    ownerDid: string,
     privateKey: string,
     publicKeyId: string,
-    signFunction: (message: string, privateKey: string) => string
+    signFunction: SignFunction
+  ): Promise<BroadcastResult>;
+  async deregisterSubgrove(
+    subgroveId: string,
+    ownerDid: string,
+    signerOrPrivateKey: Signer | string,
+    publicKeyId?: string,
+    signFunction?: SignFunction
   ): Promise<BroadcastResult> {
+    const signer = resolveSigner(signerOrPrivateKey, publicKeyId, signFunction);
     const tx: DeregisterSubgroveTx = {
       subgroveId,
       ownerDid,
       signature: '',
-      publicKeyId,
+      publicKeyId: signer.publicKeyId,
       nonce: await this.getNextNonce(ownerDid)
     };
 
-    return this.signAndBroadcast('DeregisterSubgrove', tx, privateKey, signFunction);
+    return this.signAndBroadcast('DeregisterSubgrove', tx, signer.privateKey, signer.signFunction);
   }
 
   /**
@@ -231,10 +396,40 @@ export class ConsensusClient {
       isGenesis: boolean;
       merkleRoot?: string;
     },
+    signer: Signer
+  ): Promise<BroadcastResult>;
+  /** @deprecated Pass a {@link Signer} options object instead of positional key material. */
+  async submitAnchor(
+    fields: {
+      did: string;
+      anchorId: string;
+      sequenceRange: [number, number];
+      receiptHashes: string[];
+      timestamp: string;
+      previousAnchorHash: string;
+      isGenesis: boolean;
+      merkleRoot?: string;
+    },
     privateKey: string,
     publicKeyId: string,
-    signFunction: (message: string, privateKey: string) => string,
+    signFunction: SignFunction
+  ): Promise<BroadcastResult>;
+  async submitAnchor(
+    fields: {
+      did: string;
+      anchorId: string;
+      sequenceRange: [number, number];
+      receiptHashes: string[];
+      timestamp: string;
+      previousAnchorHash: string;
+      isGenesis: boolean;
+      merkleRoot?: string;
+    },
+    signerOrPrivateKey: Signer | string,
+    publicKeyId?: string,
+    signFunction?: SignFunction,
   ): Promise<BroadcastResult> {
+    const signer = resolveSigner(signerOrPrivateKey, publicKeyId, signFunction);
     const count = fields.receiptHashes.length;
     const merkleRoot = fields.merkleRoot ?? computeAnchorMerkleRoot(fields.receiptHashes);
 
@@ -263,11 +458,11 @@ export class ConsensusClient {
       anchorHash,
       isGenesis: fields.isGenesis,
       signature: '',
-      publicKeyId,
+      publicKeyId: signer.publicKeyId,
       nonce: await this.getNextNonce(fields.did),
     };
 
-    return this.signAndBroadcast('SubmitAnchor', tx, privateKey, signFunction);
+    return this.signAndBroadcast('SubmitAnchor', tx, signer.privateKey, signer.signFunction);
   }
 
   /**
@@ -288,7 +483,7 @@ export class ConsensusClient {
 
     } catch (error) {
       if (isRpcUrlMissingError(error)) throw error;
-      console.warn('Failed to get transaction status:', error);
+      this.logger.warn('Failed to get transaction status:', error);
       return TransactionStatus.NOT_FOUND;
     }
   }
@@ -333,7 +528,7 @@ export class ConsensusClient {
       return result.node_info?.network || this.config.chainId!;
     } catch (error) {
       if (isRpcUrlMissingError(error)) throw error;
-      console.warn('Failed to get chain ID:', error);
+      this.logger.warn('Failed to get chain ID:', error);
       return this.config.chainId!;
     }
   }
@@ -347,7 +542,7 @@ export class ConsensusClient {
       return parseInt(result.sync_info?.latest_block_height || '0');
     } catch (error) {
       if (isRpcUrlMissingError(error)) throw error;
-      console.warn('Failed to get latest height:', error);
+      this.logger.warn('Failed to get latest height:', error);
       return undefined;
     }
   }
@@ -361,7 +556,7 @@ export class ConsensusClient {
     txType: string,
     transaction: Transaction,
     privateKey: string,
-    signFunction: (message: string, privateKey: string) => string
+    signFunction: SignFunction
   ): Promise<BroadcastResult> {
     // Create canonical message for signing
     const signMessageText = createSignMessage(txType, transaction);
@@ -470,7 +665,7 @@ export class ConsensusClient {
           );
         }
 
-        console.warn(`RPC attempt ${attempt + 1} failed:`, error);
+        this.logger.warn(`RPC attempt ${attempt + 1} failed:`, error);
         await this.sleep(this.config.retryDelaySecs! * 1000 * (attempt + 1));
       }
     }
@@ -508,7 +703,7 @@ export class ConsensusClient {
       if (cached === undefined) {
         throw error;
       }
-      console.warn('Failed to fetch nonce from API, using cache:', error);
+      this.logger.warn('Failed to fetch nonce from API, using cache:', error);
       const nextNonce = cached + 1;
       this.nonceCache.set(did, nextNonce);
       return nextNonce;

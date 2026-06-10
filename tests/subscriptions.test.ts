@@ -9,6 +9,7 @@
 
 import { WillowSubscriptions } from '../src/subscriptions';
 import { WillowIndexers } from '../src/indexers';
+import { WillowError } from '../src/types';
 
 // Mock the global fetch used by WillowIndexers' HttpClient so indexer
 // discovery doesn't hit the network.
@@ -526,5 +527,40 @@ describe('WillowSubscriptions — reconnect', () => {
     expect(FakeWebSocket.instances[1].url).toContain('backup');
 
     unsubscribe();
+  });
+});
+
+describe('WillowSubscriptions — injectable WebSocket implementation', () => {
+  it('uses the injected implementation instead of the global', () => {
+    class InjectedWebSocket extends FakeWebSocket {}
+    (globalThis as any).WebSocket = undefined;
+
+    const subs = new WillowSubscriptions('http://validator:3031', undefined, {
+      webSocket: InjectedWebSocket as any,
+    });
+    const unsubscribe = subs.subscribe('sg', 'subscription { x }', () => {});
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(FakeWebSocket.instances[0]).toBeInstanceOf(InjectedWebSocket);
+
+    unsubscribe();
+  });
+
+  it('throws WEBSOCKET_UNAVAILABLE at subscribe time when no implementation exists', () => {
+    const original = (globalThis as any).WebSocket;
+    delete (globalThis as any).WebSocket;
+    try {
+      const subs = new WillowSubscriptions('http://validator:3031');
+      let err: unknown;
+      try {
+        subs.subscribe('sg', 'subscription { x }', () => {});
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(WillowError);
+      expect((err as WillowError).code).toBe('WEBSOCKET_UNAVAILABLE');
+    } finally {
+      (globalThis as any).WebSocket = original;
+    }
   });
 });

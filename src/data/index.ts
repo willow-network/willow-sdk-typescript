@@ -3,8 +3,9 @@ import {
   WillowError,
   DataRecord,
   ProofResponse,
-  RegisterDatasetRequest,
+  RegisterSubgroveRequest,
   DatasetRegistration,
+  WillowLightClientOptions,
   QueryRequest,
   QueryResponse,
   HistoricalQueryRequest,
@@ -31,6 +32,7 @@ import {
   effectiveQueryEndpoint,
 } from "../indexers";
 import { HttpClient, HttpError } from "../internal/http";
+import { WillowLogger, silentLogger } from "../internal/logger";
 
 export class ValidatorHasNoDataError extends WillowError {
   constructor(subgroveId: string, reason: string) {
@@ -52,6 +54,13 @@ export class NoIndexersReachableError extends WillowError {
   }
 }
 
+export interface WillowDataOptions {
+  /** Logger for verification diagnostics. Defaults to `silentLogger`. */
+  logger?: WillowLogger;
+  /** Overrides for the auto-created light client (chain ID, endpoints, …). */
+  lightClient?: WillowLightClientOptions;
+}
+
 export class WillowData {
   private api: HttpClient;
   private auth: WillowAuth;
@@ -62,6 +71,8 @@ export class WillowData {
   private computedFieldRegistry: ComputedFieldRegistry;
   private indexers: WillowIndexers;
   private proofOptions?: ProofVerificationOptions;
+  private logger: WillowLogger;
+  private lightClientOptions?: WillowLightClientOptions;
 
   constructor(
     apiUrl: string,
@@ -69,6 +80,7 @@ export class WillowData {
     indexers: WillowIndexers,
     cometbftRpcUrl?: string,
     proofVerificationOptions?: ProofVerificationOptions,
+    options?: WillowDataOptions,
   ) {
     this.apiUrl = apiUrl;
     this.cometbftRpcUrl = cometbftRpcUrl;
@@ -77,6 +89,8 @@ export class WillowData {
     this.api = new HttpClient({ baseURL: apiUrl });
     this.auth = auth;
     this.computedFieldRegistry = new ComputedFieldRegistry();
+    this.logger = options?.logger ?? silentLogger;
+    this.lightClientOptions = options?.lightClient;
   }
 
   /**
@@ -111,12 +125,16 @@ export class WillowData {
   }
 
   /**
-   * Get or create a light client for trustless verification.
+   * Get or create a light client for root-hash lookups.
    *
    * Auto-initializes a light client using trust-on-first-use: the first
-   * block received from validators is trusted, and every subsequent block
-   * is verified against it. Pin a known-good checkpoint header instead
-   * for production deployments.
+   * block received from validators is trusted. The fallback settings
+   * (chainId `"willow-chain"`, the single configured RPC endpoint,
+   * `minValidatorsForConsensus: 1`) are DEVELOPMENT defaults sized for a
+   * local single-node devnet — override them via the `lightClient` section
+   * of the client config for anything else. Note the light client's
+   * root-hash path currently trusts the configured RPC endpoint (see
+   * `LightClient` docs).
    */
   private async getOrCreateLightClient(): Promise<LightClient> {
     if (this.lightClient) {
@@ -137,16 +155,18 @@ export class WillowData {
     const cometbftRpcUrl = this.cometbftRpcUrl;
 
     this.lightClientInitPromise = (async () => {
+      const overrides = this.lightClientOptions;
       const config: LightClientConfig = {
-        chainId: "willow-chain",
-        validatorEndpoints: [cometbftRpcUrl],
-        trustThreshold: { numerator: 2, denominator: 3 },
-        trustingPeriodSecs: 86400, // 24 hours
-        maxClockDriftSecs: 30,
+        chainId: overrides?.chainId ?? "willow-chain",
+        validatorEndpoints: overrides?.validatorEndpoints ?? [cometbftRpcUrl],
+        trustThreshold: overrides?.trustThreshold ?? { numerator: 2, denominator: 3 },
+        trustingPeriodSecs: overrides?.trustingPeriodSecs ?? 86400, // 24 hours
+        maxClockDriftSecs: overrides?.maxClockDriftSecs ?? 30,
         autoSync: false,
-        minValidatorsForConsensus: 1, // For single-node development
-        requestTimeoutSecs: 30,
+        minValidatorsForConsensus: overrides?.minValidatorsForConsensus ?? 1, // For single-node development
+        requestTimeoutSecs: overrides?.requestTimeoutSecs ?? 30,
         syncIntervalSecs: 60,
+        logger: this.logger,
       };
 
       const lc = new LightClient(config);
@@ -166,10 +186,10 @@ export class WillowData {
   }
 
   /**
-   * Register a dataset/subgrove
+   * Register a subgrove via the REST API.
    */
-  async registerDataset(
-    request: RegisterDatasetRequest,
+  async registerSubgrove(
+    request: RegisterSubgroveRequest,
   ): Promise<DatasetRegistration> {
     const headers = this.auth.getAuthHeaders('POST', '/register/subgrove');
 
@@ -197,6 +217,13 @@ export class WillowData {
     }
 
     return response.data!;
+  }
+
+  /** @deprecated Use {@link registerSubgrove} — "subgrove" is the on-chain term. */
+  async registerDataset(
+    request: RegisterSubgroveRequest,
+  ): Promise<DatasetRegistration> {
+    return this.registerSubgrove(request);
   }
 
   /**
@@ -277,7 +304,7 @@ export class WillowData {
 
         // Compare computed root with verified root
         if (computedRootHash.toLowerCase() !== verifiedRootHash.toLowerCase()) {
-          console.error(
+          this.logger.error(
             `Root hash mismatch: computed=${computedRootHash}, verified=${verifiedRootHash}, height=${proofData.height}`,
           );
           throw new WillowError(
@@ -286,7 +313,7 @@ export class WillowData {
           );
         }
       } else {
-        console.warn(`No proof available for key: ${key}`);
+        this.logger.warn(`No proof available for key: ${key}`);
       }
     } catch (error) {
       if (error instanceof WillowError) {
@@ -525,7 +552,7 @@ export class WillowData {
 
         // Compare computed root with verified root
         if (computedRootHash.toLowerCase() !== verifiedRootHash.toLowerCase()) {
-          console.error(
+          this.logger.error(
             `Query proof verification failed: computed=${computedRootHash}, verified=${verifiedRootHash}, height=${proofHeight}`,
           );
           throw new WillowError(

@@ -213,9 +213,9 @@ export class WillowAuth {
   }
 
   /**
-   * Get DID document
+   * Resolve a DID to its DID document
    */
-  async getDid_(did: string): Promise<DidDocument> {
+  async getDidDocument(did: string): Promise<DidDocument> {
     const response = await this.api.get<ApiResponse<DidDocument>>(`/did/${did}`);
 
     if (!response.success) {
@@ -223,6 +223,11 @@ export class WillowAuth {
     }
 
     return response.data!;
+  }
+
+  /** @deprecated Use {@link getDidDocument}. */
+  async getDid_(did: string): Promise<DidDocument> {
+    return this.getDidDocument(did);
   }
 
   /**

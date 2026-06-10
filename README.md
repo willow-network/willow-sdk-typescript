@@ -432,10 +432,11 @@ const client = new WillowClient({
 
 ## Registration
 
-### Register Dataset
+### Register Subgrove
 
 ```typescript
-const dataset = await client.registerDataset({
+// Returns the consensus BroadcastResult (txHash, height, rawLog)
+const result = await client.registerSubgrove({
   dataset_id: 'users',
 
   name: 'User Data',
@@ -493,7 +494,7 @@ try {
 | `init()` | Initialize with authentication |
 | `registerDid(didDocument)` | Register a new DID |
 
-| `registerDataset(request)` | Register a dataset |
+| `registerSubgrove(request)` | Register a subgrove (returns the consensus `BroadcastResult`) |
 | `store(datasetId, key, value)` | Store data |
 | `get(datasetId, key)` | Get data with proof verification |
 | `getUnverified(datasetId, key)` | Get data without verification |
@@ -537,7 +538,6 @@ try {
 | `signEd25519(message, privateKey)` | Sign with Ed25519 |
 | `verifyEd25519(message, signature, publicKey)` | Verify Ed25519 signature |
 | `isValidDid(did)` | Validate DID format |
-| `generateId(prefix?)` | Generate unique ID |
 
 ## Security Model
 

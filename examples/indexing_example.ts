@@ -66,7 +66,7 @@ async function main() {
   };
 
   console.log('Registering product catalog dataset...');
-  await client.registerDataset(datasetRequest);
+  await client.registerSubgrove(datasetRequest);
 
   const products = [
     {

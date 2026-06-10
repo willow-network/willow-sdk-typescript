@@ -1,16 +1,15 @@
-import { WillowAuth, signEd25519 } from "./auth";
+import { WillowAuth } from "./auth";
 import { WillowData } from "./data";
 import { FileOperations } from "./files";
 import { EthOperations } from "./eth-state";
 import { ConsensusClient } from "./consensus";
-import { BroadcastResult } from "./consensus/types";
+import { BroadcastResult, Signer } from "./consensus/types";
 import { WillowIndexers } from "./indexers";
 import { WillowSubscriptions } from "./subscriptions";
 import {
   WillowConfig,
   DidDocument,
-  RegisterDatasetRequest,
-  DatasetRegistration,
+  RegisterSubgroveRequest,
   DataRecord,
   QueryRequest,
   QueryResponse,
@@ -19,7 +18,6 @@ import {
   GraphQLQueryResult,
   GraphQLQueryOptions,
 } from "./types";
-import { ProofVerificationOptions } from "./proof";
 import { ComputedFieldSet } from "./computed-fields";
 
 /**
@@ -85,8 +83,11 @@ export class WillowClient {
       this.indexers,
       cometUrl,
       config.proofVerificationOptions,
+      { logger: config.logger, lightClient: config.lightClient },
     );
-    this.subscriptions = new WillowSubscriptions(config.apiUrl, this.indexers);
+    this.subscriptions = new WillowSubscriptions(config.apiUrl, this.indexers, {
+      webSocket: config.webSocket,
+    });
 
     this.files = new FileOperations(config.apiUrl, (method, path) =>
       this.auth.getAuthHeaders(method, path),
@@ -97,6 +98,7 @@ export class WillowClient {
       consensusRpcUrl: cometUrl,
       apiUrl: config.apiUrl,
       apiKey: config.apiKey,
+      logger: config.logger,
     });
 
   }
@@ -115,7 +117,7 @@ export class WillowClient {
     }
 
     if (!publicKeyId) {
-      const didDoc = await this.auth.getDid_(this.config.did);
+      const didDoc = await this.auth.getDidDocument(this.config.did);
       if (didDoc.publicKeys.length === 0) {
         throw new Error("No public keys found in DID document");
       }
@@ -134,34 +136,34 @@ export class WillowClient {
 
   /**
    * Register a subgrove via a consensus transaction.
+   *
+   * Returns the consensus `BroadcastResult` (tx hash, height, raw log) —
+   * the SDK does not synthesize a registration record; read the subgrove
+   * back from the chain if you need its stored state.
    */
-  async registerDataset(
-    request: RegisterDatasetRequest,
-  ): Promise<DatasetRegistration> {
+  async registerSubgrove(
+    request: RegisterSubgroveRequest,
+  ): Promise<BroadcastResult> {
     this.requireIdentity();
     const result = await this.consensus.registerSubgrove(
       request.dataset_id,
       JSON.stringify(request.schema ?? {}),
       this.auth.getDid()!,
-      this.auth.getPrivateKey()!,
-      this.auth.getPublicKeyId()!,
-      signEd25519,
+      this.signer(),
     );
     if (!result.success) {
       throw new Error(
-        `registerDataset failed: ${result.errorMessage ?? result.rawLog ?? 'unknown'}`,
+        `registerSubgrove failed: ${result.errorMessage ?? result.rawLog ?? 'unknown'}`,
       );
     }
-    return {
-      dataset_id: request.dataset_id,
-      name: request.name,
-      schema: request.schema ?? { version: 1, fields: {}, indexes: [], required_fields: [] },
-      owner_did: request.owner_did,
-      writers: request.writers ?? [],
-      readers: request.readers ?? [],
-      created_at: Math.floor(Date.now() / 1000),
-      updated_at: Math.floor(Date.now() / 1000),
-    };
+    return result;
+  }
+
+  /** @deprecated Use {@link registerSubgrove} — "subgrove" is the on-chain term. */
+  async registerDataset(
+    request: RegisterSubgroveRequest,
+  ): Promise<BroadcastResult> {
+    return this.registerSubgrove(request);
   }
 
   /**
@@ -178,9 +180,7 @@ export class WillowClient {
     return this.consensus.deregisterSubgrove(
       subgroveId,
       this.auth.getDid()!,
-      this.auth.getPrivateKey()!,
-      this.auth.getPublicKeyId()!,
-      signEd25519,
+      this.signer(),
     );
   }
 
@@ -198,9 +198,7 @@ export class WillowClient {
       key,
       value,
       this.auth.getDid()!,
-      this.auth.getPrivateKey()!,
-      this.auth.getPublicKeyId()!,
-      signEd25519,
+      this.signer(),
     );
     if (!result.success) {
       throw new Error(
@@ -366,6 +364,22 @@ export class WillowClient {
     return this.data.graphqlQuery(subgroveId, query, options);
   }
 
+  private requireIdentity(): void {
+    if (!this.auth.getDid() || !this.auth.getPrivateKey() || !this.auth.getPublicKeyId()) {
+      throw new Error(
+        'Identity not set. Call client.auth.setIdentity(did, privateKey, publicKeyId) before write operations.',
+      );
+    }
+  }
+
+  /** Builds a consensus Signer from the configured identity. Call requireIdentity() first. */
+  private signer(): Signer {
+    return {
+      privateKey: this.auth.getPrivateKey()!,
+      publicKeyId: this.auth.getPublicKeyId()!,
+    };
+  }
+
   /**
    * Register computed fields for a specific dataset.
    *
@@ -388,14 +402,6 @@ export class WillowClient {
    * console.log(result.documents[0].token0Price); // Computed from proven reserves
    * ```
    */
-  private requireIdentity(): void {
-    if (!this.auth.getDid() || !this.auth.getPrivateKey() || !this.auth.getPublicKeyId()) {
-      throw new Error(
-        'Identity not set. Call client.auth.setIdentity(did, privateKey, publicKeyId) before write operations.',
-      );
-    }
-  }
-
   registerComputedFields(
     datasetId: string,
     fields: ComputedFieldSet,

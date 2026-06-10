@@ -5,6 +5,7 @@
  */
 
 import { LightClientConfig, TrustThreshold, createLightClientConfig, createTrustThreshold } from './types';
+import type { WillowLogger } from '../internal/logger';
 
 /**
  * Builder for creating light client configurations
@@ -20,6 +21,7 @@ export class LightClientConfigBuilder {
   private _syncIntervalSecs: number = 300; // 5 minutes
   private _maxRetries: number = 3;
   private _requestTimeoutSecs: number = 30;
+  private _logger?: WillowLogger;
 
   /**
    * Initialize builder with required chain ID
@@ -133,6 +135,14 @@ export class LightClientConfigBuilder {
   }
 
   /**
+   * Set logger for light client diagnostics (defaults to silent)
+   */
+  logger(logger: WillowLogger): LightClientConfigBuilder {
+    this._logger = logger;
+    return this;
+  }
+
+  /**
    * Build the final configuration
    */
   build(): LightClientConfig {
@@ -146,7 +156,8 @@ export class LightClientConfigBuilder {
       autoSync: this._autoSync,
       syncIntervalSecs: this._syncIntervalSecs,
       maxRetries: this._maxRetries,
-      requestTimeoutSecs: this._requestTimeoutSecs
+      requestTimeoutSecs: this._requestTimeoutSecs,
+      logger: this._logger
     });
   }
 }
