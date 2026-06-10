@@ -369,8 +369,11 @@ describe('Executor', () => {
       expect(() => executeOps(ops)).toThrow('Incorrect key ordering');
     });
 
-    it('throws on invalid AVL tree', () => {
-      // Create unbalanced tree: 1 -> 2 -> 3 (all right)
+    it('accepts an unbalanced reconstruction (partial proofs are legitimately unbalanced)', () => {
+      // A query proof is a *partial* reconstruction, so the result is often not
+      // AVL-balanced (sibling subtrees collapse to height-0 hash nodes). We no
+      // longer reject on imbalance — integrity comes from the root-hash
+      // recomputation, not the AVL property. (Tree: 1 -> 2 -> 3, all right.)
       const ops = [
         { type: 'Push' as const, node: { type: 'KV' as const, key: new Uint8Array([1]), value: new Uint8Array([1]) } },
         { type: 'Push' as const, node: { type: 'KV' as const, key: new Uint8Array([2]), value: new Uint8Array([2]) } },
@@ -378,7 +381,7 @@ describe('Executor', () => {
         { type: 'Push' as const, node: { type: 'KV' as const, key: new Uint8Array([3]), value: new Uint8Array([3]) } },
         { type: 'Parent' as const }
       ];
-      expect(() => executeOps(ops)).toThrow('valid AVL tree');
+      expect(() => executeOps(ops)).not.toThrow();
     });
   });
 
