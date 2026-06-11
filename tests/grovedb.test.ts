@@ -342,9 +342,8 @@ describe('Executor', () => {
       if (tree.node.type === 'KV') {
         expect(tree.node.key).toEqual(new Uint8Array([2]));
       }
-      expect(tree.left).not.toBeNull();
-      expect(tree.right).not.toBeNull();
-      expect(tree.height).toBe(2);
+      expect(tree.left?.tree.getKey()).toEqual(new Uint8Array([1]));
+      expect(tree.right?.tree.getKey()).toEqual(new Uint8Array([3]));
     });
 
     it('throws on stack underflow', () => {

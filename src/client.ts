@@ -1,16 +1,15 @@
-import { WillowAuth, signEd25519 } from "./auth";
+import { WillowAuth } from "./auth";
 import { WillowData } from "./data";
 import { FileOperations } from "./files";
 import { EthOperations } from "./eth-state";
 import { ConsensusClient } from "./consensus";
-import { BroadcastResult } from "./consensus/types";
+import { BroadcastResult, RegisterSubgroveOptions, Signer, SubgroveMode } from "./consensus/types";
 import { WillowIndexers } from "./indexers";
 import { WillowSubscriptions } from "./subscriptions";
 import {
   WillowConfig,
   DidDocument,
-  RegisterDatasetRequest,
-  DatasetRegistration,
+  RegisterSubgroveRequest,
   DataRecord,
   QueryRequest,
   QueryResponse,
@@ -19,10 +18,25 @@ import {
   GraphQLQueryResult,
   GraphQLQueryOptions,
 } from "./types";
-import { configureProofVerification, ProofVerificationOptions } from "./proof";
 import { ComputedFieldSet } from "./computed-fields";
 
-function deriveCometBftUrl(apiUrl: string): string {
+/**
+ * Derive the CometBFT RPC URL from the API URL for local devnets only
+ * (API port 3030+N → RPC port 26557+N*100). For any non-localhost host the
+ * mapping is deployment-specific, so no URL is derived — operations that
+ * need CometBFT RPC then throw `CONSENSUS_RPC_URL_REQUIRED` until the
+ * caller sets `consensusRpcUrl` in the config.
+ */
+function deriveCometBftUrl(apiUrl: string): string | undefined {
+  let hostname: string;
+  try {
+    hostname = new URL(apiUrl).hostname;
+  } catch {
+    return undefined;
+  }
+  if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
+    return undefined;
+  }
   const match = apiUrl.match(/:(\d+)(\/)?$/);
   if (match) {
     const apiPort = parseInt(match[1]);
@@ -32,7 +46,7 @@ function deriveCometBftUrl(apiUrl: string): string {
       return apiUrl.replace(`:${apiPort}`, `:${rpcPort}`);
     }
   }
-  return apiUrl.replace(/:3031/, ':26657');
+  return undefined;
 }
 
 /**
@@ -63,22 +77,30 @@ export class WillowClient {
       indexerUrl: config.indexerUrl,
     });
 
-    this.data = new WillowData(config.apiUrl, this.auth, this.indexers, cometUrl);
-    this.subscriptions = new WillowSubscriptions(config.apiUrl, this.indexers);
+    this.data = new WillowData(
+      config.apiUrl,
+      this.auth,
+      this.indexers,
+      cometUrl,
+      config.proofVerificationOptions,
+      { logger: config.logger, lightClient: config.lightClient },
+    );
+    this.subscriptions = new WillowSubscriptions(config.apiUrl, this.indexers, {
+      webSocket: config.webSocket,
+    });
 
-    this.files = new FileOperations(config.apiUrl, () => this.auth.getAuthHeaders('GET', '/files'));
+    this.files = new FileOperations(config.apiUrl, (method, path) =>
+      this.auth.getAuthHeaders(method, path),
+    );
     this.eth = new EthOperations(config.indexerUrl ?? config.apiUrl, undefined, config.apiKey);
 
     this.consensus = new ConsensusClient({
       consensusRpcUrl: cometUrl,
       apiUrl: config.apiUrl,
       apiKey: config.apiKey,
+      logger: config.logger,
     });
 
-    // Configure proof verification if options provided
-    if (config.proofVerificationOptions) {
-      configureProofVerification(config.proofVerificationOptions);
-    }
   }
 
   /**
@@ -95,7 +117,7 @@ export class WillowClient {
     }
 
     if (!publicKeyId) {
-      const didDoc = await this.auth.getDid_(this.config.did);
+      const didDoc = await this.auth.getDidDocument(this.config.did);
       if (didDoc.publicKeys.length === 0) {
         throw new Error("No public keys found in DID document");
       }
@@ -114,34 +136,52 @@ export class WillowClient {
 
   /**
    * Register a subgrove via a consensus transaction.
+   *
+   * The request's `name`, `writers`, and `readers` become a `DataStorage`
+   * subgrove mode (`readers` maps to the on-chain `free_readers`). Pass
+   * `options.mode` to register a non-DataStorage subgrove (FileStorage,
+   * BlockchainIndexing) — an explicit mode takes precedence over the
+   * request's access lists. `options` also carries `retentionWindow` and
+   * `initialFunding`.
+   *
+   * Returns the consensus `BroadcastResult` (tx hash, height, raw log) —
+   * the SDK does not synthesize a registration record; read the subgrove
+   * back from the chain if you need its stored state.
    */
-  async registerDataset(
-    request: RegisterDatasetRequest,
-  ): Promise<DatasetRegistration> {
+  async registerSubgrove(
+    request: RegisterSubgroveRequest,
+    options?: RegisterSubgroveOptions,
+  ): Promise<BroadcastResult> {
     this.requireIdentity();
+    const mode: SubgroveMode =
+      options?.mode ?? {
+        DataStorage: {
+          name: request.name,
+          writers: request.writers,
+          free_readers: request.readers,
+        },
+      };
     const result = await this.consensus.registerSubgrove(
       request.dataset_id,
       JSON.stringify(request.schema ?? {}),
       this.auth.getDid()!,
-      this.auth.getPrivateKey()!,
-      this.auth.getPublicKeyId()!,
-      signEd25519,
+      this.signer(),
+      { name: request.name, ...options, mode },
     );
     if (!result.success) {
       throw new Error(
-        `registerDataset failed: ${result.errorMessage ?? result.rawLog ?? 'unknown'}`,
+        `registerSubgrove failed: ${result.errorMessage ?? result.rawLog ?? 'unknown'}`,
       );
     }
-    return {
-      dataset_id: request.dataset_id,
-      name: request.name,
-      schema: request.schema ?? { version: 1, fields: {}, indexes: [], required_fields: [] },
-      owner_did: request.owner_did,
-      writers: request.writers ?? [],
-      readers: request.readers ?? [],
-      created_at: Math.floor(Date.now() / 1000),
-      updated_at: Math.floor(Date.now() / 1000),
-    };
+    return result;
+  }
+
+  /** @deprecated Use {@link registerSubgrove} — "subgrove" is the on-chain term. */
+  async registerDataset(
+    request: RegisterSubgroveRequest,
+    options?: RegisterSubgroveOptions,
+  ): Promise<BroadcastResult> {
+    return this.registerSubgrove(request, options);
   }
 
   /**
@@ -158,9 +198,7 @@ export class WillowClient {
     return this.consensus.deregisterSubgrove(
       subgroveId,
       this.auth.getDid()!,
-      this.auth.getPrivateKey()!,
-      this.auth.getPublicKeyId()!,
-      signEd25519,
+      this.signer(),
     );
   }
 
@@ -178,9 +216,7 @@ export class WillowClient {
       key,
       value,
       this.auth.getDid()!,
-      this.auth.getPrivateKey()!,
-      this.auth.getPublicKeyId()!,
-      signEd25519,
+      this.signer(),
     );
     if (!result.success) {
       throw new Error(
@@ -346,6 +382,22 @@ export class WillowClient {
     return this.data.graphqlQuery(subgroveId, query, options);
   }
 
+  private requireIdentity(): void {
+    if (!this.auth.getDid() || !this.auth.getPrivateKey() || !this.auth.getPublicKeyId()) {
+      throw new Error(
+        'Identity not set. Call client.auth.setIdentity(did, privateKey, publicKeyId) before write operations.',
+      );
+    }
+  }
+
+  /** Builds a consensus Signer from the configured identity. Call requireIdentity() first. */
+  private signer(): Signer {
+    return {
+      privateKey: this.auth.getPrivateKey()!,
+      publicKeyId: this.auth.getPublicKeyId()!,
+    };
+  }
+
   /**
    * Register computed fields for a specific dataset.
    *
@@ -368,14 +420,6 @@ export class WillowClient {
    * console.log(result.documents[0].token0Price); // Computed from proven reserves
    * ```
    */
-  private requireIdentity(): void {
-    if (!this.auth.getDid() || !this.auth.getPrivateKey() || !this.auth.getPublicKeyId()) {
-      throw new Error(
-        'Identity not set. Call client.auth.setIdentity(did, privateKey, publicKeyId) before write operations.',
-      );
-    }
-  }
-
   registerComputedFields(
     datasetId: string,
     fields: ComputedFieldSet,

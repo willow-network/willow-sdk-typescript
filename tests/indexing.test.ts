@@ -104,9 +104,7 @@ describeIntegration('Willow Tests', () => {
 
       const datasetRequest: RegisterDatasetRequest = {
         dataset_id: 'blog_posts',
-        
         name: 'Blog Posts with Indexes',
-        dataset_path: [],
         schema,
         owner_did: fundedDID,
         writers: [],
@@ -356,9 +354,7 @@ describeIntegration('Performance Tests', () => {
 
     const perfDataset: RegisterDatasetRequest = {
       dataset_id: 'perf_test',
-      
       name: 'Performance Test Dataset',
-      dataset_path: [],
       schema: perfSchema,
       owner_did: fundedDID,
       writers: [],

@@ -15,7 +15,7 @@
 
 import { WillowClient } from '../src/client';
 import {
-  RegisterDatasetRequest,
+  RegisterSubgroveRequest,
   SchemaDefinition,
   QueryRequest,
 } from '../src/types';
@@ -55,10 +55,9 @@ async function main() {
     ],
   };
 
-  const datasetRequest: RegisterDatasetRequest = {
+  const datasetRequest: RegisterSubgroveRequest = {
     dataset_id: 'products',
     name: 'Product Catalog',
-    dataset_path: [],
     schema,
     owner_did: fundedDID,
     writers: [fundedDID],
@@ -66,7 +65,7 @@ async function main() {
   };
 
   console.log('Registering product catalog dataset...');
-  await client.registerDataset(datasetRequest);
+  await client.registerSubgrove(datasetRequest);
 
   const products = [
     {

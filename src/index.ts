@@ -17,18 +17,37 @@ export {
   ValidatorHasNoDataError,
   NoIndexersReachableError,
 } from "./data";
+export type { WillowDataOptions } from "./data";
 
 // Indexer discovery + subscription clients
 export { WillowIndexers, effectiveQueryEndpoint } from "./indexers";
 export type { ApiIndexerInfo, WillowIndexersOptions } from "./indexers";
 export { WillowSubscriptions } from "./subscriptions";
-export type { SubscribeOptions, SubscribeSource, UnsubscribeFn } from "./subscriptions";
+export type {
+  SubscribeOptions,
+  SubscribeSource,
+  UnsubscribeFn,
+  WebSocketConstructor,
+  WebSocketLike,
+  WillowSubscriptionsOptions,
+} from "./subscriptions";
+
+// Injectable logging: silent by default, pass `consoleLogger` (or your own)
+// via WillowConfig.logger to surface SDK diagnostics.
+export { silentLogger, consoleLogger } from "./internal/logger";
+export type { WillowLogger } from "./internal/logger";
 
 // Export all types
 export * from "./types";
 
-// Export utilities
-export * from "./utils";
+// HTTP client used by all SDK modules; HttpError is thrown on non-2xx
+// API responses that a module doesn't map to a WillowError itself.
+export { HttpClient, HttpError } from "./internal/http";
+export type { HttpClientOptions, HttpRequestOptions } from "./internal/http";
+
+// Public DID/wallet helpers. The generic utils (sleep, retry, chunk,
+// generateId) are internal and intentionally not part of the package API.
+export { generateWallet, createDidFromWallet, isValidDid } from "./utils";
 
 // Export proof verification
 export * from "./proof";
@@ -41,7 +60,6 @@ export {
   ComputeFunction,
   applyComputedFields,
   applyComputedFieldsToResponse,
-  globalComputedFieldRegistry,
   // Pre-built field sets for common protocols
   UNISWAP_V2_PAIR_FIELDS,
   UNISWAP_V2_TOKEN_FIELDS,
@@ -135,6 +153,10 @@ export type {
   TransferTx,
   DataStoreTx,
   Transaction,
+  Signer,
+  SignFunction,
+  RegisterSubgroveOptions,
+  StoreFileManifestFields,
 } from "./consensus";
 
 // Export file storage operations

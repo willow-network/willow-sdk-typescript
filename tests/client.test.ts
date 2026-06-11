@@ -1,30 +1,16 @@
 import { WillowClient } from '../src/client';
 import { generateEd25519KeyPair, getEd25519PublicKey } from '../src/auth';
 
-// Mock fetch (used by getRootHash / getRootHashLocal)
+// Mock fetch — every SDK HTTP call (auth, data, root hash) goes through it.
 global.fetch = jest.fn();
 
-// Mock axios (used by auth and data operations)
-jest.mock('axios', () => {
-  const mockAxiosInstance = {
-    get: jest.fn(),
-    post: jest.fn(),
-    put: jest.fn(),
-    delete: jest.fn(),
-  };
+function jsonResponse(body: unknown, status = 200) {
   return {
-    __esModule: true,
-    default: {
-      create: jest.fn(() => mockAxiosInstance),
-    },
-    _mockInstance: mockAxiosInstance,
-  };
-});
-
-// Get the mock axios instance
-function getMockAxios() {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  return require('axios')._mockInstance;
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  } as Response;
 }
 
 describe('WillowClient', () => {
@@ -35,6 +21,11 @@ describe('WillowClient', () => {
   const { privateKey: testPrivateKey, publicKey: testPublicKey } = generateEd25519KeyPair();
   const testDid = 'did:willow:test:123';
   const testPublicKeyId = `${testDid}#key-1`;
+
+  function lastRequest(): { url: string; init: RequestInit } {
+    const call = mockFetch.mock.calls.at(-1)!;
+    return { url: call[0] as string, init: call[1] as RequestInit };
+  }
 
   beforeEach(() => {
     client = new WillowClient({ apiUrl: 'http://localhost:3031' });
@@ -66,17 +57,15 @@ describe('WillowClient', () => {
         updated: Date.now(),
       };
 
-      const mockAxios = getMockAxios();
-      mockAxios.post.mockResolvedValueOnce({
-        data: { success: true, data: didDoc },
-      });
+      mockFetch.mockResolvedValueOnce(jsonResponse({ success: true, data: didDoc }));
 
       const result = await client.registerDid(didDoc);
       expect(result).toEqual(didDoc);
-      expect(mockAxios.post).toHaveBeenCalledWith(
-        '/did',
-        didDoc,
-      );
+
+      const { url, init } = lastRequest();
+      expect(url).toBe('http://localhost:3031/did');
+      expect(init.method).toBe('POST');
+      expect(JSON.parse(init.body as string)).toEqual(didDoc);
     });
   });
 
@@ -120,74 +109,59 @@ describe('WillowClient', () => {
 
     describe('store', () => {
       it('should store data with auth headers', async () => {
-        const mockAxios = getMockAxios();
-        mockAxios.post.mockResolvedValueOnce({
-          data: { success: true },
-        });
+        mockFetch.mockResolvedValueOnce(jsonResponse({ success: true }));
 
         await client.data.storeData('dataset1', {
           key1: { value: 'test' },
         });
 
-        expect(mockAxios.post).toHaveBeenCalledWith(
-          '/data/dataset1',
-          { key1: { value: 'test' } },
-          expect.objectContaining({
-            headers: expect.objectContaining({
-              'X-DID': testDid,
-              'X-Public-Key-ID': testPublicKeyId,
-              'X-Signature': expect.any(String),
-              'X-Timestamp': expect.any(String),
-            }),
-          })
-        );
+        const { url, init } = lastRequest();
+        expect(url).toBe('http://localhost:3031/data/dataset1');
+        expect(init.method).toBe('POST');
+        expect(JSON.parse(init.body as string)).toEqual({ key1: { value: 'test' } });
+        expect(init.headers).toMatchObject({
+          'X-DID': testDid,
+          'X-Public-Key-ID': testPublicKeyId,
+          'X-Signature': expect.any(String),
+          'X-Timestamp': expect.any(String),
+        });
       });
     });
 
     describe('update', () => {
       it('should update data with auth headers', async () => {
-        const mockAxios = getMockAxios();
-        mockAxios.put.mockResolvedValueOnce({
-          data: { success: true },
-        });
+        mockFetch.mockResolvedValueOnce(jsonResponse({ success: true }));
 
         await client.data.updateData('dataset1', 'key1', { value: 'updated' });
 
-        expect(mockAxios.put).toHaveBeenCalledWith(
-          '/data/dataset1/key1',
-          { value: 'updated' },
-          expect.objectContaining({
-            headers: expect.objectContaining({
-              'X-DID': testDid,
-              'X-Public-Key-ID': testPublicKeyId,
-              'X-Signature': expect.any(String),
-              'X-Timestamp': expect.any(String),
-            }),
-          })
-        );
+        const { url, init } = lastRequest();
+        expect(url).toBe('http://localhost:3031/data/dataset1/key1');
+        expect(init.method).toBe('PUT');
+        expect(JSON.parse(init.body as string)).toEqual({ value: 'updated' });
+        expect(init.headers).toMatchObject({
+          'X-DID': testDid,
+          'X-Public-Key-ID': testPublicKeyId,
+          'X-Signature': expect.any(String),
+          'X-Timestamp': expect.any(String),
+        });
       });
     });
 
     describe('delete', () => {
       it('should delete data with auth headers', async () => {
-        const mockAxios = getMockAxios();
-        mockAxios.delete.mockResolvedValueOnce({
-          data: { success: true },
-        });
+        mockFetch.mockResolvedValueOnce(jsonResponse({ success: true }));
 
         await client.data.deleteData('dataset1', 'key1');
 
-        expect(mockAxios.delete).toHaveBeenCalledWith(
-          '/data/dataset1/key1',
-          expect.objectContaining({
-            headers: expect.objectContaining({
-              'X-DID': testDid,
-              'X-Public-Key-ID': testPublicKeyId,
-              'X-Signature': expect.any(String),
-              'X-Timestamp': expect.any(String),
-            }),
-          })
-        );
+        const { url, init } = lastRequest();
+        expect(url).toBe('http://localhost:3031/data/dataset1/key1');
+        expect(init.method).toBe('DELETE');
+        expect(init.headers).toMatchObject({
+          'X-DID': testDid,
+          'X-Public-Key-ID': testPublicKeyId,
+          'X-Signature': expect.any(String),
+          'X-Timestamp': expect.any(String),
+        });
       });
     });
   });
@@ -200,9 +174,7 @@ describe('WillowClient', () => {
     it('should register a dataset with auth headers', async () => {
       const datasetRequest = {
         dataset_id: 'test-dataset',
-
         name: 'Test Dataset',
-        dataset_path: ['collections'],
         schema: {
           version: 1,
           fields: { name: { type: 'string' as const } },
@@ -214,10 +186,7 @@ describe('WillowClient', () => {
         readers: [testDid],
       };
 
-      const mockAxios = getMockAxios();
-      mockAxios.post.mockResolvedValueOnce({
-        data: { success: true, data: datasetRequest },
-      });
+      mockFetch.mockResolvedValueOnce(jsonResponse({ success: true, data: datasetRequest }));
 
       const result = await client.data.registerDataset(datasetRequest);
       expect(result).toEqual(datasetRequest);
@@ -227,13 +196,9 @@ describe('WillowClient', () => {
   describe('root hash operations', () => {
     it('should get verified root hash from blockchain', async () => {
       const rootHash = '0x1234567890abcdef';
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          success: true,
-          data: { root_hash: rootHash }
-        }),
-      } as Response);
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ success: true, data: { root_hash: rootHash } }),
+      );
 
       const result = await client.getRootHash();
       expect(result).toBe(rootHash);
@@ -244,13 +209,9 @@ describe('WillowClient', () => {
 
     it('should get local root hash from node state', async () => {
       const rootHash = '0xabcdef1234567890';
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          success: true,
-          data: { root_hash: rootHash }
-        }),
-      } as Response);
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ success: true, data: { root_hash: rootHash } }),
+      );
 
       const result = await client.getRootHashLocal();
       expect(result).toBe(rootHash);
@@ -284,10 +245,7 @@ describe('WillowClient', () => {
     });
 
     it('should handle missing root hash in response', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true, data: {} }),
-      } as Response);
+      mockFetch.mockResolvedValueOnce(jsonResponse({ success: true, data: {} }));
 
       await expect(client.getRootHash()).rejects.toThrow(
         'No root hash in response'
@@ -295,10 +253,7 @@ describe('WillowClient', () => {
     });
 
     it('should handle unsuccessful response', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: false, error: 'Some error' }),
-      } as Response);
+      mockFetch.mockResolvedValueOnce(jsonResponse({ success: false, error: 'Some error' }));
 
       await expect(client.getRootHash()).rejects.toThrow(
         'No root hash in response'

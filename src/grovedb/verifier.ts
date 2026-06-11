@@ -13,9 +13,9 @@ import {
   ProvedKeyValue,
   Element
 } from './types';
-import { bytesToHex, hexToBytes } from './bincode';
+import { bytesToHex } from './bincode';
 import { decodeGroveDBProof } from './decoder';
-import { executeMerkProofWithQuery, MerkExecutionResult } from './executor';
+import { executeMerkProofWithQuery } from './executor';
 import { deserializeElement, isTreeElement, hasRootKey } from './element';
 import { combineHash, valueHash, hashEquals, hashToHex } from './hash';
 
@@ -71,26 +71,60 @@ function verifyProof(
   }
 
   const results: GroveDBVerificationResult['results'] = [];
-  let limit = options.limit ?? null;
-  const deserializeElements = options.deserializeElements ?? true;
 
   const rootHash = verifyLayerProof(
     proof.proof.rootLayer,
-    proof.proof.proveOptions.decreaseLimitOnEmptySubQueryResult,
     [],
     results,
-    limit,
-    deserializeElements
+    options.limit ?? null,
+    options.deserializeElements ?? true
   );
 
   return { rootHash, results };
 }
 
 /**
+ * Deserialize an element, treating undecodable values as opaque bytes.
+ */
+function tryDeserializeElement(value: Uint8Array): Element | null {
+  try {
+    return deserializeElement(value);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Bind a surfaced leaf value to the proof that committed it.
+ *
+ * For KVValueHash / KVValueHashFeatureType nodes the node hash is
+ * kv_digest_to_kv_hash(key, valueHash) — the value bytes never enter the root.
+ * A server can therefore re-encode an honest leaf as one of these variants with
+ * a forged `value` but the real `valueHash`, producing a byte-identical root
+ * while surfacing the forged value. Re-derive valueHash(value) and require it to
+ * match. KV self-binds (its value enters kv_hash), and KVRefValueHash binds its
+ * value via combine_hash(valueHash, value_hash(value)) inside the node hash, so
+ * neither needs an extra check.
+ */
+function bindLeafValue(proved: ProvedKeyValue): void {
+  if (
+    proved.value &&
+    (proved.nodeType === 'KVValueHash' || proved.nodeType === 'KVValueHashFeatureType')
+  ) {
+    const computed = valueHash(proved.value);
+    if (!hashEquals(computed, proved.proof)) {
+      throw new GroveDBVerificationError(
+        `Leaf value does not hash to its committed valueHash: ` +
+        `expected ${hashToHex(proved.proof)}, got ${hashToHex(computed)}`
+      );
+    }
+  }
+}
+
+/**
  * Verify a layer proof recursively
  *
  * @param layerProof - The layer proof to verify
- * @param decreaseLimitOnEmpty - Whether to decrease limit on empty results
  * @param currentPath - Current path in the tree
  * @param results - Accumulator for proven values
  * @param limit - Maximum results (null for unlimited)
@@ -99,7 +133,6 @@ function verifyProof(
  */
 function verifyLayerProof(
   layerProof: LayerProof,
-  decreaseLimitOnEmpty: boolean,
   currentPath: Uint8Array[],
   results: GroveDBVerificationResult['results'],
   limit: number | null,
@@ -120,15 +153,7 @@ function verifyLayerProof(
 
     if (lowerLayer && proved.value) {
       // This is a subtree - verify the lower layer
-      let element: Element | null = null;
-      if (deserializeElements) {
-        try {
-          element = deserializeElement(proved.value);
-        } catch (e) {
-          // If deserialization fails, treat as opaque bytes
-          element = null;
-        }
-      }
+      const element = deserializeElements ? tryDeserializeElement(proved.value) : null;
 
       // Only recurse if element is a tree type with a root key
       if (element && isTreeElement(element) && hasRootKey(element)) {
@@ -137,7 +162,6 @@ function verifyLayerProof(
         // Recursively verify the lower layer
         const lowerHash = verifyLayerProof(
           lowerLayer,
-          decreaseLimitOnEmpty,
           newPath,
           results,
           limit !== null ? limit - results.length : null,
@@ -161,22 +185,13 @@ function verifyLayerProof(
         );
       }
     } else if (proved.value) {
-      // Leaf value - add to results
-      let element: Element | null = null;
-      if (deserializeElements) {
-        try {
-          element = deserializeElement(proved.value);
-        } catch (e) {
-          // If deserialization fails, treat as opaque bytes
-          element = null;
-        }
-      }
-
+      // Leaf value - bind the bytes to their committed valueHash, then add.
+      bindLeafValue(proved);
       results.push({
         path: currentPath,
         key: proved.key,
         value: proved.value,
-        element
+        element: deserializeElements ? tryDeserializeElement(proved.value) : null
       });
     }
   }
@@ -240,8 +255,9 @@ function quickVerifyLayer(layerProof: LayerProof): CryptoHash {
   const merkResult = executeMerkProofWithQuery(layerProof.merkProof, null, true);
 
   // Verify any lower layers
+  const provedByKey = new Map(merkResult.resultSet.map(r => [bytesToHex(r.key), r]));
   for (const [keyHex, lowerLayer] of layerProof.lowerLayers) {
-    const proved = merkResult.resultSet.find(r => bytesToHex(r.key) === keyHex);
+    const proved = provedByKey.get(keyHex);
     if (!proved || !proved.value) {
       throw new GroveDBVerificationError(
         `Lower layer key ${keyHex} not found in Merk proof`

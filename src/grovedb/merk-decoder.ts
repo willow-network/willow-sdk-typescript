@@ -64,7 +64,7 @@ export class MerkDecoder implements Iterable<MerkOp> {
       return null;
     }
 
-    const opCode = this.bytes[this.offset++];
+    const opCode = this.readU8('op code');
 
     switch (opCode) {
       // Push variants
@@ -134,7 +134,7 @@ export class MerkDecoder implements Iterable<MerkOp> {
    * Decode a KV node
    */
   private decodeKV(): MerkNode {
-    const keyLen = this.bytes[this.offset++];
+    const keyLen = this.readU8('key length');
     const key = this.readBytes(keyLen);
     const valueLen = this.readU16();
     const value = this.readBytes(valueLen);
@@ -145,7 +145,7 @@ export class MerkDecoder implements Iterable<MerkOp> {
    * Decode a KVValueHash node
    */
   private decodeKVValueHash(): MerkNode {
-    const keyLen = this.bytes[this.offset++];
+    const keyLen = this.readU8('key length');
     const key = this.readBytes(keyLen);
     const valueLen = this.readU16();
     const value = this.readBytes(valueLen);
@@ -157,7 +157,7 @@ export class MerkDecoder implements Iterable<MerkOp> {
    * Decode a KVDigest node
    */
   private decodeKVDigest(): MerkNode {
-    const keyLen = this.bytes[this.offset++];
+    const keyLen = this.readU8('key length');
     const key = this.readBytes(keyLen);
     const valueHash = this.readBytes(HASH_LENGTH);
     return { type: 'KVDigest', key, valueHash };
@@ -167,7 +167,7 @@ export class MerkDecoder implements Iterable<MerkOp> {
    * Decode a KVRefValueHash node
    */
   private decodeKVRefValueHash(): MerkNode {
-    const keyLen = this.bytes[this.offset++];
+    const keyLen = this.readU8('key length');
     const key = this.readBytes(keyLen);
     const valueLen = this.readU16();
     const value = this.readBytes(valueLen);
@@ -179,7 +179,7 @@ export class MerkDecoder implements Iterable<MerkOp> {
    * Decode a KVValueHashFeatureType node
    */
   private decodeKVValueHashFeatureType(): MerkNode {
-    const keyLen = this.bytes[this.offset++];
+    const keyLen = this.readU8('key length');
     const key = this.readBytes(keyLen);
     const valueLen = this.readU16();
     const value = this.readBytes(valueLen);
@@ -192,7 +192,7 @@ export class MerkDecoder implements Iterable<MerkOp> {
    * Decode TreeFeatureType
    */
   private decodeFeatureType(): TreeFeatureType {
-    const featureCode = this.bytes[this.offset++];
+    const featureCode = this.readU8('feature type');
 
     switch (featureCode) {
       case FEATURE_BASIC:
@@ -236,6 +236,16 @@ export class MerkDecoder implements Iterable<MerkOp> {
       default:
         throw new GroveDBVerificationError(`Unknown feature type: 0x${featureCode.toString(16)}`);
     }
+  }
+
+  /**
+   * Read a single byte
+   */
+  private readU8(context: string): number {
+    if (this.offset >= this.bytes.length) {
+      throw new GroveDBVerificationError(`Unexpected end of data reading ${context}`);
+    }
+    return this.bytes[this.offset++];
   }
 
   /**

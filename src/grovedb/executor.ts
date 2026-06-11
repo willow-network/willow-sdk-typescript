@@ -46,94 +46,61 @@ export function executeOps(
     return tree;
   }
 
+  // Push a node, enforcing key ordering: ascending for normal pushes,
+  // descending once the proof switches to inverted pushes.
+  function pushNode(node: MerkNode, inverted: boolean): void {
+    const key = getNodeKey(node);
+    if (key && lastKey && lastKeyInverted === inverted) {
+      const cmp = compareBytes(key, lastKey);
+      if (inverted ? cmp >= 0 : cmp <= 0) {
+        throw new GroveDBVerificationError(
+          inverted ? 'Incorrect key ordering inverted' : 'Incorrect key ordering'
+        );
+      }
+    }
+    if (key) {
+      lastKey = key;
+      lastKeyInverted = inverted;
+    }
+
+    if (visitNode) {
+      visitNode(node);
+    }
+
+    stack.push(new Tree(node));
+  }
+
+  // Pop two nodes and attach one as a child of the other. The four tree ops
+  // differ only in pop order and which side the child lands on.
+  function attachChild(parentFirst: boolean, left: boolean): void {
+    const first = pop();
+    const second = pop();
+    const parent = parentFirst ? first : second;
+    const child = parentFirst ? second : first;
+    parent.attach(left, collapse ? child.intoHash() : child);
+    stack.push(parent);
+  }
+
   for (const op of ops) {
     switch (op.type) {
-      case 'Push': {
-        // Verify key ordering (ascending)
-        const key = getNodeKey(op.node);
-        if (key && lastKey && !lastKeyInverted) {
-          if (compareBytes(key, lastKey) <= 0) {
-            throw new GroveDBVerificationError('Incorrect key ordering');
-          }
-        }
-        if (key) {
-          lastKey = key;
-          lastKeyInverted = false;
-        }
-
-        if (visitNode) {
-          visitNode(op.node);
-        }
-
-        stack.push(new Tree(op.node));
+      case 'Push':
+        pushNode(op.node, false);
         break;
-      }
-
-      case 'PushInverted': {
-        // Verify key ordering (descending for inverted)
-        const key = getNodeKey(op.node);
-        if (key && lastKey && lastKeyInverted) {
-          if (compareBytes(key, lastKey) >= 0) {
-            throw new GroveDBVerificationError('Incorrect key ordering inverted');
-          }
-        }
-        if (key) {
-          lastKey = key;
-          lastKeyInverted = true;
-        }
-
-        if (visitNode) {
-          visitNode(op.node);
-        }
-
-        stack.push(new Tree(op.node));
+      case 'PushInverted':
+        pushNode(op.node, true);
         break;
-      }
-
-      case 'Parent': {
-        // Pop parent and child, attach child as LEFT of parent
-        const parent = pop();
-        const child = pop();
-        // Capture height before potential collapse
-        const childHeight = child.height;
-        const childToAttach = collapse ? child.intoHash() : child;
-        parent.attachWithHeight(true, childToAttach, childHeight);
-        stack.push(parent);
+      case 'Parent':
+        attachChild(true, true);
         break;
-      }
-
-      case 'Child': {
-        // Pop child and parent, attach child as RIGHT of parent
-        const child = pop();
-        const parent = pop();
-        const childHeight = child.height;
-        const childToAttach = collapse ? child.intoHash() : child;
-        parent.attachWithHeight(false, childToAttach, childHeight);
-        stack.push(parent);
+      case 'Child':
+        attachChild(false, false);
         break;
-      }
-
-      case 'ParentInverted': {
-        // Pop parent and child, attach child as RIGHT of parent
-        const parent = pop();
-        const child = pop();
-        const childHeight = child.height;
-        const childToAttach = collapse ? child.intoHash() : child;
-        parent.attachWithHeight(false, childToAttach, childHeight);
-        stack.push(parent);
+      case 'ParentInverted':
+        attachChild(true, false);
         break;
-      }
-
-      case 'ChildInverted': {
-        // Pop child and parent, attach child as LEFT of parent
-        const child = pop();
-        const parent = pop();
-        const childHeight = child.height;
-        const childToAttach = collapse ? child.intoHash() : child;
-        parent.attachWithHeight(true, childToAttach, childHeight);
-        stack.push(parent);
+      case 'ChildInverted':
+        attachChild(false, true);
         break;
-      }
     }
   }
 
@@ -175,13 +142,14 @@ export function executeMerkProof(
  *
  * @param proofBytes - The Merk proof bytes
  * @param limit - Optional limit on results
- * @param leftToRight - Direction of traversal
+ * @param _leftToRight - Direction of traversal (accepted for API
+ *   compatibility; nodes are visited in proof order regardless)
  * @returns Execution result with root hash and matched values
  */
 export function executeMerkProofWithQuery(
   proofBytes: Uint8Array,
   limit: number | null = null,
-  leftToRight: boolean = true
+  _leftToRight: boolean = true
 ): MerkExecutionResult {
   const resultSet: ProvedKeyValue[] = [];
   let currentLimit = limit;
@@ -198,7 +166,8 @@ export function executeMerkProofWithQuery(
         resultSet.push({
           key: node.key,
           value: node.value,
-          proof: valueHash(node.value)
+          proof: valueHash(node.value),
+          nodeType: node.type
         });
         if (currentLimit !== null) currentLimit--;
         break;
@@ -208,7 +177,8 @@ export function executeMerkProofWithQuery(
         resultSet.push({
           key: node.key,
           value: node.value,
-          proof: node.valueHash
+          proof: node.valueHash,
+          nodeType: node.type
         });
         if (currentLimit !== null) currentLimit--;
         break;
@@ -217,17 +187,20 @@ export function executeMerkProofWithQuery(
         resultSet.push({
           key: node.key,
           value: node.value,
-          proof: node.valueHash
+          proof: node.valueHash,
+          nodeType: node.type
         });
         if (currentLimit !== null) currentLimit--;
         break;
       }
       case 'KVDigest': {
-        // Digest has no value, just proof of existence
+        // Digest has no value, just proof of existence. Intentionally does not
+        // consume the limit — only nodes that contribute a value count toward it.
         resultSet.push({
           key: node.key,
           value: null,
-          proof: node.valueHash
+          proof: node.valueHash,
+          nodeType: node.type
         });
         break;
       }

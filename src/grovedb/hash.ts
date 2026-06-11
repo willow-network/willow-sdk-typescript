@@ -12,6 +12,7 @@
 
 import { blake3 } from '@noble/hashes/blake3';
 import { encodeVarint } from './varint';
+import { bytesToHex, hexToBytes } from './bincode';
 import { CryptoHash, HASH_LENGTH, NULL_HASH, GroveDBVerificationError } from './types';
 
 /**
@@ -115,20 +116,18 @@ export function isNullHash(h: CryptoHash): boolean {
  * Convert hash to hex string
  */
 export function hashToHex(h: CryptoHash): string {
-  return Array.from(h, byte => byte.toString(16).padStart(2, '0')).join('');
+  return bytesToHex(h);
 }
 
 /**
  * Convert hex string to hash
  */
 export function hexToHash(hex: string): CryptoHash {
-  const clean = hex.replace(/^0x/, '');
-  if (clean.length !== HASH_LENGTH * 2) {
-    throw new GroveDBVerificationError(`Invalid hash hex length: ${clean.length}, expected ${HASH_LENGTH * 2}`);
-  }
-  const bytes = new Uint8Array(HASH_LENGTH);
-  for (let i = 0; i < HASH_LENGTH; i++) {
-    bytes[i] = parseInt(clean.substr(i * 2, 2), 16);
+  const bytes = hexToBytes(hex);
+  if (bytes.length !== HASH_LENGTH) {
+    throw new GroveDBVerificationError(
+      `Invalid hash hex length: ${bytes.length} bytes, expected ${HASH_LENGTH}`
+    );
   }
   return bytes;
 }

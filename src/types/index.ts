@@ -1,6 +1,41 @@
 // Core types for Willow SDK
 
 import { ProofVerificationOptions } from '../proof';
+import type { WillowLogger } from '../internal/logger';
+import type { TrustThreshold } from '../light-client/types';
+import type { WebSocketConstructor } from '../subscriptions';
+
+/**
+ * Light-client settings used when the SDK auto-creates a light client for
+ * proof verification (`get`/`query` root-hash checks).
+ *
+ * Every field is optional. The fallbacks are DEVELOPMENT defaults sized for
+ * a single-node local devnet — pin real values for any deployment you care
+ * about:
+ * - `chainId` defaults to `"willow-chain"`.
+ * - `validatorEndpoints` defaults to `[consensusRpcUrl]` (one endpoint).
+ * - `minValidatorsForConsensus` defaults to 1 (trust-on-first-use against a
+ *   single endpoint).
+ */
+export interface WillowLightClientOptions {
+  /** Chain ID headers must carry. Development default: `"willow-chain"`. */
+  chainId?: string;
+  /**
+   * CometBFT RPC endpoints used as header/app-hash sources. Development
+   * default: the single configured `consensusRpcUrl`.
+   */
+  validatorEndpoints?: string[];
+  /** Minimum endpoints that must agree on a header. Development default: 1. */
+  minValidatorsForConsensus?: number;
+  /** Voting-power fraction required to trust a header. Default: 2/3. */
+  trustThreshold?: TrustThreshold;
+  /** How long a trusted header stays usable, in seconds. Default: 86400. */
+  trustingPeriodSecs?: number;
+  /** Max allowed clock drift when validating header times. Default: 30. */
+  maxClockDriftSecs?: number;
+  /** Per-request timeout in seconds. Default: 30. */
+  requestTimeoutSecs?: number;
+}
 
 export interface WillowConfig {
   apiUrl: string;
@@ -16,7 +51,15 @@ export interface WillowConfig {
    * - Debugging: isolate which indexer is serving a request.
    */
   indexerUrl?: string;
-  /** Optional CometBFT RPC URL for consensus transactions. Derived from apiUrl if omitted. */
+  /**
+   * CometBFT RPC URL for consensus reads (transaction status, light-client
+   * headers). Transactions are submitted via the API server's `/tx/submit`
+   * and do not need this. When omitted, the SDK derives it from `apiUrl`
+   * only for localhost/127.0.0.1 devnet setups (API port 3031..3040 →
+   * RPC port 26657..27557); for any other host it stays unset and
+   * operations that need CometBFT RPC throw with code
+   * `CONSENSUS_RPC_URL_REQUIRED`.
+   */
   consensusRpcUrl?: string;
   did?: string;
   privateKey?: string;
@@ -31,6 +74,24 @@ export interface WillowConfig {
    */
   apiKey?: string;
   proofVerificationOptions?: ProofVerificationOptions;
+  /**
+   * Logger for SDK diagnostics (retries, fallback decisions, verification
+   * mismatches). Defaults to `silentLogger` — the SDK never writes to the
+   * console unless you pass `consoleLogger` or your own implementation here.
+   */
+  logger?: WillowLogger;
+  /**
+   * Settings for the light client the SDK auto-creates during proof
+   * verification. When omitted, development defaults apply (single-node
+   * devnet assumptions — see {@link WillowLightClientOptions}).
+   */
+  lightClient?: WillowLightClientOptions;
+  /**
+   * WebSocket constructor for GraphQL subscriptions. Defaults to
+   * `globalThis.WebSocket` (browsers, Node 22+). On older Node versions
+   * pass an implementation such as the `ws` package's `WebSocket` class.
+   */
+  webSocket?: WebSocketConstructor;
 }
 
 /**
@@ -115,15 +176,19 @@ export interface SchemaDefinition {
   required_fields?: string[];
 }
 
-export interface RegisterDatasetRequest {
+export interface RegisterSubgroveRequest {
   dataset_id: string;
   name: string;
-  dataset_path: string[];
   schema: SchemaDefinition;
   owner_did: string;
+  /** DIDs with write permission. Maps to the subgrove mode's `writers`. */
   writers: string[];
+  /** DIDs with free read permission. Maps to the subgrove mode's `free_readers`. */
   readers: string[];
 }
+
+/** @deprecated Use {@link RegisterSubgroveRequest} — "subgrove" is the on-chain term. */
+export type RegisterDatasetRequest = RegisterSubgroveRequest;
 
 export interface DatasetRegistration {
   dataset_id: string;

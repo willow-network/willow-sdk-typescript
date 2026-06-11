@@ -98,7 +98,7 @@ describe('TS GroveDB verifier ↔ Rust prover fixture round-trip', () => {
       const computed = await verifyItemProof(
         f.proof_hex,
         f.key,
-        null,
+        undefined,
         f.path,
       );
       expect(computed).toBe(f.expected_root_hex);
@@ -106,13 +106,13 @@ describe('TS GroveDB verifier ↔ Rust prover fixture round-trip', () => {
 
     it('high-level verifyItemProof rejects wrong key', async () => {
       await expect(
-        verifyItemProof(f.proof_hex, 'some-other-key', null, f.path),
+        verifyItemProof(f.proof_hex, 'some-other-key', undefined, f.path),
       ).rejects.toThrow(/does not contain key/);
     });
 
     it('high-level verifyItemProof rejects wrong path', async () => {
       await expect(
-        verifyItemProof(f.proof_hex, f.key, null, ['wrong', 'path']),
+        verifyItemProof(f.proof_hex, f.key, undefined, ['wrong', 'path']),
       ).rejects.toThrow(/does not contain key/);
     });
   });
@@ -178,7 +178,7 @@ describe('TS GroveDB verifier ↔ Rust prover fixture round-trip', () => {
       const computed = await verifyItemProof(
         f.proof_hex,
         f.key,
-        null,
+        undefined,
         f.path,
       );
       expect(computed).toBe(f.expected_root_hex);

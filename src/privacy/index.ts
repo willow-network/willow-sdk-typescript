@@ -6,14 +6,12 @@
  * key grants and their cryptographic proofs.
  */
 
-import axios, { AxiosInstance } from "axios";
 import { ApiResponse, WillowError } from "../types";
 import { WillowAuth, signEd25519 } from "../auth";
-import {
-  BroadcastResult,
-  stringToBase64,
-  createBroadcastResult,
-} from "../consensus";
+import { BroadcastResult } from "../consensus";
+import { Transaction, createTransactionWrapper } from "../consensus/types";
+import { HttpClient, HttpError } from "../internal/http";
+import { submitTxToApi } from "../internal/tx";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -90,41 +88,10 @@ export interface EncryptedKeyGrant {
 export interface KeyGrantProofResponse {
   /** Hex-encoded GroveDB Merkle proof. */
   proof: string;
-  /** Application ID. */
   /** Subgrove ID. */
   subgrove_id: string;
   /** DID of the grantee. */
   grantee_did: string;
-}
-
-// ── Internal transaction field types ──────────────────────────────────
-
-interface GrantSubgroveKeyTxFields {
-  subgrove_id: string;
-  encrypted_key_grant: EncryptedKeyGrant;
-  sender_did: string;
-  signature: string;
-  public_key_id: string;
-  nonce: number;
-}
-
-interface RevokeSubgroveKeyTxFields {
-  subgrove_id: string;
-  revokee_did: string;
-  sender_did: string;
-  signature: string;
-  public_key_id: string;
-  nonce: number;
-}
-
-interface RotateSubgroveKeyTxFields {
-  subgrove_id: string;
-  new_epoch: number;
-  new_grants: EncryptedKeyGrant[];
-  sender_did: string;
-  signature: string;
-  public_key_id: string;
-  nonce: number;
 }
 
 // ── Client ────────────────────────────────────────────────────────────
@@ -134,7 +101,7 @@ interface RotateSubgroveKeyTxFields {
  *
  * Read operations (get/list/proof) go through the REST API using auth headers.
  * Write operations (grant/revoke/rotate) build signed transactions and
- * broadcast them to CometBFT via the consensus JSON-RPC endpoint.
+ * submit them through the API server's `/tx/submit` endpoint.
  *
  * @example
  * ```typescript
@@ -160,11 +127,10 @@ interface RotateSubgroveKeyTxFields {
  * ```
  */
 export class PrivacyOperations {
-  private api: AxiosInstance;
+  private api: HttpClient;
   private auth: WillowAuth;
   private privateKey: string;
   private publicKeyId: string;
-  private consensusRpcUrl: string;
   private apiUrl: string;
 
   /**
@@ -174,26 +140,18 @@ export class PrivacyOperations {
    * @param auth - WillowAuth instance with identity set (used for REST auth headers)
    * @param privateKey - Ed25519 private key hex (used for signing consensus transactions)
    * @param publicKeyId - Public key ID for the DID (e.g. "did:willow:abc#key-1")
-   * @param consensusRpcUrl - CometBFT JSON-RPC URL. If omitted, derived from
-   *   apiUrl by replacing port 3031 with 26657.
    */
   constructor(
     apiUrl: string,
     auth: WillowAuth,
     privateKey: string,
     publicKeyId: string,
-    consensusRpcUrl?: string,
   ) {
     this.apiUrl = apiUrl.replace(/\/+$/, "");
-    this.api = axios.create({
-      baseURL: this.apiUrl,
-      headers: { "Content-Type": "application/json" },
-    });
+    this.api = new HttpClient({ baseURL: this.apiUrl });
     this.auth = auth;
     this.privateKey = privateKey;
     this.publicKeyId = publicKeyId;
-    this.consensusRpcUrl =
-      consensusRpcUrl || this.apiUrl.replace(":3031", ":26657");
   }
 
   // ── Read operations (REST API) ─────────────────────────────────────
@@ -204,7 +162,6 @@ export class PrivacyOperations {
    * Calls GET /key-grants/:subgrove_id/:did where the DID is
    * the caller's own DID from the auth instance.
    *
-   * 
    * @param subgroveId - Subgrove ID
    * @returns The encrypted key grant for the caller's DID
    * @throws {WillowError} if no identity is set or the grant is not found
@@ -215,19 +172,21 @@ export class PrivacyOperations {
     const did = this.requireDid();
     const path = `/key-grants/${encodeURIComponent(subgroveId)}/${encodeURIComponent(did)}`;
     const headers = this.auth.getAuthHeaders("GET", path);
-    const response = await this.api.get<ApiResponse<EncryptedKeyGrant>>(path, {
-      headers,
-    });
+    const response = await this.api
+      .get<ApiResponse<EncryptedKeyGrant>>(path, { headers })
+      .catch((err) => {
+        throw toWillowError(err, "Key grant not found", "KEY_GRANT_NOT_FOUND");
+      });
 
-    if (!response.data.success) {
+    if (!response.success) {
       throw new WillowError(
-        response.data.error || "Key grant not found",
+        response.error || "Key grant not found",
         "KEY_GRANT_NOT_FOUND",
         404,
       );
     }
 
-    return response.data.data!;
+    return response.data!;
   }
 
   /**
@@ -236,7 +195,6 @@ export class PrivacyOperations {
    * Calls GET /key-grants/:subgrove_id.
    * Requires the caller to be the subgrove owner or admin.
    *
-   * 
    * @param subgroveId - Subgrove ID
    * @returns Array of grantee DIDs
    */
@@ -245,18 +203,20 @@ export class PrivacyOperations {
   ): Promise<string[]> {
     const path = `/key-grants/${encodeURIComponent(subgroveId)}`;
     const headers = this.auth.getAuthHeaders("GET", path);
-    const response = await this.api.get<ApiResponse<string[]>>(path, {
-      headers,
-    });
+    const response = await this.api
+      .get<ApiResponse<string[]>>(path, { headers })
+      .catch((err) => {
+        throw toWillowError(err, "Failed to list key grantees", "LIST_GRANTEES_FAILED");
+      });
 
-    if (!response.data.success) {
+    if (!response.success) {
       throw new WillowError(
-        response.data.error || "Failed to list key grantees",
+        response.error || "Failed to list key grantees",
         "LIST_GRANTEES_FAILED",
       );
     }
 
-    return response.data.data!;
+    return response.data!;
   }
 
   /**
@@ -265,7 +225,6 @@ export class PrivacyOperations {
    * Calls GET /proof/key-grant/:subgrove_id/:did.
    * This endpoint is public (proofs are non-sensitive).
    *
-   * 
    * @param subgroveId - Subgrove ID
    * @param did - DID of the grantee
    * @returns Proof response with hex-encoded Merkle proof
@@ -275,19 +234,21 @@ export class PrivacyOperations {
     did: string,
   ): Promise<KeyGrantProofResponse> {
     const path = `/proof/key-grant/${encodeURIComponent(subgroveId)}/${encodeURIComponent(did)}`;
-    const response = await this.api.get<ApiResponse<KeyGrantProofResponse>>(
-      path,
-    );
+    const response = await this.api
+      .get<ApiResponse<KeyGrantProofResponse>>(path)
+      .catch((err) => {
+        throw toWillowError(err, "Failed to get key grant proof", "KEY_GRANT_PROOF_FAILED");
+      });
 
-    if (!response.data.success) {
+    if (!response.success) {
       throw new WillowError(
-        response.data.error || "Failed to get key grant proof",
+        response.error || "Failed to get key grant proof",
         "KEY_GRANT_PROOF_FAILED",
         404,
       );
     }
 
-    return response.data.data!;
+    return response.data!;
   }
 
   // ── Write operations (CometBFT broadcast) ──────────────────────────
@@ -298,7 +259,6 @@ export class PrivacyOperations {
    * Builds a GrantSubgroveKey transaction, signs it with Ed25519, and
    * broadcasts to the CometBFT consensus layer.
    *
-   * 
    * @param subgroveId - Subgrove ID
    * @param grant - The encrypted key grant for the grantee
    * @returns Broadcast result with transaction hash
@@ -315,16 +275,14 @@ export class PrivacyOperations {
     const message = `GrantSubgroveKey:${subgroveId}:${grant.grantee_did}:${did}:${nonce}`;
     const signature = signEd25519(message, this.privateKey);
 
-    const tx: GrantSubgroveKeyTxFields = {
-      subgrove_id: subgroveId,
-      encrypted_key_grant: grant,
-      sender_did: did,
+    return this.broadcastTransaction("GrantSubgroveKey", {
+      subgroveId,
+      encryptedKeyGrant: grant,
+      senderDid: did,
       signature,
-      public_key_id: this.publicKeyId,
+      publicKeyId: this.publicKeyId,
       nonce,
-    };
-
-    return this.broadcastTransaction("GrantSubgroveKey", tx);
+    });
   }
 
   /**
@@ -333,7 +291,6 @@ export class PrivacyOperations {
    * Builds a RevokeSubgroveKey transaction, signs it with Ed25519, and
    * broadcasts to the CometBFT consensus layer.
    *
-   * 
    * @param subgroveId - Subgrove ID
    * @param revokeDid - DID to revoke access from
    * @returns Broadcast result with transaction hash
@@ -350,16 +307,14 @@ export class PrivacyOperations {
     const message = `RevokeSubgroveKey:${subgroveId}:${revokeDid}:${did}:${nonce}`;
     const signature = signEd25519(message, this.privateKey);
 
-    const tx: RevokeSubgroveKeyTxFields = {
-      subgrove_id: subgroveId,
-      revokee_did: revokeDid,
-      sender_did: did,
+    return this.broadcastTransaction("RevokeSubgroveKey", {
+      subgroveId,
+      revokeeDid: revokeDid,
+      senderDid: did,
       signature,
-      public_key_id: this.publicKeyId,
+      publicKeyId: this.publicKeyId,
       nonce,
-    };
-
-    return this.broadcastTransaction("RevokeSubgroveKey", tx);
+    });
   }
 
   /**
@@ -372,7 +327,6 @@ export class PrivacyOperations {
    * exactly current_epoch + 1. All existing grants are deleted and
    * replaced with the provided new grants.
    *
-   * 
    * @param subgroveId - Subgrove ID
    * @param newEpoch - New key epoch (must be current_epoch + 1)
    * @param newGrants - New encrypted key grants for all authorized DIDs
@@ -391,17 +345,15 @@ export class PrivacyOperations {
     const message = `RotateSubgroveKey:${subgroveId}:${newEpoch}:${did}:${nonce}`;
     const signature = signEd25519(message, this.privateKey);
 
-    const tx: RotateSubgroveKeyTxFields = {
-      subgrove_id: subgroveId,
-      new_epoch: newEpoch,
-      new_grants: newGrants,
-      sender_did: did,
+    return this.broadcastTransaction("RotateSubgroveKey", {
+      subgroveId,
+      newEpoch,
+      newGrants,
+      senderDid: did,
       signature,
-      public_key_id: this.publicKeyId,
+      publicKeyId: this.publicKeyId,
       nonce,
-    };
-
-    return this.broadcastTransaction("RotateSubgroveKey", tx);
+    });
   }
 
   // ── Private helpers ─────────────────────────────────────────────────
@@ -426,78 +378,90 @@ export class PrivacyOperations {
    * which could cause transaction replay or rejection.
    */
   private async getNextNonce(did: string): Promise<number> {
-    const response = await this.api.get<{
-      success: boolean;
-      data?: { nonce: number };
-      error?: string;
-    }>(`/account/${encodeURIComponent(did)}/nonce`);
+    const response = await this.api
+      .get<{
+        success: boolean;
+        data?: { nonce: number };
+        error?: string;
+      }>(`/account/${encodeURIComponent(did)}/nonce`)
+      .catch((err) => {
+        throw toWillowError(
+          err,
+          `Failed to fetch nonce for ${did}`,
+          "NONCE_FETCH_FAILED",
+        );
+      });
 
-    if (response.data.success && response.data.data !== undefined) {
-      return response.data.data.nonce + 1;
+    if (response.success && response.data !== undefined) {
+      return response.data.nonce + 1;
     }
 
     throw new WillowError(
-      `Failed to fetch nonce for ${did}: ${response.data.error || "unknown error"}`,
+      `Failed to fetch nonce for ${did}: ${response.error || "unknown error"}`,
       "NONCE_FETCH_FAILED",
     );
   }
 
   /**
-   * Broadcast a wrapped transaction to CometBFT via JSON-RPC broadcast_tx_sync.
+   * Submit a wrapped transaction through the API server's `/tx/submit`.
+   *
+   * Encoding (snake_case keys, hex signature -> byte array) is owned by
+   * `createTransactionWrapper`, the single place the SDK shapes the wire
+   * format the Rust `Transaction` enum deserializes.
    */
   private async broadcastTransaction(
     txType: string,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    transaction: any,
+    transaction: Transaction,
   ): Promise<BroadcastResult> {
-    const txWrapper = { [txType]: transaction };
-    const txJson = JSON.stringify(txWrapper);
-    const txBase64 = stringToBase64(txJson);
+    const txWrapper = createTransactionWrapper(txType, transaction);
 
-    const rpcRequest = {
-      jsonrpc: "2.0",
-      id: 1,
-      method: "broadcast_tx_sync",
-      params: { tx: txBase64 },
-    };
-
+    let result: BroadcastResult;
     try {
-      const response = await fetch(this.consensusRpcUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(rpcRequest),
-        signal: AbortSignal.timeout(30_000),
+      result = await submitTxToApi(this.apiUrl, txWrapper, {
+        headers: this.auth.getAuthHeaders("POST", "/tx/submit"),
       });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new WillowError(
-          `Consensus RPC error: HTTP ${response.status}: ${errorText}`,
-          "BROADCAST_FAILED",
-        );
-      }
-
-      const data = (await response.json()) as {
-        error?: { message?: string };
-        result?: Record<string, unknown>;
-      };
-
-      if (data.error) {
-        throw new WillowError(
-          `Consensus RPC error: ${data.error.message || JSON.stringify(data.error)}`,
-          "BROADCAST_FAILED",
-        );
-      }
-
-      return createBroadcastResult({ result: data.result || {} });
     } catch (error) {
-      if (error instanceof WillowError) {
-        throw error;
-      }
       throw new WillowError(
         `Failed to broadcast transaction: ${error instanceof Error ? error.message : String(error)}`,
         "BROADCAST_FAILED",
       );
     }
+
+    if (!result.success) {
+      throw new WillowError(
+        `Transaction rejected: ${result.rawLog || result.errorMessage || "unknown error"}`,
+        "BROADCAST_FAILED",
+      );
+    }
+
+    return result;
   }
+}
+
+/**
+ * Translate an error thrown by {@link HttpClient} into the typed
+ * {@link WillowError} a read method documents. `HttpClient.get` throws
+ * `HttpError` on any non-2xx (the post-fetch behaviour), so a 404/500 must be
+ * mapped here rather than surfacing as an untyped transport error. Re-thrown
+ * WillowErrors pass through unchanged.
+ */
+function toWillowError(
+  err: unknown,
+  fallbackMessage: string,
+  code: string,
+): WillowError {
+  if (err instanceof WillowError) return err;
+  if (err instanceof HttpError) {
+    // Report the real HTTP status (so a 404 stays a 404 and a 500 isn't
+    // masked) while keeping the method's documented WillowError code.
+    return new WillowError(
+      `${fallbackMessage}: ${err.apiError ?? err.message}`,
+      code,
+      err.status,
+    );
+  }
+  return new WillowError(
+    `${fallbackMessage}: ${err instanceof Error ? err.message : String(err)}`,
+    code,
+  );
 }

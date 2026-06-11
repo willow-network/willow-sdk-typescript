@@ -10,7 +10,8 @@
  *
  * Prerequisites:
  * - npm install @willow-network/sdk
- * - Run a local Willow node: ./scripts/start_node.sh
+ * - A local Willow node with its API server on port 3031 — see the docs
+ *   for node setup: https://willow.tech
  *
  * Run with: npx ts-node examples/quickstart.ts
  */
@@ -24,12 +25,20 @@ async function main() {
   console.log('Willow SDK - Quickstart Example');
   console.log('================================\n');
 
-  // 1. Create client
+  // 1. Create client and check the node is reachable
   console.log('1. Creating client...');
-  const client = new WillowClient({
-    apiUrl: 'http://localhost:3031',
-  });
-  console.log('   Connected to Willow node\n');
+  const apiUrl = 'http://localhost:3031';
+  const client = new WillowClient({ apiUrl });
+  try {
+    const rootHash = await client.getRootHashLocal();
+    console.log(`   Connected to Willow node at ${apiUrl}`);
+    console.log(`   Current root hash: ${rootHash.substring(0, 16)}...\n`);
+  } catch (error) {
+    console.error(`   Could not reach a Willow node at ${apiUrl}.`);
+    console.error('   Start a local node first — see https://willow.tech');
+    console.error(`   (${error})`);
+    process.exit(1);
+  }
 
   // 2. Generate a new DID
   console.log('2. Generating Ed25519 key pair...');

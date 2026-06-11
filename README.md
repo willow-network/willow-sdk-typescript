@@ -1,19 +1,27 @@
 # Willow TypeScript SDK
 
+[![CI](https://github.com/willow-network/willow-sdk-typescript/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/willow-network/willow-sdk-typescript/actions/workflows/ci.yml)
+
 TypeScript/JavaScript SDK for interacting with the Willow decentralized data infrastructure protocol. Provides cryptographic proof verification for all data operations using a pure TypeScript implementation of GroveDB verification.
 
 ## Features
 
-- **Secure by Default**: All data operations automatically verify cryptographic proofs
+- **Secure by Default**: All data operations automatically verify cryptographic proofs, and the returned documents are bound to the proof — a valid proof paired with unrelated data is rejected
 - **Full Local Verification**: Pure TypeScript GroveDB proof verification — BLAKE3 hashing, Merk proof parser, bincode decoder, full layered verification. Runs in Node and the browser without WASM.
 - **DID Authentication**: Ed25519 and secp256k1 (Ethereum-compatible) signature support
-- **Light Client**: Optional CometBFT light client for trustless header verification
+- **Light Client (experimental)**: CometBFT light-client scaffolding. The root-hash path currently trusts the configured RPC endpoint(s); header-signature verification is not wired in yet — see [Light Client](#light-client-experimental).
 - **GKR Proof Verification**: Server-side verification via the `/verify-gkr-proof` endpoint. (A pure-Rust verifier exists and compiles to `wasm32`; binding it into this SDK is on the roadmap.)
 - **File Storage**: Upload, download, list, and delete files with chunk Merkle verification (browser-safe; uses `Uint8Array` and `@noble/hashes`/`@noble/ciphers`)
 - **File Encryption**: XChaCha20-Poly1305 encryption/decryption for private files
-- **Collection Helpers**: Convenient API for working with subgrove/dataset pairs
+- **Collection Helpers**: Convenient API for working with a single subgrove
+- **Silent by Default**: No console output unless you opt in via the injectable logger
 
 ## Installation
+
+<!-- REMOVE-ON-PUBLISH: delete the pre-publish git-install note below once @willow-network/sdk is live on npm. Paired with the CHANGELOG [0.1.0] - Unreleased marker. -->
+> **Not yet published to npm.** Until the first release lands, install from git:
+> `npm install github:willow-network/willow-sdk-typescript`
+<!-- /REMOVE-ON-PUBLISH -->
 
 ```bash
 npm install @willow-network/sdk
@@ -23,6 +31,8 @@ yarn add @willow-network/sdk
 pnpm add @willow-network/sdk
 ```
 
+Requires Node.js >= 18 (the SDK uses the global `fetch`). In the browser it runs without polyfills.
+
 ## Transaction submission
 
 Transactions submitted through this SDK go to the API server's
@@ -30,8 +40,10 @@ Transactions submitted through this SDK go to the API server's
 transaction, bincode-encodes it (the chain's on-the-wire format), and
 forwards to CometBFT's `broadcast_tx_sync`. `apiUrl` is therefore
 **required** whenever you submit a tx; `consensusRpcUrl` is only used
-for read-only RPC queries (status, block, validators) and may be
-omitted or pointed at the same endpoint.
+for read-only RPC queries (status, block, validators). For localhost
+devnets it is derived from `apiUrl` automatically; for any other host,
+set it explicitly — operations that need CometBFT RPC throw with code
+`CONSENSUS_RPC_URL_REQUIRED` when it is missing.
 
 ## Quick Start
 
@@ -54,7 +66,7 @@ const client = new WillowClient({
 await client.registerDid(didDocument);
 await client.init();
 
-// 4. Store data
+// 4. Store data (requires the 'users' subgrove to exist — see below)
 await client.store('users', 'alice', {
   name: 'Alice',
   score: 100,
@@ -65,12 +77,47 @@ const data = await client.get('users', 'alice');
 console.log(data);
 ```
 
+> **Prerequisite:** `client.store()` writes into a *subgrove* that must already
+> be registered on-chain and funded — step 4 fails otherwise. See
+> [Register Subgrove](#register-subgrove) and `examples/app_registration.ts`
+> for registering one, or use a devnet with pre-registered subgroves.
+> Registration itself costs tokens, so the signing DID needs a funded balance.
+
 For ad-hoc identity (no `config.did` baked in) just call
 `client.auth.setIdentity(did, privateKey, publicKeyId)` directly.
 
+## Configuration
+
+`WillowConfig` options accepted by `new WillowClient({...})`:
+
+| Option | Description |
+|--------|-------------|
+| `apiUrl` | **Required.** Willow API server URL (e.g. `http://localhost:3031`) |
+| `consensusRpcUrl` | CometBFT RPC URL for consensus reads. Auto-derived only for localhost devnets; required otherwise (see [Transaction submission](#transaction-submission)) |
+| `indexerUrl` | Pin queries to a specific indexer, skipping discovery |
+| `did`, `privateKey` | Identity pre-seeded for `client.init()` |
+| `apiKey` | Managed-tier API key (`wk_…`), sent as `X-API-Key` on every request |
+| `proofVerificationOptions` | Per-client proof verification options, e.g. `{ expectedRootHash }` (see [Proof Verification API](#proof-verification-api)) |
+| `logger` | SDK diagnostics sink. Defaults to `silentLogger` (no console output); pass `consoleLogger` or your own `WillowLogger` |
+| `lightClient` | Overrides for the auto-created light client (`chainId`, `validatorEndpoints`, `minValidatorsForConsensus`, …). The fallbacks are single-node devnet defaults |
+| `webSocket` | WebSocket constructor for GraphQL subscriptions. Defaults to `globalThis.WebSocket` (browsers, Node >= 22); on older Node pass the `ws` package's `WebSocket` class |
+
+```typescript
+import { WillowClient, consoleLogger } from '@willow-network/sdk';
+import WebSocket from 'ws'; // only needed on Node < 22 for subscriptions
+
+const client = new WillowClient({
+  apiUrl: 'https://api.willow.tech',
+  consensusRpcUrl: 'https://your-node.example.com:26657',
+  apiKey: 'wk_...',
+  logger: consoleLogger,
+  webSocket: WebSocket,
+});
+```
+
 ## Secure by Default: Automatic Proof Verification
 
-All data operations automatically verify cryptographic proofs against the consensus-verified root hash:
+All data operations automatically verify cryptographic proofs against the consensus-verified root hash, and the documents returned to you are bound to the proof — a response pairing a valid proof with data the proof does not commit to is rejected:
 
 ```typescript
 // These operations automatically verify proofs:
@@ -197,7 +244,7 @@ try {
 
 ## Collection Helper
 
-For easier data management with a specific subgrove/dataset:
+For easier data management with a specific subgrove:
 
 ```typescript
 const users = client.collection('users');
@@ -243,21 +290,33 @@ if (verifiedRoot === localRoot) {
 
 ## Proof Verification API
 
-### Configure Verification Strategy
+All verification functions *bind the returned data to the proof*: every
+document you pass in must deep-equal a value the proof actually commits to,
+so a server cannot pair a valid proof with unrelated data. The computed root
+hash must still be compared against a trusted source to establish that the
+proven state is canonical.
+
+### Verification Options
+
+There is no global configuration — options are passed explicitly, either
+per-client or per-call:
 
 ```typescript
-import { configureProofVerification } from '@willow-network/sdk';
-
-// Verify against a known root hash. When set, every proof verification
-// will throw unless the computed root matches. For trustless operation,
-// obtain the expected root from a light client rather than hardcoding.
-configureProofVerification({
-  expectedRootHash: knownRootHash,
+// Per-client: every automatic verification in get()/query() enforces the root
+const client = new WillowClient({
+  apiUrl: 'http://localhost:3031',
+  proofVerificationOptions: { expectedRootHash: knownRootHash },
 });
 
-// Clear the global expected root hash
-configureProofVerification({});
+// Per-call: pass options as the last argument
+const rootHash = await verifyQueryProof(proofHex, documents, {
+  expectedRootHash: knownRootHash,
+});
 ```
+
+When `expectedRootHash` is set, verification throws unless the computed root
+matches. For trustless operation, obtain the expected root from a trusted
+source rather than hardcoding it.
 
 ### Manual Proof Verification
 
@@ -266,30 +325,33 @@ import {
   verifyQueryProof,
   verifyItemProof,
   verifyQueryResponse,
-  verifyProofAdvanced,
-  extractRootHashFromProof,
+  computeProofRootHash,
+  GroveDBProofVerifier,
 } from '@willow-network/sdk';
 
-// Verify a query proof
+// Verify a query proof; every document must be committed to by the proof
 const rootHash = await verifyQueryProof(proofHex, documents);
 
-// Verify a single item proof
+// Verify a single item proof: enforces that the proof contains `key` at the
+// given path AND that the proven payload deep-equals `value`
 const rootHash = await verifyItemProof(proofHex, 'key', value, ['path', 'to', 'item']);
 
-// Verify a query response object
+// Verify a QueryResponse object (binds response.documents)
 const rootHash = await verifyQueryResponse(response);
 
-// Advanced verification: returns { valid, rootHash?, error? } instead of throwing
-const result = await verifyProofAdvanced(proofHex, documents, {
-  expectedRootHash: expectedRoot,
-});
-// result: { valid: boolean, rootHash?: string, error?: string }
+// Fully verify a proof and return just the root hash (no document binding).
+// Same cryptographic checks as verifyQueryProof.
+const rootHash = await computeProofRootHash(proofHex);
 
-// Fully verify a proof and return just the root hash.
-// Performs the same cryptographic checks as verifyQueryProof — despite the
-// name, it does not skip verification.
-const rootHash = await extractRootHashFromProof(proofHex);
+// Structured results instead of throwing — options bound at construction
+const verifier = new GroveDBProofVerifier({ expectedRootHash: expectedRoot });
+const result = await verifier.verifyQueryProof(proofHex, documents);
+// result: { valid: boolean, rootHash?: string, error?: string }
 ```
+
+Deprecated (kept as aliases for one release): `extractRootHashFromProof`
+(renamed to `computeProofRootHash`) and `verifyProofAdvanced` (use
+`GroveDBProofVerifier`).
 
 ### Server-Assisted GKR Verification
 
@@ -317,13 +379,15 @@ const { data } = await response.json();
 // data: { valid: boolean, error?: string }
 ```
 
-GroveDB Merkle proofs and CometBFT light-client header/signature
-verification remain fully trustless in the browser — only GKR verification
-requires server trust.
+GroveDB Merkle proof verification runs fully locally in Node and the
+browser. GKR verification requires server trust until the wasm verifier
+ships, and the root hash a proof is checked against currently comes from
+the configured RPC endpoint (see [Light Client](#light-client-experimental)).
 
 ## GroveDB Verification Module
 
-For low-level proof verification:
+For low-level proof verification, import the `./grovedb` subpath (it is also
+re-exported from the package root as the `grovedb` namespace):
 
 ```typescript
 import * as grovedb from '@willow-network/sdk/grovedb';
@@ -351,15 +415,23 @@ const bytes = grovedb.hexToBytes(hex);
 const equal = grovedb.hashEquals(hash1, hash2);
 ```
 
-## Light Client (Advanced)
+## Light Client (Experimental)
 
-For trustless verification via CometBFT light client protocol:
+> **Current trust model — read before relying on this.** The root-hash path
+> (`getVerifiedRootHash` / `getVerifiedRootHashAtHeight`) reads `app_hash`
+> directly from the configured RPC endpoint(s) and trusts the response;
+> header-signature verification of the fetched root is not yet wired into
+> that path. Separately, `verifyHeader` cannot yet validate real CometBFT
+> commit signatures (sign-bytes encoding mismatch — CometBFT signs protobuf
+> `CanonicalVote`), so header verification is experimental. Until both land,
+> the trust assumption is "the configured RPC endpoints are honest", not
+> "2/3+ of validator voting power signed this state".
 
 ```typescript
 import { LightClient, LightClientConfigBuilder } from '@willow-network/sdk';
 
 // Configure light client (chainId is a required constructor arg)
-const config = new LightClientConfigBuilder('willow-mainnet')
+const config = new LightClientConfigBuilder('willow-chain')
   .validatorEndpoints([
     'http://validator1:26657',
     'http://validator2:26657',
@@ -378,7 +450,7 @@ await lightClient.start();
 // Sync to latest
 await lightClient.syncToLatest();
 
-// Verify a query proof against consensus
+// Verify a query proof against the light client's root hash
 const result = await lightClient.verifyQueryProof(proof);
 
 // Get verified headers
@@ -430,14 +502,19 @@ const client = new WillowClient({
 
 ## Registration
 
-### Register Dataset
+### Register Subgrove
+
+A *subgrove* is Willow's on-chain unit of storage — a named subtree with a
+schema and access lists. Data operations target a subgrove by id, and writes
+fail until the subgrove is registered (and its registration fee paid by a
+funded DID). `registerDataset` is a deprecated alias of `registerSubgrove`;
+"subgrove" is the on-chain term.
 
 ```typescript
-const dataset = await client.registerDataset({
+// Returns the consensus BroadcastResult (txHash, height, rawLog)
+const result = await client.registerSubgrove({
   dataset_id: 'users',
-
   name: 'User Data',
-  dataset_path: ['collections'],
   schema: {
     version: 1,
     fields: {
@@ -490,8 +567,8 @@ try {
 |--------|-------------|
 | `init()` | Initialize with authentication |
 | `registerDid(didDocument)` | Register a new DID |
-
-| `registerDataset(request)` | Register a dataset |
+| `registerSubgrove(request)` | Register a subgrove (returns the consensus `BroadcastResult`) |
+| `deregisterSubgrove(subgroveId)` | Deregister a subgrove; remaining funding refunds to the owner |
 | `store(datasetId, key, value)` | Store data |
 | `get(datasetId, key)` | Get data with proof verification |
 | `getUnverified(datasetId, key)` | Get data without verification |
@@ -499,6 +576,8 @@ try {
 | `delete(datasetId, key)` | Delete data |
 | `query(datasetId, query)` | Query with proof verification |
 | `queryUnverified(datasetId, query)` | Query without verification |
+| `sqlQuery(subgroveId, sql, options?)` | SQL query routed to indexer or validator |
+| `graphqlQuery(subgroveId, query, options?)` | GraphQL query routed to indexer or validator |
 | `getProof(datasetId, key)` | Get raw Merkle proof |
 | `getRootHash()` | Get consensus-verified root hash |
 | `getRootHashLocal()` | Get local node's root hash |
@@ -518,12 +597,13 @@ try {
 
 | Function | Description |
 |----------|-------------|
-| `verifyQueryProof(proofHex, documents)` | Verify query proof, returns root hash |
-| `verifyItemProof(proofHex, key, value, path)` | Verify item proof, returns root hash |
-| `verifyQueryResponse(response)` | Verify QueryResponse object |
-| `verifyProofAdvanced(proofHex, documents, options)` | Advanced verification with options |
-| `extractRootHashFromProof(proofHex)` | Fully verify proof and return root hash (despite the name, performs full verification) |
-| `configureProofVerification(options)` | Configure global verification strategy |
+| `verifyQueryProof(proofHex, documents, options?)` | Verify query proof and bind documents to it, returns root hash |
+| `verifyItemProof(proofHex, key, value, path, options?)` | Verify item proof and bind key/value/path to it, returns root hash |
+| `verifyQueryResponse(response)` | Verify QueryResponse object, binding its documents |
+| `computeProofRootHash(proofHex)` | Fully verify proof and return root hash (no document binding) |
+| `new GroveDBProofVerifier(options?)` | Stateful verifier returning `{ valid, rootHash?, error? }` instead of throwing |
+| `extractRootHashFromProof(proofHex)` | **Deprecated** alias of `computeProofRootHash` |
+| `verifyProofAdvanced(proofHex, documents, options?)` | **Deprecated** — use `GroveDBProofVerifier` |
 
 ### Utilities
 
@@ -535,26 +615,38 @@ try {
 | `signEd25519(message, privateKey)` | Sign with Ed25519 |
 | `verifyEd25519(message, signature, publicKey)` | Verify Ed25519 signature |
 | `isValidDid(did)` | Validate DID format |
-| `generateId(prefix?)` | Generate unique ID |
 
 ## Security Model
 
-The SDK provides three levels of security:
+The SDK provides two levels of security:
 
 1. **Full Local Verification** (default)
    - Pure TypeScript GroveDB proof verification
    - BLAKE3 hashing, Merk proof execution
-   - Compares against consensus root hash
+   - Binds returned documents to the proof
+   - Compares against the consensus root hash, which is currently fetched
+     from the configured RPC endpoint (see [Light Client](#light-client-experimental)
+     for the exact trust assumption)
 
-2. **Server-Assisted Verification**
-   - Delegates verification to node's native Rust implementation
-   - Uses `/verify-proof` endpoint
-   - More accurate but requires network round-trip
-
-3. **Unverified** (opt-in via `*Unverified` methods)
+2. **Unverified** (opt-in via `*Unverified` methods)
    - Trusts the node completely
    - Maximum performance
    - Use only with trusted nodes
+
+## Known Issues
+
+- **Transitive `ws` advisory (moderate, not reachable from SDK code).** `ethers`
+  pins `ws@8.17.1` exactly (every published `ethers` 6.x does, including the
+  latest), and that `ws` carries moderate advisory
+  [GHSA-58qx-3vcg-4xpx](https://github.com/advisories/GHSA-58qx-3vcg-4xpx)
+  (uninitialized memory disclosure on the WebSocket *server*). A fresh install
+  of this package therefore reports one moderate finding under `npm audit`.
+  The SDK does not use `ethers`' WebSocket provider or run a `ws` server, so
+  the advisory is not reachable from any SDK code path. There is no `ethers`
+  release that pins a patched `ws`, so it cannot be resolved by bumping the
+  dependency; consumers who want a clean audit can pin a newer `ws` via their
+  own `overrides`/`resolutions` (the SDK's own `overrides.ws` only applies when
+  the SDK is the root project, not when it is installed as a dependency).
 
 ## License
 

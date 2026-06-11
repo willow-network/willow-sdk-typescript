@@ -1,15 +1,27 @@
 /**
  * Consensus Client Types
- * 
+ *
  * Transaction structures and types for direct blockchain interaction.
  */
+
+import { keccak_256 } from '@noble/hashes/sha3';
+import { WillowError } from '../types';
+import {
+  base64ToBytes,
+  bytesToBase64,
+  bytesToHex,
+  bytesToUtf8,
+  hexToBytes,
+  utf8ToBytes,
+} from '../internal/bytes';
+import type { WillowLogger } from '../internal/logger';
 
 /**
  * Base exception for consensus client operations
  */
-export class ConsensusError extends Error {
-  constructor(message: string) {
-    super(message);
+export class ConsensusError extends WillowError {
+  constructor(message: string, code?: string) {
+    super(message, code);
     this.name = 'ConsensusError';
   }
 }
@@ -28,13 +40,58 @@ export enum TransactionStatus {
  * Configuration for consensus client
  */
 export interface ConsensusConfig {
-  consensusRpcUrl: string;
-  apiUrl?: string; // REST API URL for account queries (nonce, etc.)
+  consensusRpcUrl?: string; // CometBFT RPC URL for consensus reads (tx status, chain info)
+  apiUrl?: string; // REST API URL for tx submission and account queries (nonce, etc.)
   apiKey?: string; // Managed-tier API key sent as X-API-Key
   chainId?: string;
   requestTimeoutSecs?: number;
   maxRetries?: number;
   retryDelaySecs?: number;
+  logger?: WillowLogger; // Diagnostics logger; defaults to silent
+}
+
+/** Signs a canonical message with a hex private key, returning a hex signature. */
+export type SignFunction = (message: string, privateKey: string) => string;
+
+/**
+ * Key material for signing consensus transactions. Accepted by every
+ * ConsensusClient write method in place of the positional
+ * (privateKey, publicKeyId, signFunction) tail.
+ */
+export interface Signer {
+  /** Hex-encoded private key. */
+  privateKey: string;
+  /** Public key ID registered in the DID document (e.g. `did:willow:x#key-1`). */
+  publicKeyId: string;
+  /** Defaults to the SDK's `signEd25519`. */
+  signFunction?: SignFunction;
+}
+
+/** Optional RegisterSubgrove parameters. */
+export interface RegisterSubgroveOptions {
+  /**
+   * Human-readable subgrove name. This is the top-level name the chain
+   * stores and signs over (the per-mode `name` is ignored by the
+   * validator for the signing message). Defaults to the subgrove id.
+   */
+  name?: string;
+  mode?: SubgroveMode;
+  retentionWindow?: RetentionWindow;
+  initialFunding?: string;
+}
+
+/** Manifest fields for `storeFileManifest`. */
+export interface StoreFileManifestFields {
+  subgroveId: string;
+  fileKey: string;
+  filename: string;
+  contentType: string;
+  totalSize: number;
+  contentHash: string;
+  chunkCount: number;
+  chunkSize: number;
+  chunkMerkleRoot: string;
+  ownerDid: string;
 }
 
 /**
@@ -132,6 +189,12 @@ export type SubgroveMode =
  */
 export interface RegisterSubgroveTx {
   subgroveId: string;
+  /**
+   * Top-level human-readable name. The chain stores this and signs over it
+   * for DataStorage/FileStorage modes (the per-mode `name` is not part of
+   * the signing message). Defaults to `subgroveId` when omitted.
+   */
+  name?: string;
   schema: string; // JSON schema as string
   ownerDid: string;
   mode?: SubgroveMode;
@@ -194,6 +257,61 @@ export interface DeleteFileManifestTx {
   nonce?: number;
 }
 
+/** Unregister a storage node and begin stake unbonding. */
+export interface UnregisterStorageNodeTx {
+  nodeDid: string;
+  signature?: string; // hex-encoded
+  publicKeyId?: string;
+  nonce?: number;
+}
+
+/**
+ * Encrypted copy of a subgrove's symmetric key, wrapped for a reader DID.
+ * Byte fields are number arrays — the chain's `EncryptedKeyGrant` declares
+ * `ephemeral_public_key`/`encrypted_key` as `Vec<u8>` with no `serde_bytes`,
+ * so JSON must carry arrays of numbers, never hex strings.
+ */
+export interface EncryptedKeyGrant {
+  grantee_did: string;
+  key_epoch: number;
+  grantee_public_key_id: string;
+  ephemeral_public_key: number[];
+  encrypted_key: number[];
+  granted_by: string;
+  granted_at: number;
+}
+
+/** Grant a subgrove encryption key to a DID. */
+export interface GrantSubgroveKeyTx {
+  subgroveId: string;
+  encryptedKeyGrant: EncryptedKeyGrant;
+  senderDid: string;
+  signature?: string; // hex-encoded
+  publicKeyId?: string;
+  nonce?: number;
+}
+
+/** Revoke a subgrove encryption key from a DID. */
+export interface RevokeSubgroveKeyTx {
+  subgroveId: string;
+  revokeeDid: string;
+  senderDid: string;
+  signature?: string; // hex-encoded
+  publicKeyId?: string;
+  nonce?: number;
+}
+
+/** Rotate the subgrove encryption key and re-grant to authorized DIDs. */
+export interface RotateSubgroveKeyTx {
+  subgroveId: string;
+  newEpoch: number;
+  newGrants: EncryptedKeyGrant[];
+  senderDid: string;
+  signature?: string; // hex-encoded
+  publicKeyId?: string;
+  nonce?: number;
+}
+
 /**
  * Deregister (delete) a subgrove transaction.
  * Remaining funding balance is refunded to the owner.
@@ -233,43 +351,37 @@ export interface SubmitAnchorTx {
 /**
  * Transaction type union
  */
-export type Transaction = RegisterDidTx | RegisterSubgroveTx | TransferTx | DataStoreTx | StoreFileManifestTx | DeleteFileManifestTx | DeregisterSubgroveTx | SubmitAnchorTx;
-
-/**
- * JSON.stringify with keys sorted alphabetically at every level.
- * Matches Rust's `serde_json::to_string(&serde_json::Value)` output,
- * which serializes Map keys in sorted order.
- */
-function stableJsonStringify(value: unknown): string {
-  if (value === null || value === undefined) return 'null';
-  if (typeof value === 'boolean' || typeof value === 'number') return JSON.stringify(value);
-  if (typeof value === 'string') return JSON.stringify(value);
-  if (Array.isArray(value)) return '[' + value.map(stableJsonStringify).join(',') + ']';
-  if (typeof value === 'object') {
-    const keys = Object.keys(value as Record<string, unknown>).sort();
-    const pairs = keys.map(
-      (k) => JSON.stringify(k) + ':' + stableJsonStringify((value as Record<string, unknown>)[k]),
-    );
-    return '{' + pairs.join(',') + '}';
-  }
-  return JSON.stringify(value);
-}
+export type Transaction =
+  | RegisterDidTx
+  | RegisterSubgroveTx
+  | TransferTx
+  | DataStoreTx
+  | StoreFileManifestTx
+  | DeleteFileManifestTx
+  | UnregisterStorageNodeTx
+  | DeregisterSubgroveTx
+  | SubmitAnchorTx
+  | GrantSubgroveKeyTx
+  | RevokeSubgroveKeyTx
+  | RotateSubgroveKeyTx;
 
 function hexToByteArray(hex: string): number[] {
-  const clean = hex.replace(/^0x/, '');
-  const out: number[] = [];
-  for (let i = 0; i < clean.length; i += 2) {
-    out.push(parseInt(clean.substr(i, 2), 16));
-  }
-  return out;
+  return Array.from(hexToBytes(hex));
 }
 
 /**
  * Create transaction wrapper for consensus submission.
  *
- * Converts the internal camelCase TypeScript fields to the snake_case JSON
- * the Rust server expects (serde's default), and converts the hex signature
- * string to a byte array (`Vec<u8>` in Rust).
+ * This is the SINGLE place the SDK encodes a transaction to the wire shape
+ * the Rust `Transaction` enum deserializes. The chain's structs declare
+ * `signature: Vec<u8>` and digest fields like `content_hash: [u8; 32]`
+ * without `serde_bytes`, so serde_json requires arrays of numbers — a hex
+ * string is rejected by the axum extractor (422) before the handler runs.
+ * Every byte/digest field is converted hex -> number[] here, and every
+ * field is renamed to the snake_case key the variant declares.
+ *
+ * Unknown tx types throw rather than falling through to a camelCase
+ * passthrough, so a new variant can't silently ship an unparseable shape.
  */
 export function createTransactionWrapper(txType: string, transaction: Transaction): any {
   const tx = transaction as unknown as Record<string, unknown>;
@@ -280,21 +392,26 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
   switch (txType) {
     case 'RegisterSubgrove': {
       const t = transaction as RegisterSubgroveTx;
+      const name = t.name ?? t.subgroveId;
       const wrapper: Record<string, unknown> = {
         subgrove_id: t.subgroveId,
-        name: t.subgroveId,
+        name,
         description: '',
         schema: t.schema,
         owner_did: t.ownerDid,
         admins: [],
-        mode: t.mode ?? { DataStorage: { name: t.subgroveId, writers: [t.ownerDid], free_readers: [] } },
+        mode: t.mode ?? { DataStorage: { name, writers: [t.ownerDid], free_readers: [] } },
         retention_window: t.retention_window,
         signature: sig,
         public_key_id: publicKeyId,
         nonce,
       };
       if (t.initialFunding) {
-        wrapper.initial_funding = parseInt(t.initialFunding, 10);
+        // The chain's `initial_funding` is u128; its `option_u128_flexible`
+        // deserializer accepts a JSON string for the TS SDK. Send the string
+        // verbatim so values above 2^53 round-trip exactly (parseInt would
+        // lose precision).
+        wrapper.initial_funding = t.initialFunding;
       }
       return { RegisterSubgrove: wrapper };
     }
@@ -370,20 +487,101 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
         },
       };
     }
+    case 'StoreFileManifest': {
+      const t = transaction as StoreFileManifestTx;
+      return {
+        StoreFileManifest: {
+          subgrove_id: t.subgroveId,
+          file_key: t.fileKey,
+          filename: t.filename,
+          content_type: t.contentType,
+          total_size: t.totalSize,
+          content_hash: hexToByteArray(t.contentHash),
+          chunk_count: t.chunkCount,
+          chunk_size: t.chunkSize,
+          chunk_merkle_root: hexToByteArray(t.chunkMerkleRoot),
+          owner_did: t.ownerDid,
+          signature: sig,
+          public_key_id: publicKeyId,
+          nonce,
+        },
+      };
+    }
+    case 'DeleteFileManifest': {
+      const t = transaction as DeleteFileManifestTx;
+      return {
+        DeleteFileManifest: {
+          subgrove_id: t.subgroveId,
+          file_key: t.fileKey,
+          owner_did: t.ownerDid,
+          signature: sig,
+          public_key_id: publicKeyId,
+          nonce,
+        },
+      };
+    }
+    case 'UnregisterStorageNode': {
+      const t = transaction as UnregisterStorageNodeTx;
+      return {
+        UnregisterStorageNode: {
+          node_did: t.nodeDid,
+          signature: sig,
+          public_key_id: publicKeyId,
+          nonce,
+        },
+      };
+    }
+    case 'GrantSubgroveKey': {
+      const t = transaction as GrantSubgroveKeyTx;
+      return {
+        GrantSubgroveKey: {
+          subgrove_id: t.subgroveId,
+          encrypted_key_grant: t.encryptedKeyGrant,
+          sender_did: t.senderDid,
+          signature: sig,
+          public_key_id: publicKeyId,
+          nonce,
+        },
+      };
+    }
+    case 'RevokeSubgroveKey': {
+      const t = transaction as RevokeSubgroveKeyTx;
+      return {
+        RevokeSubgroveKey: {
+          subgrove_id: t.subgroveId,
+          revokee_did: t.revokeeDid,
+          sender_did: t.senderDid,
+          signature: sig,
+          public_key_id: publicKeyId,
+          nonce,
+        },
+      };
+    }
+    case 'RotateSubgroveKey': {
+      const t = transaction as RotateSubgroveKeyTx;
+      return {
+        RotateSubgroveKey: {
+          subgrove_id: t.subgroveId,
+          new_epoch: t.newEpoch,
+          new_grants: t.newGrants,
+          sender_did: t.senderDid,
+          signature: sig,
+          public_key_id: publicKeyId,
+          nonce,
+        },
+      };
+    }
     default:
-      return { [txType]: tx };
+      throw new WillowError(`Unknown transaction type: ${txType}`, 'UNKNOWN_TX_TYPE');
   }
 }
-
-import { keccak_256 } from '@noble/hashes/sha3';
 
 /**
  * Keccak256 hash of a string, matching the Rust server's
  * `TransactionValidator::hash_string` (uses `sha3::Keccak256`).
  */
 function schemaHash(schema: string): string {
-  const hash: Uint8Array = keccak_256(new TextEncoder().encode(schema));
-  return Array.from(hash, (b) => b.toString(16).padStart(2, '0')).join('');
+  return bytesToHex(keccak_256(utf8ToBytes(schema)));
 }
 
 /**
@@ -403,6 +601,10 @@ export function createSignMessage(txType: string, transaction: Transaction): str
       const tx = transaction as RegisterSubgroveTx;
       const mode = tx.mode;
       const sh = schemaHash(tx.schema);
+      // The validator signs over the top-level `name`, not the per-mode one
+      // (`create_register_subgrove_message` reads `params.name`, and the mode
+      // `name` field is `name: _` in the handler).
+      const name = tx.name ?? tx.subgroveId;
 
       // BlockchainIndexing signs a simpler payload than the other modes.
       if (mode && 'BlockchainIndexing' in mode) {
@@ -410,14 +612,14 @@ export function createSignMessage(txType: string, transaction: Transaction): str
       }
 
       if (mode && 'FileStorage' in mode) {
-        const fs = (mode as { FileStorage: { name?: string; writers?: string[]; free_readers?: string[] } }).FileStorage;
-        return `RegisterSubgrove\nID: ${tx.subgroveId}\nMode: FileStorage\nName: ${fs.name ?? tx.subgroveId}\nDescription: \nSchemaHash: ${sh}\nOwner: ${tx.ownerDid}\nAdmins: \nWriters: ${(fs.writers ?? []).join(',')}\nReaders: ${(fs.free_readers ?? []).join(',')}\nNonce: ${tx.nonce || 0}`;
+        const fs = (mode as { FileStorage: { writers?: string[]; free_readers?: string[] } }).FileStorage;
+        return `RegisterSubgrove\nID: ${tx.subgroveId}\nMode: FileStorage\nName: ${name}\nDescription: \nSchemaHash: ${sh}\nOwner: ${tx.ownerDid}\nAdmins: \nWriters: ${(fs.writers ?? []).join(',')}\nReaders: ${(fs.free_readers ?? []).join(',')}\nNonce: ${tx.nonce || 0}`;
       }
       // DataStorage mode (default)
       const ds = mode && 'DataStorage' in mode
-        ? (mode as { DataStorage: { name?: string; writers?: string[]; free_readers?: string[] } }).DataStorage
-        : { name: tx.subgroveId, writers: [tx.ownerDid], free_readers: [] as string[] };
-      return `RegisterSubgrove\nID: ${tx.subgroveId}\nName: ${ds.name ?? tx.subgroveId}\nDescription: \nSchemaHash: ${sh}\nOwner: ${tx.ownerDid}\nAdmins: \nWriters: ${(ds.writers ?? []).join(',')}\nReaders: ${(ds.free_readers ?? []).join(',')}\nNonce: ${tx.nonce || 0}`;
+        ? (mode as { DataStorage: { writers?: string[]; free_readers?: string[] } }).DataStorage
+        : { writers: [tx.ownerDid], free_readers: [] as string[] };
+      return `RegisterSubgrove\nID: ${tx.subgroveId}\nName: ${name}\nDescription: \nSchemaHash: ${sh}\nOwner: ${tx.ownerDid}\nAdmins: \nWriters: ${(ds.writers ?? []).join(',')}\nReaders: ${(ds.free_readers ?? []).join(',')}\nNonce: ${tx.nonce || 0}`;
     }
 
     case 'Transfer': {
@@ -461,24 +663,12 @@ export function createSignMessage(txType: string, transaction: Transaction): str
  * Utility: Convert string to base64
  */
 export function stringToBase64(str: string): string {
-  if (typeof Buffer !== 'undefined') {
-    // Node.js environment
-    return Buffer.from(str, 'utf-8').toString('base64');
-  } else {
-    // Browser environment
-    return btoa(unescape(encodeURIComponent(str)));
-  }
+  return bytesToBase64(utf8ToBytes(str));
 }
 
 /**
  * Utility: Convert base64 to string
  */
 export function base64ToString(base64: string): string {
-  if (typeof Buffer !== 'undefined') {
-    // Node.js environment
-    return Buffer.from(base64, 'base64').toString('utf-8');
-  } else {
-    // Browser environment
-    return decodeURIComponent(escape(atob(base64)));
-  }
+  return bytesToUtf8(base64ToBytes(base64));
 }

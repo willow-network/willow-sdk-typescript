@@ -1,18 +1,20 @@
 /**
- * Willow TypeScript SDK - Light Client Example
+ * Willow TypeScript SDK - Light Client Example (experimental)
  *
- * Demonstrates trustless verification via the CometBFT light client:
+ * Demonstrates the CometBFT light client API:
  * 1. Configure the light client (test/mainnet/custom)
  * 2. Start the client + sync to latest
  * 3. Verify a query proof against the trusted state
  * 4. Export/import trusted headers for persistence
  *
- * The light client provides cryptographic security without running a full
- * node by verifying validator signatures and Merkle proofs.
+ * Current trust model: the root-hash path reads app_hash from the
+ * configured RPC endpoint(s) and trusts the response — commit-signature
+ * verification is not wired in yet (see the LightClient class docs).
  *
  * Prerequisites:
  * - npm install @willow-network/sdk
- * - Run a local Willow network with multiple validators
+ * - A local Willow network with multiple validators — see the docs
+ *   for node setup: https://willow.tech
  *
  * Run with: npx ts-node examples/light_client.ts
  */
@@ -176,9 +178,9 @@ async function main() {
 
   console.log('LIGHT CLIENT SUMMARY');
   console.log('====================');
-  console.log('- Verifies 2/3+ validator signatures on block headers');
-  console.log('- Verifies GroveDB Merkle proofs against the app_hash');
-  console.log('- No trust required in any single node');
+  console.log('- Verifies GroveDB Merkle proofs against the fetched app_hash');
+  console.log('- EXPERIMENTAL: the root-hash path trusts the configured RPC');
+  console.log('  endpoints; commit-signature verification is not wired in yet');
   console.log('- Trusting period limits exposure to long-range attacks');
   console.log('- Trusted state can be exported/imported across runs');
   console.log();

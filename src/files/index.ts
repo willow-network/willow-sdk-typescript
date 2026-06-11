@@ -13,6 +13,9 @@
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex, randomBytes } from '@noble/hashes/utils';
 import { xchacha20poly1305 } from '@noble/ciphers/chacha';
+import { WillowError } from '../types';
+import { createTransactionWrapper } from '../consensus/types';
+import { submitTxToApi, SubmitTxOptions } from '../internal/tx';
 
 const DEFAULT_CHUNK_SIZE = 262_144; // 256 KB
 
@@ -59,11 +62,14 @@ function concatBytes(chunks: Uint8Array[]): Uint8Array {
 
 export class FileOperations {
   private apiUrl: string;
-  private getHeaders: () => Record<string, string>;
+  private getAuthHeaders: (method: string, path: string) => Record<string, string>;
 
-  constructor(apiUrl: string, getHeaders: () => Record<string, string>) {
+  constructor(
+    apiUrl: string,
+    getAuthHeaders: (method: string, path: string) => Record<string, string>,
+  ) {
     this.apiUrl = apiUrl;
-    this.getHeaders = getHeaders;
+    this.getAuthHeaders = getAuthHeaders;
   }
 
   /**
@@ -96,30 +102,27 @@ export class FileOperations {
     const signature = signing
       ? signing.signFunction(signMessage, signing.privateKey)
       : '';
-    const manifestTx = {
-      StoreFileManifest: {
-        subgrove_id: subgroveId,
-        file_key: fileKey,
-        filename,
-        content_type: guessContentType(filename),
-        total_size: data.length,
-        content_hash: contentHash,
-        chunk_count: chunkCount,
-        chunk_size: chunkSize,
-        chunk_merkle_root: chunkMerkleRoot,
-        owner_did: ownerDid,
-        signature,
-        public_key_id: signing?.publicKeyId ?? '',
-        nonce: signing?.nonce ?? 0,
-      },
-    };
-    const txResp = await fetch(`${this.apiUrl}/broadcast_tx`, {
-      method: 'POST',
-      headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify(manifestTx),
+    const manifestTx = createTransactionWrapper('StoreFileManifest', {
+      subgroveId,
+      fileKey,
+      filename,
+      contentType: guessContentType(filename),
+      totalSize: data.length,
+      contentHash,
+      chunkCount,
+      chunkSize,
+      chunkMerkleRoot,
+      ownerDid,
+      signature,
+      publicKeyId: signing?.publicKeyId ?? '',
+      nonce: signing?.nonce ?? 0,
     });
-    if (!txResp.ok) {
-      throw new Error(`Failed to submit file manifest: ${await txResp.text()}`);
+    const txResult = await this.submitTx(manifestTx);
+    if (!txResult.success) {
+      throw new WillowError(
+        `Failed to submit file manifest: ${txResult.rawLog || txResult.errorMessage || 'unknown error'}`,
+        'TX_SUBMIT_FAILED',
+      );
     }
 
     // Upload chunks to storage node
@@ -131,7 +134,11 @@ export class FileOperations {
         headers: { 'Content-Type': 'application/octet-stream' },
       });
       if (!chunkResp.ok) {
-        throw new Error(`Failed to upload chunk ${i}: ${await chunkResp.text()}`);
+        throw new WillowError(
+          `Failed to upload chunk ${i}: ${await chunkResp.text()}`,
+          'CHUNK_UPLOAD_FAILED',
+          chunkResp.status,
+        );
       }
     }
 
@@ -166,7 +173,13 @@ export class FileOperations {
     for (let i = 0; i < manifest.chunk_count; i++) {
       const url = `${storageNodeEndpoint}/chunk/${subgroveId}/${fileKey}/${i}?content_hash=${manifest.content_hash}`;
       const resp = await fetch(url);
-      if (!resp.ok) throw new Error(`Failed to download chunk ${i}`);
+      if (!resp.ok) {
+        throw new WillowError(
+          `Failed to download chunk ${i}`,
+          'CHUNK_DOWNLOAD_FAILED',
+          resp.status,
+        );
+      }
       chunks.push(new Uint8Array(await resp.arrayBuffer()));
     }
 
@@ -174,7 +187,7 @@ export class FileOperations {
     const chunkHashes = chunks.map((c) => sha256(c));
     const computedMerkleRoot = bytesToHex(computeMerkleRoot(chunkHashes));
     if (computedMerkleRoot !== manifest.chunk_merkle_root) {
-      throw new Error('Chunk Merkle root mismatch');
+      throw new WillowError('Chunk Merkle root mismatch', 'CHUNK_MERKLE_ROOT_MISMATCH');
     }
 
     const fileData = concatBytes(chunks);
@@ -182,7 +195,7 @@ export class FileOperations {
     // Verify content hash
     const computedHash = bytesToHex(sha256(fileData));
     if (computedHash !== manifest.content_hash) {
-      throw new Error('Content hash mismatch');
+      throw new WillowError('Content hash mismatch', 'CONTENT_HASH_MISMATCH');
     }
 
     return fileData;
@@ -195,11 +208,14 @@ export class FileOperations {
     subgroveId: string,
     fileKey: string,
   ): Promise<FileManifest> {
+    const path = `/files/${subgroveId}/${fileKey}`;
     const resp = await fetch(
-      `${this.apiUrl}/files/${subgroveId}/${fileKey}`,
-      { headers: this.getHeaders() },
+      `${this.apiUrl}${path}`,
+      { headers: this.getAuthHeaders('GET', path) },
     );
-    if (!resp.ok) throw new Error(`File not found: ${fileKey}`);
+    if (!resp.ok) {
+      throw new WillowError(`File not found: ${fileKey}`, 'FILE_NOT_FOUND', resp.status);
+    }
     return (await resp.json()) as FileManifest;
   }
 
@@ -207,11 +223,14 @@ export class FileOperations {
    * List all files in a subgrove.
    */
   async list(subgroveId: string): Promise<FileManifest[]> {
+    const path = `/files/${subgroveId}`;
     const resp = await fetch(
-      `${this.apiUrl}/files/${subgroveId}`,
-      { headers: this.getHeaders() },
+      `${this.apiUrl}${path}`,
+      { headers: this.getAuthHeaders('GET', path) },
     );
-    if (!resp.ok) throw new Error('Failed to list files');
+    if (!resp.ok) {
+      throw new WillowError('Failed to list files', 'FILE_LIST_FAILED', resp.status);
+    }
     const body = (await resp.json()) as FileListResponse;
     return body.files;
   }
@@ -228,23 +247,20 @@ export class FileOperations {
     const signature = signing
       ? signing.signFunction(signMessage, signing.privateKey)
       : '';
-    const deleteTx = {
-      DeleteFileManifest: {
-        subgrove_id: subgroveId,
-        file_key: fileKey,
-        owner_did: signing?.ownerDid ?? '',
-        signature,
-        public_key_id: signing?.publicKeyId ?? '',
-        nonce: signing?.nonce ?? 0,
-      },
-    };
-    const resp = await fetch(`${this.apiUrl}/broadcast_tx`, {
-      method: 'POST',
-      headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify(deleteTx),
+    const deleteTx = createTransactionWrapper('DeleteFileManifest', {
+      subgroveId,
+      fileKey,
+      ownerDid: signing?.ownerDid ?? '',
+      signature,
+      publicKeyId: signing?.publicKeyId ?? '',
+      nonce: signing?.nonce ?? 0,
     });
-    if (!resp.ok) {
-      throw new Error(`Failed to delete file: ${await resp.text()}`);
+    const result = await this.submitTx(deleteTx);
+    if (!result.success) {
+      throw new WillowError(
+        `Failed to delete file: ${result.rawLog || result.errorMessage || 'unknown error'}`,
+        'TX_SUBMIT_FAILED',
+      );
     }
   }
 
@@ -259,21 +275,35 @@ export class FileOperations {
     const signature = signing
       ? signing.signFunction(signMessage, signing.privateKey)
       : '';
-    const tx = {
-      UnregisterStorageNode: {
-        node_did: nodeDid,
-        signature,
-        public_key_id: signing?.publicKeyId ?? '',
-        nonce: signing?.nonce ?? 0,
-      },
-    };
-    const resp = await fetch(`${this.apiUrl}/broadcast_tx`, {
-      method: 'POST',
-      headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify(tx),
+    const tx = createTransactionWrapper('UnregisterStorageNode', {
+      nodeDid,
+      signature,
+      publicKeyId: signing?.publicKeyId ?? '',
+      nonce: signing?.nonce ?? 0,
     });
-    if (!resp.ok) {
-      throw new Error(`Failed to unregister storage node: ${await resp.text()}`);
+    const result = await this.submitTx(tx);
+    if (!result.success) {
+      throw new WillowError(
+        `Failed to unregister storage node: ${result.rawLog || result.errorMessage || 'unknown error'}`,
+        'TX_SUBMIT_FAILED',
+      );
+    }
+  }
+
+  /**
+   * Submit a tx through `/tx/submit`, folding transport-level failures
+   * (which `submitTxToApi` throws to enable retries elsewhere) into a
+   * `TX_SUBMIT_FAILED` WillowError so file callers see one error type.
+   */
+  private async submitTx(txWrapper: Record<string, unknown>) {
+    const opts: SubmitTxOptions = { headers: this.getAuthHeaders('POST', '/tx/submit') };
+    try {
+      return await submitTxToApi(this.apiUrl, txWrapper, opts);
+    } catch (error) {
+      throw new WillowError(
+        `Failed to submit transaction: ${error instanceof Error ? error.message : String(error)}`,
+        'TX_SUBMIT_FAILED',
+      );
     }
   }
 }

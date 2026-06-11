@@ -5,6 +5,9 @@
  * with on-chain ERC-8004 agent registrations.
  */
 
+import { ApiResponse, WillowError } from '../types';
+import { HttpClient, HttpError } from '../internal/http';
+
 // ── Transaction types ──────────────────────────────────────────────────
 
 export interface LinkEthAddressTx {
@@ -154,10 +157,10 @@ export interface Erc8004AgentListResponse {
 // ── Client ─────────────────────────────────────────────────────────────
 
 export class Erc8004Client {
-  private apiUrl: string;
+  private http: HttpClient;
 
   constructor(apiUrl: string) {
-    this.apiUrl = apiUrl.replace(/\/+$/, '');
+    this.http = new HttpClient({ baseURL: apiUrl });
   }
 
   /** List/search ERC-8004 registered agents with optional filters. */
@@ -169,79 +172,60 @@ export class Erc8004Client {
     if (options?.limit !== undefined) params.push(`limit=${options.limit}`);
     if (options?.offset !== undefined) params.push(`offset=${options.offset}`);
     const qs = params.length > 0 ? `?${params.join('&')}` : '';
-    const resp = await fetch(`${this.apiUrl}/agents${qs}`);
-    const body = await resp.json() as any;
-    if (body.success === false) {
-      throw new Error(body.error || 'Failed to list agents');
-    }
-    return body.data;
+    return this.fetchData<Erc8004AgentListResponse>(
+      `/agents${qs}`,
+      'AGENT_LIST_FAILED',
+      'Failed to list agents',
+    );
   }
 
   /** Fetch the ERC-8004 registration JSON for an agent DID. */
   async getAgentRegistration(did: string): Promise<AgentRegistrationJson> {
-    const resp = await fetch(
-      `${this.apiUrl}/agent/${encodeURIComponent(did)}/registration.json`,
+    return this.fetchData<AgentRegistrationJson>(
+      `/agent/${encodeURIComponent(did)}/registration.json`,
+      'AGENT_REGISTRATION_FETCH_FAILED',
+      'Failed to fetch agent registration',
     );
-    const body = await resp.json() as any;
-    if (body.success === false) {
-      throw new Error(body.error || 'Failed to fetch agent registration');
-    }
-    return body.data;
   }
 
   /** Get the ETH address linked to a DID. */
   async getEthAddress(did: string): Promise<string | null> {
-    const resp = await fetch(
-      `${this.apiUrl}/did/${encodeURIComponent(did)}/eth-address`,
+    const data = await this.fetchDataOrNull<{ eth_address: string | null }>(
+      `/did/${encodeURIComponent(did)}/eth-address`,
+      'ETH_ADDRESS_FETCH_FAILED',
+      'Failed to fetch ETH address',
     );
-    if (resp.status === 404) return null;
-    const body = await resp.json() as any;
-    if (body.success === false) {
-      throw new Error(body.error || 'Failed to fetch ETH address');
-    }
-    return body.data?.eth_address ?? null;
+    return data?.eth_address ?? null;
   }
 
   /** Get the DID linked to an ETH address. */
   async getDidForEth(ethAddress: string): Promise<string | null> {
-    const resp = await fetch(
-      `${this.apiUrl}/eth-address/${encodeURIComponent(ethAddress)}/did`,
+    const data = await this.fetchDataOrNull<{ did: string | null }>(
+      `/eth-address/${encodeURIComponent(ethAddress)}/did`,
+      'DID_LOOKUP_FAILED',
+      'Failed to fetch DID',
     );
-    if (resp.status === 404) return null;
-    const body = await resp.json() as any;
-    if (body.success === false) {
-      throw new Error(body.error || 'Failed to fetch DID');
-    }
-    return body.data?.did ?? null;
+    return data?.did ?? null;
   }
 
   /** Get stored ERC-8004 registration details for a DID. */
   async getErc8004Details(did: string): Promise<Erc8004Registration | null> {
-    const resp = await fetch(
-      `${this.apiUrl}/did/${encodeURIComponent(did)}/erc8004`,
+    return this.fetchDataOrNull<Erc8004Registration>(
+      `/did/${encodeURIComponent(did)}/erc8004`,
+      'ERC8004_DETAILS_FETCH_FAILED',
+      'Failed to fetch ERC-8004 details',
     );
-    if (resp.status === 404) return null;
-    const body = await resp.json() as any;
-    if (body.success === false) {
-      throw new Error(body.error || 'Failed to fetch ERC-8004 details');
-    }
-    return body.data ?? null;
   }
 
   /** Fetch reputation attestation with GroveDB Merkle proof for a DID. */
   async getReputationAttestation(
     did: string,
   ): Promise<ReputationAttestation> {
-    const resp = await fetch(
-      `${this.apiUrl}/agent/${encodeURIComponent(did)}/reputation-attestation`,
+    return this.fetchData<ReputationAttestation>(
+      `/agent/${encodeURIComponent(did)}/reputation-attestation`,
+      'REPUTATION_ATTESTATION_FAILED',
+      'Failed to fetch reputation attestation',
     );
-    const body = await resp.json() as any;
-    if (body.success === false) {
-      throw new Error(
-        body.error || 'Failed to fetch reputation attestation',
-      );
-    }
-    return body.data;
   }
 
   /** Fetch ERC-8004 formatted reputation history for a DID. */
@@ -249,17 +233,12 @@ export class Erc8004Client {
     did: string,
     limit?: number,
   ): Promise<ReputationHistoryResponse> {
-    const params = limit !== undefined ? `?limit=${limit}` : '';
-    const resp = await fetch(
-      `${this.apiUrl}/agent/${encodeURIComponent(did)}/reputation-history${params}`,
+    const qs = limit !== undefined ? `?limit=${limit}` : '';
+    return this.fetchData<ReputationHistoryResponse>(
+      `/agent/${encodeURIComponent(did)}/reputation-history${qs}`,
+      'REPUTATION_HISTORY_FAILED',
+      'Failed to fetch reputation history',
     );
-    const body = await resp.json() as any;
-    if (body.success === false) {
-      throw new Error(
-        body.error || 'Failed to fetch reputation history',
-      );
-    }
-    return body.data;
   }
 
   /** Fetch ERC-8004 validation status (checkpoint validations) for a DID. */
@@ -272,16 +251,11 @@ export class Erc8004Client {
     if (limit !== undefined) params.push(`limit=${limit}`);
     if (subgroveId !== undefined) params.push(`subgrove_id=${encodeURIComponent(subgroveId)}`);
     const qs = params.length > 0 ? `?${params.join('&')}` : '';
-    const resp = await fetch(
-      `${this.apiUrl}/agent/${encodeURIComponent(did)}/validation-status${qs}`,
+    return this.fetchData<Erc8004ValidationStatusResponse>(
+      `/agent/${encodeURIComponent(did)}/validation-status${qs}`,
+      'VALIDATION_STATUS_FAILED',
+      'Failed to fetch validation status',
     );
-    const body = await resp.json() as any;
-    if (body.success === false) {
-      throw new Error(
-        body.error || 'Failed to fetch validation status',
-      );
-    }
-    return body.data;
   }
 
   /** Fetch aggregated ERC-8004 validation summary for a DID. */
@@ -292,15 +266,45 @@ export class Erc8004Client {
     const qs = subgroveId !== undefined
       ? `?subgrove_id=${encodeURIComponent(subgroveId)}`
       : '';
-    const resp = await fetch(
-      `${this.apiUrl}/agent/${encodeURIComponent(did)}/validation-summary${qs}`,
+    return this.fetchData<Erc8004ValidationSummary>(
+      `/agent/${encodeURIComponent(did)}/validation-summary${qs}`,
+      'VALIDATION_SUMMARY_FAILED',
+      'Failed to fetch validation summary',
     );
-    const body = await resp.json() as any;
-    if (body.success === false) {
-      throw new Error(
-        body.error || 'Failed to fetch validation summary',
-      );
+  }
+
+  /** GET `path` and unwrap the `ApiResponse` envelope, mapping failures to `WillowError`. */
+  private async fetchData<T>(
+    path: string,
+    errorCode: string,
+    errorMessage: string,
+  ): Promise<T> {
+    let body: ApiResponse<T>;
+    try {
+      body = await this.http.get<ApiResponse<T>>(path);
+    } catch (err) {
+      if (err instanceof HttpError) {
+        throw new WillowError(err.apiError || errorMessage, errorCode, err.status);
+      }
+      throw err;
     }
-    return body.data;
+    if (body.success === false) {
+      throw new WillowError(body.error || errorMessage, errorCode);
+    }
+    return body.data as T;
+  }
+
+  /** Like `fetchData`, but a 404 resolves to `null` instead of throwing. */
+  private async fetchDataOrNull<T>(
+    path: string,
+    errorCode: string,
+    errorMessage: string,
+  ): Promise<T | null> {
+    try {
+      return (await this.fetchData<T>(path, errorCode, errorMessage)) ?? null;
+    } catch (err) {
+      if (err instanceof WillowError && err.statusCode === 404) return null;
+      throw err;
+    }
   }
 }

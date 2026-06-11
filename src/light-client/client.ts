@@ -5,8 +5,9 @@
  * and GroveDB proof verification.
  */
 
-import { LightBlock, LightClientConfig, TrustedHeader, GroveDBQueryProof, VerificationResult, LightClientError, createLightBlock, serializeTrustedHeader, deserializeTrustedHeader, decodeBytes } from './types';
+import { LightBlock, LightClientConfig, TrustedHeader, GroveDBQueryProof, VerificationResult, LightClientError, createLightBlock, decodeBytes } from './types';
 import { HeaderVerifier, ProofVerifier } from './verifier';
+import { WillowLogger, silentLogger } from '../internal/logger';
 
 /** Decode an app_hash from CometBFT (hex or base64) to a lowercase hex string. */
 function appHashToHex(appHash: string): string {
@@ -17,14 +18,23 @@ function appHashToHex(appHash: string): string {
 }
 
 /**
- * CometBFT light client with GroveDB proof verification
- * 
- * Provides cryptographically secure data verification without running a full node.
+ * CometBFT light client with GroveDB proof verification.
+ *
+ * IMPORTANT — current trust model: the root-hash path
+ * (`getVerifiedRootHash` / `getVerifiedRootHashAtHeight`) reads `app_hash`
+ * directly from the configured RPC endpoint(s) and trusts the response.
+ * Header-signature verification of the fetched root is not yet wired into
+ * that path. Separately, `verifyHeader` cannot yet validate real CometBFT
+ * commit signatures (see `HeaderVerifier` — sign-bytes encoding mismatch),
+ * so header verification is experimental. Until both land, this client
+ * reduces the trust assumption to "the configured RPC endpoints are
+ * honest", not "2/3+ of validator voting power signed this state".
  */
 export class LightClient {
   private config: LightClientConfig;
   private headerVerifier: HeaderVerifier;
   private proofVerifier: ProofVerifier;
+  private logger: WillowLogger;
 
   // State management
   private trustedHeaders: Map<number, LightBlock> = new Map();
@@ -34,7 +44,8 @@ export class LightClient {
 
   constructor(config: LightClientConfig) {
     this.config = config;
-    this.headerVerifier = new HeaderVerifier(config.chainId, config.trustThreshold!);
+    this.logger = config.logger ?? silentLogger;
+    this.headerVerifier = new HeaderVerifier(config.chainId, config.trustThreshold!, this.logger);
     this.proofVerifier = new ProofVerifier();
   }
 
@@ -44,12 +55,12 @@ export class LightClient {
   async start(): Promise<void> {
     if (this.config.autoSync) {
       this.syncIntervalId = setInterval(
-        () => this.syncToLatest().catch(console.error),
+        () => this.syncToLatest().catch((error) => this.logger.error('Light client sync failed:', error)),
         this.config.syncIntervalSecs! * 1000
       ) as any;
     }
 
-    console.log('Light client started');
+    this.logger.info('Light client started');
   }
 
   /**
@@ -61,7 +72,7 @@ export class LightClient {
       this.syncIntervalId = undefined;
     }
 
-    console.log('Light client stopped');
+    this.logger.info('Light client stopped');
   }
 
   /**
@@ -85,7 +96,7 @@ export class LightClient {
     this.latestHeight = height;
     this.verifiedHeightRange = [height, height];
 
-    console.log(`Initialized with trust-on-first-use at height ${height}`);
+    this.logger.info(`Initialized with trust-on-first-use at height ${height}`);
   }
 
   /**
@@ -113,7 +124,7 @@ export class LightClient {
     this.latestHeight = height;
     this.verifiedHeightRange = [height, height];
 
-    console.log(`Initialized with trusted header at height ${height}`);
+    this.logger.info(`Initialized with trusted header at height ${height}`);
   }
 
   /**
@@ -174,7 +185,7 @@ export class LightClient {
         }
       }
     } catch (error) {
-      console.warn(`Failed to fetch header ${height}:`, error);
+      this.logger.warn(`Failed to fetch header ${height}:`, error);
     }
 
     return undefined;
@@ -276,7 +287,7 @@ export class LightClient {
   async exportTrustedState(): Promise<TrustedHeader[]> {
     const trustedState: TrustedHeader[] = [];
 
-    for (const [height, lightBlock] of this.trustedHeaders) {
+    for (const lightBlock of this.trustedHeaders.values()) {
       const trustedHeader: TrustedHeader = {
         header: lightBlock.header,
         validatorsHash: lightBlock.header.validatorsHash,
@@ -317,14 +328,17 @@ export class LightClient {
       this.verifiedHeightRange = [Math.min(...heights), Math.max(...heights)];
     }
 
-    console.log(`Imported ${headers.length} trusted headers`);
+    this.logger.info(`Imported ${headers.length} trusted headers`);
   }
 
   /**
-   * Get the verified root hash (app_hash) from the latest trusted header.
+   * Get the latest root hash (app_hash) from the configured RPC endpoint.
    *
-   * This is the cryptographically verified root hash that proofs should be
-   * verified against for trustless data verification.
+   * IMPORTANT: this fetches `app_hash` from the configured RPC endpoint
+   * WITHOUT commit or header verification — it trusts the configured RPC
+   * endpoint; header-signature verification of the fetched root is not yet
+   * wired into this path. Proofs verified against this root are therefore
+   * only as trustworthy as the endpoint that served it.
    */
   async getVerifiedRootHash(): Promise<string> {
     // Use /block_results for the latest app_hash — same as getVerifiedRootHashAtHeight
@@ -333,7 +347,13 @@ export class LightClient {
   }
 
   /**
-   * Get the verified root hash (app_hash) at a specific block height.
+   * Get the root hash (app_hash) at a specific block height from the
+   * configured RPC endpoint.
+   *
+   * IMPORTANT: this fetches `app_hash` from the configured RPC endpoint
+   * WITHOUT commit or header verification — it trusts the configured RPC
+   * endpoint; header-signature verification of the fetched root is not yet
+   * wired into this path.
    *
    * In CometBFT, block H's FinalizeBlock produces an app_hash that represents
    * state AFTER H. That hash is then committed into block H+1's header as
@@ -541,7 +561,7 @@ export class LightClient {
       ];
     }
 
-    console.debug(`Added trusted header at height ${height}`);
+    this.logger.debug(`Added trusted header at height ${height}`);
   }
 
   /**
@@ -558,12 +578,12 @@ export class LightClient {
           headers.push([endpoint, header]);
         }
       } catch (error) {
-        console.debug(`Failed to fetch header from ${endpoint}:`, error);
+        this.logger.debug(`Failed to fetch header from ${endpoint}:`, error);
       }
     }
 
     if (headers.length < this.config.minValidatorsForConsensus!) {
-      console.warn(`Only ${headers.length} validators responded, need ${this.config.minValidatorsForConsensus}`);
+      this.logger.warn(`Only ${headers.length} validators responded, need ${this.config.minValidatorsForConsensus}`);
       return undefined;
     }
 
@@ -625,7 +645,7 @@ export class LightClient {
           heights.push(header.header.height);
         }
       } catch (error) {
-        console.debug(`Failed to get latest height from ${endpoint}:`, error);
+        this.logger.debug(`Failed to get latest height from ${endpoint}:`, error);
       }
     }
 

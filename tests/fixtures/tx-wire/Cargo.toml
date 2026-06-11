@@ -1,0 +1,16 @@
+[package]
+name = "tx-wire-fixture-generator"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+# The real chain `Transaction` enum. Pinned to the standalone publish mirror of
+# `crates/types` so the fixtures round-trip through the exact deserializer the
+# API server's `Json<Transaction>` extractor uses — no path dep into a sibling
+# checkout, so this builds anywhere.
+willow-types = { git = "https://github.com/willow-network/willow-types", rev = "ed8ccff09f0b6be0fd91c253ce3b5c42e0e2b1b1" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

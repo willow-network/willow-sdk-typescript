@@ -128,10 +128,14 @@ export class BincodeReader {
   }
 
   /**
-   * Read a varint as bigint (u64-range).
+   * Read a varint as bigint, enforcing the u64 range.
    */
   readVarintU64(): bigint {
-    return this.readVarintU128();
+    const v = this.readVarintU128();
+    if (v > 0xffff_ffff_ffff_ffffn) {
+      throw new GroveDBVerificationError(`Varint value ${v} exceeds u64 range`);
+    }
+    return v;
   }
 
   /**
@@ -237,7 +241,7 @@ export function hexToBytes(hex: string): Uint8Array {
   }
   const bytes = new Uint8Array(clean.length / 2);
   for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(clean.substr(i * 2, 2), 16);
+    bytes[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
   }
   return bytes;
 }

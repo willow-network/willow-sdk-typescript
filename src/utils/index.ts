@@ -35,10 +35,13 @@ export function createDidFromWallet(wallet: { address: string; publicKey: string
 }
 
 /**
- * Validate DID format
+ * Validate DID format: `did:willow:<body>` where the body is a non-empty run
+ * of ASCII alphanumerics, hyphens, and underscores (e.g. `did:willow:devnet-test`,
+ * `did:willow:owner_1700000000`). Mirrors the chain's `validate_did`, which
+ * does not permit further colon-separated segments in the body.
  */
 export function isValidDid(did: string): boolean {
-  return /^did:willow:[a-zA-Z0-9]+:[a-zA-Z0-9]+$/.test(did);
+  return /^did:willow:[a-zA-Z0-9_-]+$/.test(did);
 }
 
 /**

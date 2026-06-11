@@ -8,7 +8,8 @@
  *
  * Prerequisites:
  * - npm install @willow-network/sdk
- * - Run a local Willow node: ./scripts/start_node.sh
+ * - A local Willow node with its API server on port 3031 — see the docs
+ *   for node setup: https://willow.tech
  *
  * Run with: npx ts-node examples/app_registration.ts
  */
@@ -16,7 +17,7 @@
 import {
   WillowClient,
   generateEd25519KeyPair,
-  RegisterDatasetRequest,
+  RegisterSubgroveRequest,
   SchemaDefinition,
 } from '../src';
 
@@ -75,10 +76,9 @@ async function main() {
     required_fields: ['sku', 'name', 'category', 'price'],
   };
 
-  const productsDataset: RegisterDatasetRequest = {
+  const productsDataset: RegisterSubgroveRequest = {
     dataset_id: 'products',
     name: 'Product Catalog',
-    dataset_path: ['collections'],
     schema: productsSchema,
     owner_did: did,
     writers: [did],
@@ -86,9 +86,9 @@ async function main() {
   };
 
   try {
-    const dataset = await client.registerDataset(productsDataset);
-    console.log('   Products dataset created');
-    console.log(`   Dataset ID: ${dataset.dataset_id}`);
+    const result = await client.registerSubgrove(productsDataset);
+    console.log('   Products subgrove registered');
+    console.log(`   Tx hash: ${result.txHash}`);
     console.log(`   Indexes:    ${productsSchema.indexes?.length ?? 0}\n`);
   } catch (error) {
     console.log(`   Note: ${error}\n`);
@@ -117,10 +117,9 @@ async function main() {
     required_fields: ['order_id', 'customer_did', 'items', 'total', 'status'],
   };
 
-  const ordersDataset: RegisterDatasetRequest = {
+  const ordersDataset: RegisterSubgroveRequest = {
     dataset_id: 'orders',
     name: 'Customer Orders',
-    dataset_path: ['collections'],
     schema: ordersSchema,
     owner_did: did,
     writers: [did],
@@ -128,9 +127,9 @@ async function main() {
   };
 
   try {
-    const dataset = await client.registerDataset(ordersDataset);
-    console.log('   Orders dataset created');
-    console.log(`   Dataset ID: ${dataset.dataset_id}`);
+    const result = await client.registerSubgrove(ordersDataset);
+    console.log('   Orders subgrove registered');
+    console.log(`   Tx hash: ${result.txHash}`);
     console.log('   Access: private (owner only)\n');
   } catch (error) {
     console.log(`   Note: ${error}\n`);
@@ -157,10 +156,9 @@ async function main() {
     required_fields: ['user_did', 'username'],
   };
 
-  const usersDataset: RegisterDatasetRequest = {
+  const usersDataset: RegisterSubgroveRequest = {
     dataset_id: 'users',
     name: 'User Profiles',
-    dataset_path: ['collections'],
     schema: usersSchema,
     owner_did: did,
     writers: [did],
@@ -168,9 +166,9 @@ async function main() {
   };
 
   try {
-    const dataset = await client.registerDataset(usersDataset);
-    console.log('   Users dataset created');
-    console.log(`   Dataset ID: ${dataset.dataset_id}`);
+    const result = await client.registerSubgrove(usersDataset);
+    console.log('   Users subgrove registered');
+    console.log(`   Tx hash: ${result.txHash}`);
     console.log('   Access: public read, owner write\n');
   } catch (error) {
     console.log(`   Note: ${error}\n`);

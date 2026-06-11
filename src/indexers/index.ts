@@ -8,8 +8,8 @@
 // at that URL. The routing layer treats the "explicit" and "discovered"
 // cases uniformly via `effectiveQueryEndpoint`.
 
-import axios, { AxiosInstance } from "axios";
 import { ApiResponse } from "../types";
+import { HttpClient } from "../internal/http";
 
 /**
  * Wire shape of indexer registration info returned by the API.
@@ -61,7 +61,7 @@ export interface WillowIndexersOptions {
  * ```
  */
 export class WillowIndexers {
-  private api: AxiosInstance;
+  private api: HttpClient;
   private apiUrl: string;
   private indexerUrl?: string;
   private cacheTtlMs: number;
@@ -72,10 +72,7 @@ export class WillowIndexers {
     this.apiUrl = apiUrl;
     this.indexerUrl = options.indexerUrl;
     this.cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
-    this.api = axios.create({
-      baseURL: apiUrl,
-      headers: { "Content-Type": "application/json" },
-    });
+    this.api = new HttpClient({ baseURL: apiUrl });
   }
 
   /**
@@ -111,7 +108,7 @@ export class WillowIndexers {
     this.inflight = (async () => {
       try {
         const resp = await this.api.get<ApiResponse<ApiIndexerInfo[]>>("/indexers");
-        const data = resp.data?.data ?? [];
+        const data = resp?.data ?? [];
         this.cache = { data, fetchedAt: Date.now() };
         return data;
       } finally {

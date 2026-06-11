@@ -24,10 +24,41 @@
 
 import type { WillowIndexers } from "../indexers";
 import { effectiveQueryEndpoint } from "../indexers";
+import { WillowError } from "../types";
 
 export type UnsubscribeFn = () => void;
 
 export type SubscribeSource = "validator" | "indexer";
+
+/**
+ * Minimal WebSocket surface the subscription client needs. Satisfied by
+ * the browser/Node 22+ global `WebSocket` and by the `ws` package.
+ */
+export interface WebSocketLike {
+  readyState: number;
+  send(data: string): void;
+  close(): void;
+  addEventListener(type: string, listener: (event: any) => void): void;
+}
+
+/** Constructor shape for an injectable WebSocket implementation. */
+export type WebSocketConstructor = new (
+  url: string,
+  protocols?: string | string[],
+) => WebSocketLike;
+
+export interface WillowSubscriptionsOptions {
+  /**
+   * WebSocket implementation to use. Defaults to `globalThis.WebSocket`,
+   * which exists in browsers and Node 22+. On older Node versions there is
+   * no global — pass an implementation (e.g. the `ws` package's `WebSocket`
+   * class) or `subscribe` throws `WEBSOCKET_UNAVAILABLE`.
+   */
+  webSocket?: WebSocketConstructor;
+}
+
+// readyState OPEN per the WHATWG WebSocket spec (shared by every implementation).
+const WS_OPEN = 1;
 
 export interface SubscribeOptions {
   /** Optional GraphQL variables. */
@@ -127,10 +158,12 @@ export class WillowSubscriptions {
   private apiUrl: string;
   private indexers?: WillowIndexers;
   private counter = 0;
+  private webSocketImpl?: WebSocketConstructor;
 
-  constructor(apiUrl: string, indexers?: WillowIndexers) {
+  constructor(apiUrl: string, indexers?: WillowIndexers, options?: WillowSubscriptionsOptions) {
     this.apiUrl = apiUrl;
     this.indexers = indexers;
+    this.webSocketImpl = options?.webSocket;
   }
 
   /**
@@ -147,6 +180,11 @@ export class WillowSubscriptions {
    * the discovery cache first so failover to a different indexer is
    * automatic.
    *
+   * Requires a WebSocket implementation: the global `WebSocket` (browsers,
+   * Node 22+) or one injected via the constructor's `webSocket` option.
+   * Throws a `WillowError` with code `WEBSOCKET_UNAVAILABLE` when neither
+   * is present (e.g. Node ≤ 20 without the `ws` package).
+   *
    * @param subgroveId - Subgrove ID — used for indexer selection when
    *   `source: 'indexer'`; otherwise informational.
    * @param query - GraphQL subscription document
@@ -160,6 +198,19 @@ export class WillowSubscriptions {
     onNext: (payload: { data?: any; errors?: any[] }) => void,
     options: SubscribeOptions = {},
   ): UnsubscribeFn {
+    const WebSocketImpl =
+      this.webSocketImpl ??
+      ((globalThis as any).WebSocket as WebSocketConstructor | undefined);
+    if (!WebSocketImpl) {
+      throw new WillowError(
+        "No WebSocket implementation available. A global WebSocket exists in " +
+          "browsers and Node 22+; on older Node versions pass one (e.g. the " +
+          "`ws` package's WebSocket class) via `new WillowSubscriptions(url, " +
+          "indexers, { webSocket })` or the WillowClient `webSocket` config.",
+        "WEBSOCKET_UNAVAILABLE",
+      );
+    }
+
     const source: SubscribeSource = options.source ?? "validator";
     const reconnectEnabled = options.reconnect ?? true;
     const maxAttempts = options.maxReconnectAttempts ?? Infinity;
@@ -173,7 +224,7 @@ export class WillowSubscriptions {
     // consistent across both paths in the switch below.
     const id = `sub-${++this.counter}-${Date.now()}`;
 
-    let socket: WebSocket | null = null;
+    let socket: WebSocketLike | null = null;
     let closedByClient = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let attempts = 0;
@@ -182,8 +233,8 @@ export class WillowSubscriptions {
     // first indexer resolve.
     let lastIndexerDid: string | null = null;
 
-    const sendOn = (s: WebSocket, msg: ClientMessage) => {
-      if (s.readyState === WebSocket.OPEN) {
+    const sendOn = (s: WebSocketLike, msg: ClientMessage) => {
+      if (s.readyState === WS_OPEN) {
         s.send(JSON.stringify(msg));
       }
     };
@@ -218,17 +269,17 @@ export class WillowSubscriptions {
 
     const wireSocket = (wsUrl: string) => {
       if (closedByClient) return;
-      socket = new WebSocket(wsUrl, "graphql-transport-ws");
+      socket = new WebSocketImpl(wsUrl, "graphql-transport-ws");
       const s = socket;
 
       s.addEventListener("open", () => {
         sendOn(s, { type: "connection_init", payload: options.connectionPayload ?? {} });
       });
 
-      s.addEventListener("message", (ev: MessageEvent) => {
+      s.addEventListener("message", (ev: { data?: unknown }) => {
         let msg: ServerMessage;
         try {
-          msg = JSON.parse(String((ev as any).data));
+          msg = JSON.parse(String(ev.data));
         } catch (err) {
           options.onError?.(err);
           return;
@@ -364,7 +415,7 @@ export class WillowSubscriptions {
     return () => {
       closedByClient = true;
       clearReconnectTimer();
-      if (socket && socket.readyState === WebSocket.OPEN) {
+      if (socket && socket.readyState === WS_OPEN) {
         sendOn(socket, { type: "complete", id });
       }
       try {

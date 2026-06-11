@@ -10,16 +10,16 @@
  *   - `Disabled`: no verification, raw passthrough.
  */
 
-import axios, { type AxiosInstance } from "axios";
 import { keccak_256 } from "@noble/hashes/sha3";
-import { concat, encodeRlp, getBytes, hexlify, toBeArray, toBigInt } from "ethers";
+import { encodeRlp, getBytes, hexlify, toBeArray, toBigInt } from "ethers";
 
+import { HttpClient } from "../internal/http";
+import { base64ToBytes, bytesToHex } from "../internal/bytes";
 import { verifyMptProof } from "./mpt";
 import {
   type AccountState,
   type EthCallRequestBody,
   type EthVerifiableRpcResponse,
-  type MptProof,
   type StateProof,
   type StorageSlotProof,
   type VerifiedCall,
@@ -33,22 +33,23 @@ export { verifyMptProof } from "./mpt";
 
 /** SDK operations for verifiable Ethereum state reads. */
 export class EthOperations {
-  private http: AxiosInstance;
+  private http: HttpClient;
   private mode: StateVerifyMode = StateVerifyMode.Strict;
 
-  constructor(private indexerBaseUrl: string, http?: AxiosInstance, apiKey?: string) {
+  constructor(private indexerBaseUrl: string, http?: HttpClient, apiKey?: string) {
     this.http =
       http ??
-      axios.create({
+      new HttpClient({
         baseURL: indexerBaseUrl,
         headers: apiKey ? { 'X-API-Key': apiKey } : {},
       });
   }
 
-  /** Set the verification mode for subsequent calls. */
-  withMode(mode: StateVerifyMode): this {
-    this.mode = mode;
-    return this;
+  /** Return a copy of this client that verifies with `mode`. */
+  withMode(mode: StateVerifyMode): EthOperations {
+    const next = new EthOperations(this.indexerBaseUrl, this.http);
+    next.mode = mode;
+    return next;
   }
 
   /**
@@ -65,11 +66,10 @@ export class EthOperations {
       slots,
       block: blockNumber,
     };
-    const resp = await this.http.post<EthVerifiableRpcResponse>(
+    const envelope = await this.http.post<EthVerifiableRpcResponse>(
       "/verifiable-rpc/eth/state",
       body,
     );
-    const envelope = resp.data;
     const proof = envelope.state_proofs?.[0];
     if (!proof) {
       throw new Error("response carried no state proof");
@@ -90,18 +90,17 @@ export class EthOperations {
     blockNumber: number,
   ): Promise<VerifiedCall> {
     const body: EthCallRequestBody = { tx, block: blockNumber };
-    const resp = await this.http.post<EthVerifiableRpcResponse>(
+    const envelope = await this.http.post<EthVerifiableRpcResponse>(
       "/verifiable-rpc/eth/call",
       body,
     );
-    const envelope = resp.data;
     const proofs = envelope.state_proofs ?? [];
     if (this.mode === StateVerifyMode.Strict) {
       for (const p of proofs) {
         verifyStateProof(p);
       }
     }
-    const result = `0x${Buffer.from(envelope.answer, "base64").toString("hex")}`;
+    const result = `0x${bytesToHex(base64ToBytes(envelope.answer))}`;
     const blockNumberResp = envelope.block_range[0];
     const blockHash = proofs[0]
       ? bytesToHex32(proofs[0].block_hash)
@@ -180,7 +179,7 @@ export class EthOperations {
     const tokenIdBytes = padBigIntTo32(tokenId);
     const buf = new Uint8Array(64);
     buf.set(tokenIdBytes, 0);
-    buf[63] = slot;
+    buf.set(slotIndexTo32(slot), 32);
     const storageSlot = hexlify(keccak_256(buf));
     const state = await this.getState(contract, [storageSlot], blockNumber);
     if (state.storage.length === 0) {
@@ -188,7 +187,7 @@ export class EthOperations {
     }
     const value = state.storage[0].value;
     const bytes = padBigIntTo32(value);
-    return `0x${Buffer.from(bytes.slice(12)).toString("hex")}`;
+    return `0x${bytesToHex(bytes.slice(12))}`;
   }
 
   /**
@@ -244,7 +243,7 @@ function verifyStorageSlot(sp: StorageSlotProof, storageHash: Uint8Array): void 
   const slotBytes = bytesFromArray(sp.slot);
   const slotHash = keccak_256(slotBytes);
   const valueBig = bytesToBigInt(bytesFromArray(sp.value));
-  const valueRlp = getBytes(encodeRlp(valueBig === 0n ? "0x" : "0x" + valueBig.toString(16)));
+  const valueRlp = getBytes(encodeRlp(bigIntToHex(valueBig)));
   const r = verifyMptProof(
     storageHash,
     slotHash,
@@ -253,19 +252,29 @@ function verifyStorageSlot(sp: StorageSlotProof, storageHash: Uint8Array): void 
   );
   if (!r.ok) {
     throw new Error(
-      `state proof: storage slot 0x${Buffer.from(slotBytes).toString("hex")} failed: ${r.error}`,
+      `state proof: storage slot 0x${bytesToHex(slotBytes)} failed: ${r.error}`,
     );
   }
 }
 
 /** RLP-encode an account leaf: [nonce, balance, storageRoot, codeHash]. */
 function rlpEncodeAccount(state: AccountState): Uint8Array {
-  const nonceHex = state.nonce === 0 ? "0x" : "0x" + state.nonce.toString(16);
-  const balanceBig = bytesToBigInt(bytesFromArray(state.balance));
-  const balanceHex = balanceBig === 0n ? "0x" : "0x" + balanceBig.toString(16);
-  const storageRoot = "0x" + Buffer.from(bytesFromArray(state.storage_hash)).toString("hex");
-  const codeHash = "0x" + Buffer.from(bytesFromArray(state.code_hash)).toString("hex");
+  const nonceHex = bigIntToHex(BigInt(state.nonce));
+  const balanceHex = bigIntToHex(bytesToBigInt(bytesFromArray(state.balance)));
+  const storageRoot = "0x" + bytesToHex(bytesFromArray(state.storage_hash));
+  const codeHash = "0x" + bytesToHex(bytesFromArray(state.code_hash));
   return getBytes(encodeRlp([nonceHex, balanceHex, storageRoot, codeHash]));
+}
+
+/**
+ * RLP scalar as a minimal big-endian hex string. `0x` for zero; otherwise an
+ * even-length hex body — `toString(16)` drops a leading zero nibble, and the
+ * odd-length result is rejected by strict RLP decoders downstream.
+ */
+function bigIntToHex(value: bigint): string {
+  if (value === 0n) return "0x";
+  const hex = value.toString(16);
+  return "0x" + (hex.length % 2 === 0 ? hex : "0" + hex);
 }
 
 /* ---------- conversions ---------- */
@@ -293,11 +302,11 @@ function bytesFromArray(arr: number[]): Uint8Array {
 }
 
 function bytesToHex20(arr: number[]): string {
-  return "0x" + Buffer.from(arr).toString("hex").padStart(40, "0");
+  return "0x" + bytesToHex(bytesFromArray(arr)).padStart(40, "0");
 }
 
 function bytesToHex32(arr: number[]): string {
-  return "0x" + Buffer.from(arr).toString("hex").padStart(64, "0");
+  return "0x" + bytesToHex(bytesFromArray(arr)).padStart(64, "0");
 }
 
 function bytesToBigInt(arr: Uint8Array): bigint {
@@ -317,10 +326,16 @@ function padBigIntTo32(value: bigint): Uint8Array {
   return padded;
 }
 
+/** Encode a slot index as a 32-byte big-endian word. */
+function slotIndexTo32(slot: number): Uint8Array {
+  if (!Number.isSafeInteger(slot) || slot < 0) {
+    throw new Error(`storage slot index must be a non-negative integer, got ${slot}`);
+  }
+  return padBigIntTo32(BigInt(slot));
+}
+
 function numberSlotToHex(slot: number): string {
-  const buf = new Uint8Array(32);
-  buf[31] = slot & 0xff;
-  return hexlify(buf);
+  return hexlify(slotIndexTo32(slot));
 }
 
 /** keccak256(left_pad(address, 32) || left_pad(slot_index, 32)). */
@@ -334,9 +349,6 @@ function mappingSlotForAddressBytes(
 ): Uint8Array {
   const buf = new Uint8Array(64);
   buf.set(addrBytes, 12);
-  buf[63] = slotIndex & 0xff;
+  buf.set(slotIndexTo32(slotIndex), 32);
   return keccak_256(buf);
 }
-
-// Silence unused-import on rare paths
-void concat;

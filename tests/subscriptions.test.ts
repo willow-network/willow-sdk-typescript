@@ -9,18 +9,20 @@
 
 import { WillowSubscriptions } from '../src/subscriptions';
 import { WillowIndexers } from '../src/indexers';
+import { WillowError } from '../src/types';
 
-// Minimal jest mock for axios so WillowIndexers construction doesn't
-// blow up — the indexer tests use a more elaborate setup, we just need
-// `axios.create()` to return something with a `get` method.
-jest.mock('axios', () => {
-  const mockInstance = { get: jest.fn() };
+// Mock the global fetch used by WillowIndexers' HttpClient so indexer
+// discovery doesn't hit the network.
+const mockFetch = jest.fn();
+global.fetch = mockFetch as unknown as typeof fetch;
+
+function jsonResponse(body: unknown, status = 200) {
   return {
-    __esModule: true,
-    default: { create: jest.fn(() => mockInstance) },
-    _mockInstance: mockInstance,
-  };
-});
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => JSON.stringify(body),
+  } as Response;
+}
 
 class FakeWebSocket {
   static OPEN = 1;
@@ -145,9 +147,8 @@ describe('WillowSubscriptions — validator source (default)', () => {
 
 describe('WillowSubscriptions — indexer source', () => {
   function stubDiscovery(endpoint: string) {
-    const axios = require('axios')._mockInstance;
-    axios.get.mockResolvedValue({
-      data: {
+    mockFetch.mockResolvedValue(
+      jsonResponse({
         success: true,
         data: [
           {
@@ -161,8 +162,8 @@ describe('WillowSubscriptions — indexer source', () => {
             last_update: 0,
           },
         ],
-      },
-    });
+      }),
+    );
   }
 
   it('resolves an indexer via discovery and connects to its /graphql/ws', async () => {
@@ -184,7 +185,6 @@ describe('WillowSubscriptions — indexer source', () => {
   });
 
   it('honors the explicit indexerUrl override without calling discovery', async () => {
-    const axios = require('axios')._mockInstance;
     const indexers = new WillowIndexers('http://validator:3031', {
       indexerUrl: 'http://pinned:3032',
     });
@@ -197,14 +197,13 @@ describe('WillowSubscriptions — indexer source', () => {
     await new Promise((r) => setTimeout(r, 0));
 
     // Discovery endpoint must not have been called.
-    expect(axios.get).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
     expect(FakeWebSocket.instances).toHaveLength(1);
     expect(FakeWebSocket.instances[0].url).toBe('ws://pinned:3032/graphql/ws');
   });
 
   it('calls onError when no indexer serves the subgrove', async () => {
-    const axios = require('axios')._mockInstance;
-    axios.get.mockResolvedValue({ data: { success: true, data: [] } });
+    mockFetch.mockResolvedValue(jsonResponse({ success: true, data: [] }));
     const indexers = new WillowIndexers('http://validator:3031');
     const subs = new WillowSubscriptions('http://validator:3031', indexers);
 
@@ -467,11 +466,10 @@ describe('WillowSubscriptions — reconnect', () => {
   });
 
   it('evicts the dead indexer and fails over to a different one', async () => {
-    const axios = require('axios')._mockInstance;
     // Two indexers serve the subgrove. After the first one drops, the
     // SDK should evict it and pick the second.
-    axios.get.mockResolvedValue({
-      data: {
+    mockFetch.mockResolvedValue(
+      jsonResponse({
         success: true,
         data: [
           {
@@ -495,8 +493,8 @@ describe('WillowSubscriptions — reconnect', () => {
             last_update: 0,
           },
         ],
-      },
-    });
+      }),
+    );
     const indexers = new WillowIndexers('http://validator:3031');
     const subs = new WillowSubscriptions('http://validator:3031', indexers);
 
@@ -529,5 +527,40 @@ describe('WillowSubscriptions — reconnect', () => {
     expect(FakeWebSocket.instances[1].url).toContain('backup');
 
     unsubscribe();
+  });
+});
+
+describe('WillowSubscriptions — injectable WebSocket implementation', () => {
+  it('uses the injected implementation instead of the global', () => {
+    class InjectedWebSocket extends FakeWebSocket {}
+    (globalThis as any).WebSocket = undefined;
+
+    const subs = new WillowSubscriptions('http://validator:3031', undefined, {
+      webSocket: InjectedWebSocket as any,
+    });
+    const unsubscribe = subs.subscribe('sg', 'subscription { x }', () => {});
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(FakeWebSocket.instances[0]).toBeInstanceOf(InjectedWebSocket);
+
+    unsubscribe();
+  });
+
+  it('throws WEBSOCKET_UNAVAILABLE at subscribe time when no implementation exists', () => {
+    const original = (globalThis as any).WebSocket;
+    delete (globalThis as any).WebSocket;
+    try {
+      const subs = new WillowSubscriptions('http://validator:3031');
+      let err: unknown;
+      try {
+        subs.subscribe('sg', 'subscription { x }', () => {});
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(WillowError);
+      expect((err as WillowError).code).toBe('WEBSOCKET_UNAVAILABLE');
+    } finally {
+      (globalThis as any).WebSocket = original;
+    }
   });
 });
