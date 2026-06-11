@@ -18,11 +18,6 @@ TypeScript/JavaScript SDK for interacting with the Willow decentralized data inf
 
 ## Installation
 
-<!-- REMOVE-ON-PUBLISH: delete the pre-publish git-install note below once @willow-network/sdk is live on npm. Paired with the CHANGELOG [0.1.0] - Unreleased marker. -->
-> **Not yet published to npm.** Until the first release lands, install from git:
-> `npm install github:willow-network/willow-sdk-typescript`
-<!-- /REMOVE-ON-PUBLISH -->
-
 ```bash
 npm install @willow-network/sdk
 # or

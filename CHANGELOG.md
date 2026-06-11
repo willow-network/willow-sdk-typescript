@@ -4,8 +4,7 @@ All notable changes to this package are documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 package adheres to [Semantic Versioning](https://semver.org/).
 
-<!-- REMOVE-ON-PUBLISH: on release, change "[0.1.0] - Unreleased" to "[0.1.0] - <date>", drop "Unreleased", and delete the README pre-publish git-install note (README.md "## Installation"). -->
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-06-11
 
 First npm release. Everything below describes changes made while preparing
 the previously git-only SDK for publication; if you consumed the SDK from
