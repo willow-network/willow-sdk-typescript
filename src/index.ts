@@ -164,10 +164,7 @@ export { FileOperations, encryptFile, decryptFile } from "./files";
 export type { FileManifest, FileListResponse, FileEncryption } from "./files";
 
 // Export privacy / key grant management
-export {
-  PrivacyOperations,
-  CommitmentFrequency,
-} from "./privacy";
+export { PrivacyOperations, CommitmentFrequency } from "./privacy";
 export type {
   PrivacyConfig,
   EncryptedKeyGrant,
@@ -175,9 +172,7 @@ export type {
 } from "./privacy";
 
 // Export ERC-8004 agent identity
-export {
-  Erc8004Client,
-} from "./erc8004";
+export { Erc8004Client } from "./erc8004";
 export type {
   LinkEthAddressTx,
   RegisterErc8004AgentTx,
@@ -217,6 +212,27 @@ export type {
   DayAggregate,
   VaultDailyStatsRow,
 } from "./aggregates/vault-daily-stats";
+
+// Client-side completeness verification: re-derive the on-chain
+// `events_commitment` (canonical keccak-256 over the filter-matched event
+// set) from indexer-served logs and compare against the trusted anchor.
+export {
+  canonicalEventSetHash,
+  canonicalEventSetHashHex,
+  verifyServedEvents,
+  // End-to-end wrapper: fetch on-chain anchor + indexer preimage, verify.
+  CompletenessClient,
+  CompletenessUnavailableError,
+  logsFromMatchedResponse,
+} from "./completeness";
+export type {
+  Log,
+  BlockNumber,
+  ByteInput,
+  CompletenessClientOptions,
+  IndexedLog,
+  MatchedLogsResponse,
+} from "./completeness";
 
 // Export version
 export const VERSION = "0.1.0";
