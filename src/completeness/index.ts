@@ -15,12 +15,9 @@
  * deliberately excludes transaction hashes, indices, and block-header
  * fields, so every honest party computes the same value.
  *
- * NOTE: there is no `verifyBlockCompleteness(subgroveId, blockNumber)`
- * convenience here. That would require both an ABCI store-query helper for
- * the `events_commitment` anchor and an indexer client for the matched-log
- * preimage endpoint, neither of which this SDK wires up yet. Fetch the
- * 32-byte commitment and the matched logs with your own transport, then
- * call `verifyServedEvents` directly.
+ * For the full end-to-end check — fetch the on-chain anchor + the indexer's
+ * matched-log preimage and verify — use {@link CompletenessClient}
+ * (`./client`), which wires both transports on top of `verifyServedEvents`.
  */
 
 import { keccak_256 } from "@noble/hashes/sha3";
@@ -177,3 +174,15 @@ export function verifyServedEvents(
   const actual = canonicalEventSetHash(blockNumber, matchedLogs);
   return constantTimeEquals(expected, actual);
 }
+
+// End-to-end wrapper: fetch the on-chain anchor + indexer preimage, verify.
+export {
+  CompletenessClient,
+  CompletenessUnavailableError,
+  logsFromMatchedResponse,
+} from "./client";
+export type {
+  CompletenessClientOptions,
+  IndexedLog,
+  MatchedLogsResponse,
+} from "./client";

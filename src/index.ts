@@ -220,8 +220,19 @@ export {
   canonicalEventSetHash,
   canonicalEventSetHashHex,
   verifyServedEvents,
+  // End-to-end wrapper: fetch on-chain anchor + indexer preimage, verify.
+  CompletenessClient,
+  CompletenessUnavailableError,
+  logsFromMatchedResponse,
 } from "./completeness";
-export type { Log, BlockNumber, ByteInput } from "./completeness";
+export type {
+  Log,
+  BlockNumber,
+  ByteInput,
+  CompletenessClientOptions,
+  IndexedLog,
+  MatchedLogsResponse,
+} from "./completeness";
 
 // Export version
 export const VERSION = "0.1.0";
