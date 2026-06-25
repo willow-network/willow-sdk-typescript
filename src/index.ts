@@ -52,6 +52,9 @@ export { generateWallet, createDidFromWallet, isValidDid } from "./utils";
 // Export proof verification
 export * from "./proof";
 
+// Export verifiable RPC (direct indexer->client verified reads)
+export * from "./verifiable-rpc";
+
 // Export computed fields
 export {
   ComputedFieldRegistry,

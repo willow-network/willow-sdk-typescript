@@ -2,6 +2,7 @@ import { WillowAuth } from "./auth";
 import { WillowData } from "./data";
 import { FileOperations } from "./files";
 import { EthOperations } from "./eth-state";
+import { VerifiableRpcOperations } from "./verifiable-rpc";
 import { ConsensusClient } from "./consensus";
 import { BroadcastResult, RegisterSubgroveOptions, Signer, SubgroveMode } from "./consensus/types";
 import { WillowIndexers } from "./indexers";
@@ -64,6 +65,8 @@ export class WillowClient {
   public subscriptions: WillowSubscriptions;
   /** Verifiable Ethereum state-read operations (`/verifiable-rpc/eth/*`). */
   public eth: EthOperations;
+  /** Direct indexer→client verifiable reads (inclusion + transformation proofs). */
+  public verifiableRpc: VerifiableRpcOperations;
 
   constructor(config: WillowConfig) {
     this.config = config;
@@ -93,6 +96,7 @@ export class WillowClient {
       this.auth.getAuthHeaders(method, path),
     );
     this.eth = new EthOperations(config.indexerUrl ?? config.apiUrl, undefined, config.apiKey);
+    this.verifiableRpc = new VerifiableRpcOperations(config.indexerUrl ?? config.apiUrl);
 
     this.consensus = new ConsensusClient({
       consensusRpcUrl: cometUrl,
