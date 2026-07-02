@@ -1,4 +1,4 @@
-import { WillowAuth } from "./auth";
+import { WillowAuth, SignatureAlgorithm, algorithmFromKeyType } from "./auth";
 import { WillowData } from "./data";
 import { FileOperations } from "./files";
 import { EthOperations } from "./eth-state";
@@ -108,9 +108,20 @@ export class WillowClient {
   }
 
   /**
-   * Initialize the client with authentication
+   * Initialize the client with authentication.
+   *
+   * @param algorithm - Optional per-request signature algorithm. Self-certifying
+   *   Willow DIDs no longer encode the algorithm in the id, so a secp256k1
+   *   (Ethereum/wallet) identity must be signalled some other way. When omitted,
+   *   `init` derives it from the resolved DID document's key type (the
+   *   authoritative source); pass it explicitly to override or when supplying
+   *   your own `publicKeyId` skips the DID-document lookup.
    */
-  async init(privateKey?: string, publicKeyId?: string): Promise<void> {
+  async init(
+    privateKey?: string,
+    publicKeyId?: string,
+    algorithm?: SignatureAlgorithm,
+  ): Promise<void> {
     if (!this.config.did) {
       throw new Error("DID is required for initialization");
     }
@@ -120,15 +131,20 @@ export class WillowClient {
       throw new Error("Private key is required for authentication");
     }
 
+    let resolvedAlgorithm = algorithm;
     if (!publicKeyId) {
       const didDoc = await this.auth.getDidDocument(this.config.did);
       if (didDoc.publicKeys.length === 0) {
         throw new Error("No public keys found in DID document");
       }
       publicKeyId = didDoc.publicKeys[0].id;
+      // The on-chain DID document's key type is the authoritative algorithm
+      // signal for self-certifying ids. An explicit `algorithm` still wins.
+      resolvedAlgorithm =
+        resolvedAlgorithm ?? algorithmFromKeyType(didDoc.publicKeys[0].type);
     }
 
-    this.auth.setIdentity(this.config.did, key, publicKeyId);
+    this.auth.setIdentity(this.config.did, key, publicKeyId, resolvedAlgorithm);
   }
 
   /**
