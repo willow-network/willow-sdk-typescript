@@ -5,6 +5,7 @@ export {
   WillowAuth,
   SignatureAlgorithm,
   detectAlgorithm,
+  algorithmFromKeyType,
   signEd25519,
   verifyEd25519,
   generateEd25519KeyPair,

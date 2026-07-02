@@ -3,9 +3,12 @@ import {
   verifyEd25519,
   generateEd25519KeyPair,
   getEd25519PublicKey,
-  detectAlgorithm
+  detectAlgorithm,
+  algorithmFromKeyType,
+  WillowAuth,
 } from '../src/auth';
 import { ed25519 } from '@noble/curves/ed25519';
+import { ethers } from 'ethers';
 
 describe('Auth', () => {
   const message = 'test message';
@@ -146,6 +149,94 @@ describe('Auth', () => {
 
     it('should default to Ed25519 for Willow DIDs', () => {
       expect(detectAlgorithm('did:willow:test')).toBe('Ed25519');
+    });
+  });
+
+  describe('algorithmFromKeyType', () => {
+    it('maps the secp256k1 DID-document key type to secp256k1', () => {
+      expect(algorithmFromKeyType('EcdsaSecp256k1VerificationKey2019')).toBe('secp256k1');
+      expect(algorithmFromKeyType('EcdsaSecp256k1RecoveryMethod2020')).toBe('secp256k1');
+    });
+
+    it('maps Ed25519 key types to Ed25519', () => {
+      expect(algorithmFromKeyType('Ed25519')).toBe('Ed25519');
+      expect(algorithmFromKeyType('Ed25519VerificationKey2020')).toBe('Ed25519');
+    });
+
+    it('returns undefined for unknown / missing types so callers can fall back', () => {
+      expect(algorithmFromKeyType('SomeFutureKey2099')).toBeUndefined();
+      expect(algorithmFromKeyType(undefined)).toBeUndefined();
+    });
+  });
+
+  describe('WillowAuth.signRequest algorithm selection (self-certifying DIDs)', () => {
+    // Self-certifying Willow DIDs (did:willow:z<base58btc(hash)>) no longer
+    // encode the algorithm, so the algorithm must be supplied explicitly (or
+    // derived from the DID document) rather than parsed from the id string.
+    const selfCertifyingDid =
+      'did:willow:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK';
+
+    it('signs with secp256k1 when the identity declares secp256k1', () => {
+      const wallet = ethers.Wallet.createRandom();
+      const auth = new WillowAuth('http://localhost:0');
+
+      // Raw-hex (no 0x) secp256k1 private key: this is exactly the case the old
+      // detectAlgorithm heuristic misclassified as Ed25519.
+      const rawHexKey = wallet.privateKey.replace(/^0x/, '');
+      expect(detectAlgorithm(selfCertifyingDid, rawHexKey)).toBe('Ed25519'); // fallback would be wrong
+
+      auth.setIdentity(
+        selfCertifyingDid,
+        wallet.privateKey,
+        `${selfCertifyingDid}#key-1`,
+        'secp256k1',
+      );
+
+      const headers = auth.signRequest('GET', '/v1/data/query');
+      const timestamp = headers['X-Timestamp'];
+      const message = `GET:/v1/data/query:${timestamp}`;
+      const messageHash = ethers.keccak256(ethers.toUtf8Bytes(message));
+
+      // A secp256k1 signature recovers to the wallet's address; an Ed25519
+      // signature would not be recoverable at all.
+      const recovered = ethers.verifyMessage(
+        ethers.getBytes(messageHash),
+        '0x' + headers['X-Signature'],
+      );
+      expect(recovered.toLowerCase()).toBe(wallet.address.toLowerCase());
+      // secp256k1 signatures are 65 bytes (130 hex chars); Ed25519 is 64 (128).
+      expect(headers['X-Signature'].length).toBe(130);
+    });
+
+    it('defaults to Ed25519 signing when no algorithm is given', () => {
+      const { privateKey, publicKey } = generateEd25519KeyPair();
+      const auth = new WillowAuth('http://localhost:0');
+
+      auth.setIdentity(selfCertifyingDid, privateKey, `${selfCertifyingDid}#key-1`);
+
+      const headers = auth.signRequest('POST', '/v1/data/write');
+      const timestamp = headers['X-Timestamp'];
+      const message = `POST:/v1/data/write:${timestamp}`;
+
+      expect(headers['X-Signature'].length).toBe(128); // 64-byte Ed25519 sig
+      expect(verifyEd25519(message, headers['X-Signature'], publicKey)).toBe(true);
+    });
+
+    it('lets an explicit algorithm override the private-key heuristic', () => {
+      // A 0x-prefixed 66-char key would heuristically look like secp256k1, but
+      // an explicit Ed25519 declaration must win.
+      const { privateKey } = generateEd25519KeyPair();
+      const auth = new WillowAuth('http://localhost:0');
+
+      auth.setIdentity(
+        selfCertifyingDid,
+        privateKey,
+        `${selfCertifyingDid}#key-1`,
+        'Ed25519',
+      );
+
+      const headers = auth.signRequest('GET', '/v1/status');
+      expect(headers['X-Signature'].length).toBe(128); // Ed25519, not secp256k1
     });
   });
 

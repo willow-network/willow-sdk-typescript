@@ -14,10 +14,19 @@ import { bytesToHex, hexToBytes } from '../internal/bytes';
 export type SignatureAlgorithm = 'Ed25519' | 'secp256k1';
 
 /**
- * Detect signature algorithm from DID or key format
+ * Best-effort signature-algorithm detection from a DID or key format.
+ *
+ * NOTE: self-certifying Willow DIDs (`did:willow:z<base58btc(hash)>`) no longer
+ * encode the algorithm in the id string, so the `:eth:` / `:eip155:` hints only
+ * fire for legacy/other-method DIDs. The private-key heuristic below is likewise
+ * ambiguous — an Ed25519 and a raw-hex secp256k1 key are both 64 hex chars — so
+ * it only recognizes secp256k1 when the key is in ethers' `0x`-prefixed 66-char
+ * form. Prefer the authoritative signal: pass the algorithm explicitly (e.g.
+ * derived from the on-chain DID document via {@link algorithmFromKeyType}) to
+ * {@link WillowAuth.setIdentity}. This function remains only as a fallback.
  */
 export function detectAlgorithm(did: string, privateKey?: string): SignatureAlgorithm {
-  // Check DID method hints
+  // Check DID method hints (legacy DIDs only; self-certifying ids carry none).
   if (did.includes(':eth:') || did.includes(':eip155:')) {
     return 'secp256k1';
   }
@@ -37,6 +46,32 @@ export function detectAlgorithm(did: string, privateKey?: string): SignatureAlgo
 
   // Default to Ed25519 for Willow DIDs
   return 'Ed25519';
+}
+
+/**
+ * Map a DID-document public-key / verification-method `type` to a signature
+ * algorithm.
+ *
+ * Because self-certifying Willow DIDs cannot reveal their algorithm from the id
+ * string, the on-chain DID document's key `type` is the authoritative signal.
+ * The SDK derives these types itself (see `createDidFromPublicKey` /
+ * `createDidFromWallet` in `../utils`): Ed25519 keys use `'Ed25519'` and
+ * secp256k1 keys use `'EcdsaSecp256k1VerificationKey2019'`. Other common W3C
+ * spellings are accepted too. Returns `undefined` for unrecognized types so
+ * callers can fall back to {@link detectAlgorithm}.
+ */
+export function algorithmFromKeyType(
+  type: string | undefined,
+): SignatureAlgorithm | undefined {
+  if (!type) return undefined;
+  const t = type.toLowerCase();
+  if (t.includes('secp256k1')) {
+    return 'secp256k1';
+  }
+  if (t.includes('ed25519')) {
+    return 'Ed25519';
+  }
+  return undefined;
 }
 
 /**
@@ -163,12 +198,25 @@ export class WillowAuth {
   /**
    * Set identity for per-request signing.
    * Call this once; all subsequent requests will be signed automatically.
+   *
+   * @param algorithm - Signature algorithm for per-request auth. Pass this
+   *   explicitly for secp256k1 (Ethereum/wallet) identities: self-certifying
+   *   Willow DIDs no longer encode the algorithm in the id, so it cannot be
+   *   parsed from `did`. When omitted, falls back to best-effort
+   *   {@link detectAlgorithm} (Ed25519 for a typical Willow DID), preserving
+   *   backward-compatible behavior. `WillowClient.init()` supplies this
+   *   automatically from the on-chain DID document's key type.
    */
-  setIdentity(did: string, privateKey: string, publicKeyId: string): void {
+  setIdentity(
+    did: string,
+    privateKey: string,
+    publicKeyId: string,
+    algorithm?: SignatureAlgorithm,
+  ): void {
     this.did = did;
     this.privateKey = privateKey;
     this.publicKeyId = publicKeyId;
-    this.algorithm = detectAlgorithm(did, privateKey);
+    this.algorithm = algorithm ?? detectAlgorithm(did, privateKey);
   }
 
   /**
