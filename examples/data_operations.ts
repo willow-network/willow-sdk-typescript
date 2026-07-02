@@ -24,6 +24,7 @@
 import {
   WillowClient,
   generateEd25519KeyPair,
+  createDidFromPublicKey,
   QueryRequest,
 } from '../src';
 
@@ -34,18 +35,13 @@ async function main() {
   const client = new WillowClient({ apiUrl: 'http://localhost:3031' });
 
   const { privateKey, publicKey } = generateEd25519KeyPair();
-  const timestamp = Date.now();
-  const did = `did:willow:data_demo_${timestamp}`;
-  const publicKeyId = `${did}#key-1`;
-
-  const didDocument = {
-    id: did,
-    publicKeys: [{ id: publicKeyId, type: 'Ed25519', publicKeyHex: publicKey }],
-    created: timestamp,
-    updated: timestamp,
-  };
+  // Self-certifying DID — id is derived from the key (see createDidFromPublicKey).
+  const didDocument = createDidFromPublicKey(publicKey, 'Ed25519');
+  const did = didDocument.id;
+  const publicKeyId = didDocument.publicKeys[0].id;
 
   console.log('Setting up identity...');
+  // A real deployment funds `did` (>= the registration fee) before registering.
   try {
     await client.registerDid(didDocument);
     client.auth.setIdentity(did, privateKey, publicKeyId);

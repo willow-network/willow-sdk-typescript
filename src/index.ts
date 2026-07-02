@@ -47,7 +47,14 @@ export type { HttpClientOptions, HttpRequestOptions } from "./internal/http";
 
 // Public DID/wallet helpers. The generic utils (sleep, retry, chunk,
 // generateId) are internal and intentionally not part of the package API.
-export { generateWallet, createDidFromWallet, isValidDid } from "./utils";
+export {
+  generateWallet,
+  createDidFromWallet,
+  createDidFromPublicKey,
+  deriveDid,
+  isValidDid,
+} from "./utils";
+export type { DidKeyAlgorithm } from "./utils";
 
 // Export proof verification
 export * from "./proof";

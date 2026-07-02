@@ -19,6 +19,7 @@
 import {
   WillowClient,
   generateEd25519KeyPair,
+  createDidFromPublicKey,
 } from '../src';
 
 async function main() {
@@ -46,28 +47,20 @@ async function main() {
   console.log(`   Private key: ${privateKey.substring(0, 16)}...`);
   console.log(`   Public key: ${publicKey.substring(0, 16)}...\n`);
 
-  // 3. Create DID document
-  console.log('3. Creating DID document...');
-  const timestamp = Date.now();
-  const did = `did:willow:quickstart_${timestamp}`;
-  const publicKeyId = `${did}#key-1`;
-
-  const didDocument = {
-    id: did,
-    publicKeys: [
-      {
-        id: publicKeyId,
-        type: 'Ed25519',
-        publicKeyHex: publicKey,
-      },
-    ],
-    created: timestamp,
-    updated: timestamp,
-  };
+  // 3. Derive the self-certifying DID document. The id is bound to the key
+  //    (did:willow:z<base58btc(SHA3-256(prefix||pubkey))>) — it cannot be
+  //    chosen, so it is stable across runs for a given key.
+  console.log('3. Deriving DID document...');
+  const didDocument = createDidFromPublicKey(publicKey, 'Ed25519');
+  const did = didDocument.id;
+  const publicKeyId = didDocument.publicKeys[0].id;
   console.log(`   DID: ${did}\n`);
 
-  // 4. Register the DID
-  console.log('4. Registering DID...');
+  // 4. Register the DID. Because the id is derived from the key, the DID must
+  //    already hold a balance: someone transfers at least the registration fee
+  //    to `did` first, then the holder registers and the fee is paid from that
+  //    balance. On a funded devnet this "just works"; otherwise fund it first.
+  console.log('4. Registering DID (must be pre-funded)...');
   try {
     await client.registerDid(didDocument);
     console.log('   DID registered successfully\n');

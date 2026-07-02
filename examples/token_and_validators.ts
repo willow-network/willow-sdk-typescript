@@ -21,7 +21,7 @@
  * Run with: npx ts-node examples/token_and_validators.ts
  */
 
-import { WillowClient, generateEd25519KeyPair } from '../src';
+import { WillowClient, generateEd25519KeyPair, createDidFromPublicKey } from '../src';
 
 async function fetchApi<T>(apiUrl: string, path: string): Promise<T> {
   const response = await fetch(`${apiUrl}${path}`);
@@ -85,17 +85,14 @@ async function main() {
   const client = new WillowClient({ apiUrl });
 
   const { privateKey, publicKey } = generateEd25519KeyPair();
-  const timestamp = Date.now();
-  const did = `did:willow:token_demo_${timestamp}`;
-  const publicKeyId = `${did}#key-1`;
-  const didDocument = {
-    id: did,
-    publicKeys: [{ id: publicKeyId, type: 'Ed25519', publicKeyHex: publicKey }],
-    created: timestamp,
-    updated: timestamp,
-  };
+  // Self-certifying DID — id is derived from the key (see createDidFromPublicKey).
+  const didDocument = createDidFromPublicKey(publicKey, 'Ed25519');
+  const did = didDocument.id;
+  const publicKeyId = didDocument.publicKeys[0].id;
 
   console.log('Setting up identity...');
+  // A real deployment funds `did` (>= the did_registration fee, printed below)
+  // before registering, since the fee is paid from the DID's own balance.
   try {
     await client.registerDid(didDocument);
     client.auth.setIdentity(did, privateKey, publicKeyId);
