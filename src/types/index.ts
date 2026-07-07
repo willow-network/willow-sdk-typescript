@@ -112,6 +112,7 @@ export interface GraphQLQueryOptions {
   source?: QuerySource;
   variables?: Record<string, any>;
   operationName?: string;
+  includeProof?: boolean;
 }
 
 export interface SqlQueryOptions {

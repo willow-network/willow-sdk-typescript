@@ -856,7 +856,10 @@ export class WillowData {
     query: string,
     options?: GraphQLQueryOptions,
   ): Promise<GraphQLQueryResult> {
-    const body: Record<string, unknown> = { query };
+    const body: Record<string, unknown> = {
+      query,
+      include_proof: options?.includeProof ?? false,
+    };
     if (options?.variables) body.variables = options.variables;
     if (options?.operationName) body.operationName = options.operationName;
 

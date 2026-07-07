@@ -95,6 +95,29 @@ describe("source: 'validator'", () => {
     expect(JSON.parse(init.body as string)).toMatchObject({ query: '{ hello }' });
   });
 
+  it('sends include_proof=false by default and true when opted in', async () => {
+    stubFetch([], () => jsonResponse({ data: { hello: 'world' } }));
+
+    const data = makeData();
+
+    // Default (field absent from options) must serialize include_proof: false.
+    await data.graphqlQuery('sg-1', '{ hello }', { source: 'validator' });
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body as string)).toMatchObject({
+      query: '{ hello }',
+      include_proof: false,
+    });
+
+    // Explicit opt-in must serialize include_proof: true.
+    await data.graphqlQuery('sg-1', '{ hello }', {
+      source: 'validator',
+      includeProof: true,
+    });
+    expect(JSON.parse(mockFetch.mock.calls[1][1].body as string)).toMatchObject({
+      query: '{ hello }',
+      include_proof: true,
+    });
+  });
+
   it('throws ValidatorHasNoDataError on 404 (VerifyOnly subgrove)', async () => {
     stubFetch([], () =>
       jsonResponse({ error: 'subgrove uses VerifyOnly retention' }, 404),
