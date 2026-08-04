@@ -16,14 +16,17 @@ TypeScript/JavaScript SDK for interacting with the Willow decentralized data inf
 - **Collection Helpers**: Convenient API for working with a single subgrove
 - **Silent by Default**: No console output unless you opt in via the injectable logger
 
+> **Install from source.** Willow's SDKs are not yet published to package registries.
+> The commands below install directly from this repository and work today.
+
 ## Installation
 
 ```bash
-npm install @willow-network/sdk
+npm install github:willow-network/willow-sdk-typescript
 # or
-yarn add @willow-network/sdk
+yarn add willow-network/willow-sdk-typescript
 # or
-pnpm add @willow-network/sdk
+pnpm add github:willow-network/willow-sdk-typescript
 ```
 
 Requires Node.js >= 18 (the SDK uses the global `fetch`). In the browser it runs without polyfills.
@@ -45,8 +48,7 @@ set it explicitly — operations that need CometBFT RPC throw with code
 ```typescript
 import { WillowClient, generateWallet, createDidFromWallet } from '@willow-network/sdk';
 
-// 1. Generate a wallet and derive its self-certifying DID. The id is
-//    bound to the key (did:willow:z…) — it is derived, never chosen.
+// 1. Generate a wallet and DID
 const wallet = generateWallet();
 const didDocument = createDidFromWallet(wallet);
 
@@ -58,10 +60,7 @@ const client = new WillowClient({
   privateKey: wallet.privateKey,
 });
 
-// 3. Fund the derived DID, THEN register it. Because the id is bound to the
-//    key you cannot pick a pre-funded address: someone must transfer at least
-//    the registration fee to `didDocument.id` first, then the holder registers
-//    (the fee is paid from that balance). On a funded devnet this "just works".
+// 3. Register and bootstrap the identity for per-request signing
 await client.registerDid(didDocument);
 await client.init();
 
@@ -501,52 +500,6 @@ const client = new WillowClient({
 
 ## Registration
 
-### Register a DID (self-certifying ids)
-
-Willow DIDs are **self-certifying**: the id is derived from the public key, not
-chosen. The chain's `RegisterDid` check rejects any id that is not exactly:
-
-```
-did = "did:willow:z" + base58btc( SHA3-256( multicodec_prefix || public_key ) )
-```
-
-- `SHA3-256` is FIPS-202 SHA3-256 (not Keccak-256).
-- Ed25519 uses the `0xED 0x01` multicodec prefix over the raw 32-byte key;
-  secp256k1 uses `0xE7 0x01` over the 33-byte **compressed** key.
-- `z` is the multibase base58btc marker.
-
-Use the SDK helpers to derive it — never hand-build a `did:willow:<chosen>` id:
-
-```typescript
-import {
-  generateEd25519KeyPair,
-  createDidFromPublicKey,
-  deriveDid,
-} from '@willow-network/sdk';
-
-const { privateKey, publicKey } = generateEd25519KeyPair();
-
-// Full DID document (id + #key-1), ready for client.registerDid(...)
-const didDocument = createDidFromPublicKey(publicKey, 'Ed25519');
-
-// Or just the derived id + public key id:
-const { did, publicKeyId } = deriveDid(publicKey, 'Ed25519');
-// createDidFromWallet(wallet) does the same for a secp256k1 Ethereum wallet.
-```
-
-**Bootstrap order (fund → register).** Because the id is bound to the key you
-cannot register against a separately pre-funded account — the id *is* the
-account. So a new DID is funded **before** it is registered:
-
-1. Derive the DID (`createDidFromPublicKey` / `createDidFromWallet`).
-2. Someone transfers **at least the DID registration fee** to the derived
-   `didDocument.id`.
-3. The holder calls `client.registerDid(didDocument)`; the fee is paid from
-   that balance.
-
-On a devnet with a funded genesis account this "just works"; on a real network
-step 2 must happen first or registration fails for insufficient balance.
-
 ### Register Subgrove
 
 A *subgrove* is Willow's on-chain unit of storage — a named subtree with a
@@ -655,9 +608,7 @@ try {
 | Function | Description |
 |----------|-------------|
 | `generateWallet()` | Generate Ethereum wallet |
-| `deriveDid(publicKey, algorithm?)` | Derive the self-certifying `{ did, publicKeyId }` from a public key (`'Ed25519'` default, or `'secp256k1'`) |
-| `createDidFromPublicKey(publicKey, algorithm?)` | Build a DID document with the derived self-certifying id |
-| `createDidFromWallet(wallet)` | Build a DID document from a secp256k1 wallet (self-certifying id) |
+| `createDidFromWallet(wallet)` | Create DID from wallet |
 | `generateEd25519KeyPair()` | Generate Ed25519 key pair |
 | `signEd25519(message, privateKey)` | Sign with Ed25519 |
 | `verifyEd25519(message, signature, publicKey)` | Verify Ed25519 signature |
