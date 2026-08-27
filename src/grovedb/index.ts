@@ -6,7 +6,7 @@
  */
 
 // Main verifier
-export { verifyGroveDBProof, verifyProofAgainstRoot, quickVerify } from './verifier';
+export { verifyGroveDBProof, verifyProofAgainstRoot, quickVerify, checkEnvelope } from './verifier';
 export type { GroveDBVerificationResult, VerifyOptions } from './verifier';
 
 // Types
