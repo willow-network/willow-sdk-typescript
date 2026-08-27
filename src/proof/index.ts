@@ -35,6 +35,13 @@ export interface ProofVerificationOptions {
    * client rather than hardcoding it here.
    */
   expectedRootHash?: string;
+  /**
+   * The GroveDB path the query was made at (e.g. `["subgroves", id, "data"]`).
+   * When set, the proof must descend to it: a proof whose subtree was renamed
+   * or dropped verifies to the same root with an empty result set, and only
+   * the path check tells that apart from a real absence.
+   */
+  path?: string[];
 }
 
 export interface ProofVerificationResult {
@@ -194,7 +201,10 @@ export async function verifyQueryProof(
   options?: ProofVerificationOptions,
 ): Promise<string> {
   const bytes = decodeProofBytes(proofHex);
-  const result = verifyGroveDBProof(bytes);
+  const result = verifyGroveDBProof(
+    bytes,
+    options?.path ? { expectedPath: options.path.map((segment) => textEncode(segment)) } : {},
+  );
   bindDocumentsToProof(result, documents);
   const computed = hashToHex(result.rootHash);
   enforceExpectedRoot(computed, options?.expectedRootHash);
@@ -221,10 +231,15 @@ export async function verifyItemProof(
   options?: ProofVerificationOptions,
 ): Promise<string> {
   const bytes = decodeProofBytes(proofHex);
-  const verification = verifyGroveDBProof(bytes);
 
   const expectedKey = textEncode(key);
   const expectedPath = path.map((segment) => textEncode(segment));
+  // A non-empty path is required to descend; `[]` (a root-level item) keeps
+  // the legacy behaviour and is checked only through the result match below.
+  const verification = verifyGroveDBProof(
+    bytes,
+    expectedPath.length > 0 ? { expectedPath } : {},
+  );
 
   const match = verification.results.find(
     (r) => pathEqual(r.path, expectedPath) && bytesEqual(r.key, expectedKey),

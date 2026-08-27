@@ -158,7 +158,9 @@ describe('value-bearing leaf binding', () => {
   // options bool = false. The merk proof here is well under 251 bytes, so the
   // bincode varint length is a single byte.
   const wrapAsGroveDBProof = (merk: Uint8Array): Uint8Array =>
-    new Uint8Array([0x00, merk.length, ...merk, 0x00, 0x00]);
+    // trailing 0x01 = decrease_limit_on_empty_sub_query_result, the chain's default
+    // (every real proof carries it; the verifier pins it)
+    new Uint8Array([0x00, merk.length, ...merk, 0x00, 0x01]);
 
   const key = new TextEncoder().encode('balance');
   const realValue = new TextEncoder().encode('1000');

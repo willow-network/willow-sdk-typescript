@@ -42,6 +42,50 @@ export interface VerifyOptions {
   limit?: number;
   /** Whether to deserialize element values */
   deserializeElements?: boolean;
+  /**
+   * The GroveDB path the query was made at. When set, the proof envelope must
+   * carry a lower layer for every segment (see `checkEnvelope`); without it an
+   * empty result set at that path cannot be told apart from a proof whose
+   * subtree was silently dropped.
+   */
+  expectedPath?: Uint8Array[];
+}
+
+/**
+ * The check grovedb's own verifier does not make. The verifier finds the next
+ * layer by the envelope's `lower_layers` map KEY, which is not hash-bound: a
+ * prover who renames or drops the entry for a subtree on the query path gets
+ * the same root hash with that subtree's results silently gone, so a proof of
+ * "K = V" verifies as "K is absent". Requiring a layer for every path segment
+ * closes it (once a layer is present its root is hash-bound to the parent).
+ * `prove_options` is prover-chosen bytes that steer limit accounting, so it is
+ * pinned to the default the chain's prover uses.
+ */
+export function checkEnvelope(proof: GroveDBProof, expectedPath: Uint8Array[]): void {
+  if (proof.version !== 0) {
+    throw new GroveDBVerificationError(`Unsupported proof version: ${proof.version}`);
+  }
+  checkProveOptions(proof);
+  let layer: LayerProof = proof.proof.rootLayer;
+  for (let i = 0; i < expectedPath.length; i++) {
+    const next = layer.lowerLayers.get(bytesToHex(expectedPath[i]));
+    if (!next) {
+      throw new GroveDBVerificationError(
+        `envelope: no lower layer for path segment ${i} (${pathToString([expectedPath[i]])}); ` +
+          'the proof does not descend to the query path',
+      );
+    }
+    layer = next;
+  }
+  if (layer.lowerLayers.size !== 0) {
+    throw new GroveDBVerificationError('envelope: unexpected lower layers below the query path');
+  }
+}
+
+function checkProveOptions(proof: GroveDBProof): void {
+  if (!proof.proof.proveOptions.decreaseLimitOnEmptySubQueryResult) {
+    throw new GroveDBVerificationError('envelope: non-default prove_options');
+  }
 }
 
 /**
@@ -68,6 +112,10 @@ function verifyProof(
 ): GroveDBVerificationResult {
   if (proof.version !== 0) {
     throw new GroveDBVerificationError(`Unsupported proof version: ${proof.version}`);
+  }
+  checkProveOptions(proof);
+  if (options.expectedPath) {
+    checkEnvelope(proof, options.expectedPath);
   }
 
   const results: GroveDBVerificationResult['results'] = [];
