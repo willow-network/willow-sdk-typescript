@@ -61,13 +61,16 @@ interface FeeSchedule {
   max_data_payload_bytes: number;
 }
 
+// Stakes are u128 base units, sent as JSON numbers: above 2^53 they lose
+// precision when parsed, so treat them as display values only.
 interface Validator {
-  validator_did: string;
-  name?: string;
-  stake_amount: string;
-  status: string;
-  voting_power: number;
-  consensus_pubkey?: string;
+  did: string;
+  total_stake: number;
+  self_stake: number;
+  active: boolean;
+  jailed: boolean;
+  jail_end_time: number | null;
+  consensus_pubkey: string | null;
 }
 
 async function main() {
@@ -162,10 +165,9 @@ async function main() {
     if (validators.length > 0) {
       console.log('\n   Top validators:');
       validators.slice(0, 5).forEach((v, i) => {
-        console.log(`   ${i + 1}. ${v.validator_did.substring(0, 24)}...`);
-        console.log(`      Status:       ${v.status}`);
-        console.log(`      Stake:        ${v.stake_amount} WILL`);
-        console.log(`      Voting power: ${v.voting_power}`);
+        console.log(`   ${i + 1}. ${v.did.substring(0, 24)}...`);
+        console.log(`      Active:       ${v.active}${v.jailed ? ' (jailed)' : ''}`);
+        console.log(`      Stake:        ${v.total_stake}`);
       });
     }
     console.log();
@@ -179,12 +181,11 @@ async function main() {
     try {
       const v = await fetchApi<Validator>(
         apiUrl,
-        `/validators/${encodeURIComponent(validators[0].validator_did)}`,
+        `/validators/${encodeURIComponent(validators[0].did)}`,
       );
-      console.log(`   DID:          ${v.validator_did}`);
-      console.log(`   Status:       ${v.status}`);
-      console.log(`   Stake:        ${v.stake_amount} WILL`);
-      console.log(`   Voting power: ${v.voting_power}`);
+      console.log(`   DID:          ${v.did}`);
+      console.log(`   Active:       ${v.active}${v.jailed ? ' (jailed)' : ''}`);
+      console.log(`   Stake:        ${v.total_stake} (self: ${v.self_stake})`);
       if (v.consensus_pubkey) {
         console.log(`   Pubkey:       ${v.consensus_pubkey.substring(0, 24)}...`);
       }
@@ -199,11 +200,9 @@ async function main() {
   console.log('7. Validator Set Summary');
   console.log('------------------------');
   // `/validators` lists the active set; summarize the list from step 5.
-  const totalStaked = validators.reduce((sum, v) => sum + BigInt(v.stake_amount), 0n);
-  const totalVotingPower = validators.reduce((sum, v) => sum + v.voting_power, 0);
+  const totalStaked = validators.reduce((sum, v) => sum + v.total_stake, 0);
   console.log(`   Active:        ${validators.length}`);
-  console.log(`   Total staked:  ${totalStaked} WILL`);
-  console.log(`   Voting power:  ${totalVotingPower}\n`);
+  console.log(`   Total staked:  ${totalStaked}\n`);
 
   console.log('ECONOMIC MODEL SUMMARY');
   console.log('======================');
