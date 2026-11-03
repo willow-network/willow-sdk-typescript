@@ -74,9 +74,9 @@ export class WillowData {
   private logger: WillowLogger;
   private lightClientOptions?: WillowLightClientOptions;
   /**
-   * Signs a read where the DID's read rights apply (`/data`, `/proof`,
-   * `/query`, `/sql`, `/graphql`): X-API-Key, plus the nonce form with an
-   * identity set. Only that form carries read rights.
+   * Signs a read of subgrove data (`/data`, `/proof`, `/query`, `/sql`,
+   * `/graphql`): X-API-Key, plus the nonce form with an identity set. Only
+   * that form carries the DID's read rights.
    */
   private signRead: RequestSigner;
   /**

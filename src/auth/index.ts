@@ -439,8 +439,8 @@ export class WillowAuth {
    *
    * This form proves the DID but carries none of its read rights (a Reader
    * permission or a place on a free-reader list), and it can be replayed with
-   * any body until the timestamp expires. The client signs reads where read
-   * rights apply with {@link signRequestWithNonce}, and its other signed
+   * any body until the timestamp expires. The client signs its reads of
+   * subgrove data with {@link signRequestWithNonce}, and its other signed
    * requests (writes, key-grant reads, transaction submission) with this form.
    */
   signRequest(method: string, path: string): SignedRequestHeaders {
@@ -497,11 +497,12 @@ export class WillowAuth {
   }
 
   /**
-   * Headers for a read where the DID's read rights apply (`GET /data/:sg/:key`,
-   * `GET /proof/:sg/:key`, `POST /query/:sg`, `POST /sql/:sg`,
-   * `POST /graphql/:sg`): `X-API-Key` when a key is set, and the nonce-form
+   * Headers for a read of subgrove data sent to the API (`GET /data/:sg/:key`,
+   * `GET /proof/:sg/:key`, and `POST /query/:sg`, `/sql/:sg`, and
+   * `/graphql/:sg`): `X-API-Key` when a key is set, and the nonce-form
    * signature headers ({@link signRequestWithNonce}) when an identity is set.
-   * Pass the exact target and body of the request as sent.
+   * Only that form carries the DID's read rights. Pass the exact target and
+   * body of the request as sent.
    */
   getSignedHeaders(
     method: string,
@@ -520,8 +521,8 @@ export class WillowAuth {
    * {@link signRequest}'s headers when an identity is set. Pass the path as
    * sent (percent-encoded); a query string is ignored.
    *
-   * These prove the DID but carry none of its read rights; for a read where
-   * those apply, use {@link getSignedHeaders}. The nonce form is refused for
+   * These prove the DID but carry none of its read rights; for a read of
+   * subgrove data, use {@link getSignedHeaders}. The nonce form is refused for
    * a short while after the API restarts and allows less clock skew, so the
    * client keeps other signed requests on this form.
    */

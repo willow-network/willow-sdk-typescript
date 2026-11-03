@@ -502,7 +502,7 @@ const client = new WillowClient({
 
 ### Request signing
 
-With an identity set, the client signs every read it sends to the API where a DID's read rights apply (`GET /data/:subgrove/:key`, `GET /proof/:subgrove/:key`, `POST /query/:subgrove`, `POST /sql/:subgrove`, and `POST /graphql/:subgrove`) with a one-time nonce over the whole request. Only this form carries the DID's read rights: a Reader permission on a subgrove, or a place on a priced subgrove's free-reader list.
+With an identity set, the client signs each read of subgrove data it sends to the API (`GET /data/:subgrove/:key`, `GET /proof/:subgrove/:key`, and `POST /query/:subgrove`, `/sql/:subgrove`, and `/graphql/:subgrove`) with a one-time nonce over the whole request. Only this form carries the DID's read rights: a Reader permission on a subgrove, or a place on a priced subgrove's free-reader list.
 
 The headers are `X-DID`, `X-Public-Key-ID`, `X-Signature`, `X-Timestamp`, and `X-Nonce`. The signature is over eight lines:
 
