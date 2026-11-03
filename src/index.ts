@@ -8,8 +8,19 @@ export {
   algorithmFromKeyType,
   signEd25519,
   verifyEd25519,
+  signSecp256k1,
+  verifySecp256k1,
   generateEd25519KeyPair,
   getEd25519PublicKey,
+  signedRequestMessage,
+  legacyRequestMessage,
+  newRequestNonce,
+  SIGNED_REQUEST_VERSION,
+} from "./auth";
+export type {
+  SignedRequestHeaders,
+  NonceSignedRequestHeaders,
+  SignRequestOptions,
 } from "./auth";
 export {
   WillowData,
@@ -43,8 +54,13 @@ export * from "./types";
 
 // HTTP client used by all SDK modules; HttpError is thrown on non-2xx
 // API responses that a module doesn't map to a WillowError itself.
-export { HttpClient, HttpError } from "./internal/http";
-export type { HttpClientOptions, HttpRequestOptions } from "./internal/http";
+export { HttpClient, HttpError, resolveRequest } from "./internal/http";
+export type {
+  HttpClientOptions,
+  HttpRequestOptions,
+  RequestSigner,
+  ResolvedRequest,
+} from "./internal/http";
 
 // Public DID/wallet helpers. The generic utils (sleep, retry, chunk,
 // generateId) are internal and intentionally not part of the package API.

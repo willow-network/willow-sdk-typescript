@@ -92,7 +92,7 @@ For ad-hoc identity (no `config.did` baked in) just call
 |--------|-------------|
 | `apiUrl` | **Required.** Willow API server URL (e.g. `http://localhost:3031`) |
 | `consensusRpcUrl` | CometBFT RPC URL for consensus reads. Auto-derived only for localhost devnets; required otherwise (see [Transaction submission](#transaction-submission)) |
-| `indexerUrl` | Pin queries to a specific indexer, skipping discovery |
+| `indexerUrl` | Pin queries to a specific indexer, skipping discovery. Required by `client.eth` and `client.verifiableRpc`, which only indexers serve |
 | `did`, `privateKey` | Identity pre-seeded for `client.init()` |
 | `apiKey` | Managed-tier API key (`wk_…`), sent as `X-API-Key` on every request |
 | `proofVerificationOptions` | Per-client proof verification options, e.g. `{ expectedRootHash }` (see [Proof Verification API](#proof-verification-api)) |
@@ -498,6 +498,41 @@ const client = new WillowClient({
 });
 ```
 
+`createDidFromWallet` and `createDidFromPublicKey` publish a secp256k1 key in its 33-byte compressed form. `signSecp256k1(message, privateKey)` and `verifySecp256k1(message, signature, publicKey)` sign and verify as the chain does: ECDSA over the Keccak-256 of the message, lower-S. `signSecp256k1` returns `0x`-prefixed hex. `verifySecp256k1` decodes a signature as the chain does, reading an unprefixed one as base64 first, so it refuses an unprefixed hex signature the chain would refuse.
+
+### Request signing
+
+With an identity set, the client signs each read of subgrove data it sends to the API (`GET /data/:subgrove/:key`, `GET /proof/:subgrove/:key`, and `POST /query/:subgrove`, `/sql/:subgrove`, and `/graphql/:subgrove`) with a one-time nonce over the whole request. Only this form carries the DID's read rights: a Reader permission on a subgrove, or a place on a priced subgrove's free-reader list.
+
+The headers are `X-DID`, `X-Public-Key-ID`, `X-Signature`, `X-Timestamp`, and `X-Nonce`. The signature is over eight lines:
+
+```
+willow-request-v2
+<DID>
+<public key id>
+<METHOD>
+<path and query, exactly as sent>
+<Unix timestamp>
+<nonce>
+<hex SHA-256 of the body>
+```
+
+- The path and query are those of the URL as sent, percent-encoded, less any path the `apiUrl` carries.
+- The server accepts a timestamp up to 300 s old and 30 s ahead, and each (DID, nonce) once. The client signs each request with a new nonce.
+- A nonce is 16 to 128 characters of `A-Z a-z 0-9 - _`. `newRequestNonce()` makes one of 32 hex characters.
+- Ed25519 signatures are sent as hex. secp256k1 signatures are over the Keccak-256 of the message and are sent as `0x`-prefixed hex.
+- Requests sent to an indexer are not signed this way.
+
+The client's other signed requests (writes, key-grant reads, transaction submission) use the older form described below.
+
+To sign a read you send yourself:
+
+```typescript
+const headers = client.auth.signRequestWithNonce('POST', '/query/my-subgrove', body);
+```
+
+`client.auth.signRequest(method, path)` makes the older `{METHOD}:{PATH}:{TIMESTAMP}` form, over the path without its query string. It proves the DID but carries none of its read rights, and it can be replayed with any body until the timestamp expires.
+
 ## Registration
 
 ### Register Subgrove
@@ -582,6 +617,8 @@ try {
 | `collection(datasetId)` | Create collection helper |
 | `auth.setIdentity(did, privateKey, publicKeyId)` | Set identity for per-request signing |
 | `auth.hasIdentity()` | Check whether an identity is set |
+| `auth.signRequestWithNonce(method, pathAndQuery, body?)` | Nonce-form signature headers for a request (see [Request signing](#request-signing)) |
+| `auth.signRequest(method, path)` | Older-form signature headers |
 
 ### Data Client Historical Methods
 
@@ -612,6 +649,11 @@ try {
 | `generateEd25519KeyPair()` | Generate Ed25519 key pair |
 | `signEd25519(message, privateKey)` | Sign with Ed25519 |
 | `verifyEd25519(message, signature, publicKey)` | Verify Ed25519 signature |
+| `signSecp256k1(message, privateKey)` | Sign with secp256k1 over Keccak-256 (`0x`-prefixed compact signature) |
+| `verifySecp256k1(message, signature, publicKey)` | Verify a secp256k1 signature |
+| `signedRequestMessage(did, keyId, method, pathAndQuery, timestamp, nonce, body?)` | The eight-line message a nonce-signed request signs |
+| `legacyRequestMessage(method, path, timestamp)` | The older-form message |
+| `newRequestNonce()` | A fresh request nonce |
 | `isValidDid(did)` | Validate DID format |
 
 ## Security Model

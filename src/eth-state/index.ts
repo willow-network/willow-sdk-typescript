@@ -14,6 +14,7 @@ import { keccak_256 } from "@noble/hashes/sha3";
 import { encodeRlp, getBytes, hexlify, toBeArray, toBigInt } from "ethers";
 
 import { HttpClient } from "../internal/http";
+import { requireIndexerUrl } from "../internal/indexer-url";
 import { base64ToBytes, bytesToHex } from "../internal/bytes";
 import { verifyMptProof } from "./mpt";
 import {
@@ -61,6 +62,7 @@ export class EthOperations {
     slots: string[],
     blockNumber: number,
   ): Promise<VerifiedStateRead> {
+    requireIndexerUrl(this.indexerBaseUrl);
     const body = {
       address,
       slots,
@@ -89,6 +91,7 @@ export class EthOperations {
     tx: EthCallRequestBody["tx"],
     blockNumber: number,
   ): Promise<VerifiedCall> {
+    requireIndexerUrl(this.indexerBaseUrl);
     const body: EthCallRequestBody = { tx, block: blockNumber };
     const envelope = await this.http.post<EthVerifiableRpcResponse>(
       "/verifiable-rpc/eth/call",

@@ -34,6 +34,68 @@ export class HttpError extends Error {
   }
 }
 
+/**
+ * Makes the headers that sign one request: given the method, the path and
+ * query the server receives, and the exact body string sent (`undefined` for
+ * none). Called once per request attempt, after the URL and body are final.
+ * `WillowAuth.getSignedHeaders` (nonce form) and `WillowAuth.getAuthHeaders`
+ * (older form) both fit.
+ */
+export type RequestSigner = (
+  method: string,
+  pathAndQuery: string,
+  body?: string,
+) => Record<string, string>;
+
+/** A request URL as it goes on the wire, and the target the API receives. */
+export interface ResolvedRequest {
+  /** The URL to fetch, serialized exactly as `fetch` will send it. */
+  href: string;
+  /**
+   * The request line's path and query (percent-encoded as sent), less any
+   * path the base URL carries: a proxy mounted under a path strips it before
+   * the API sees the request.
+   */
+  target: string;
+}
+
+/** The page URL in a browser, against which a relative base URL resolves. */
+function documentURL(): string | undefined {
+  return (globalThis as { location?: { href?: string } }).location?.href;
+}
+
+/**
+ * Resolve `path` against `baseURL` into the URL `fetch` sends and the request
+ * target the API receives. `path` may also be an absolute URL. A relative
+ * base URL (a same-origin proxy such as `/willow`) resolves against the page.
+ *
+ * Returns `undefined` when no absolute URL results (a relative path with no
+ * page to resolve it against); `fetch` cannot send such a request either.
+ */
+export function resolveRequest(baseURL: string, path: string): ResolvedRequest | undefined {
+  const base = baseURL.replace(/\/+$/, '');
+  let url: URL;
+  try {
+    url = new URL(/^https?:\/\//i.test(path) ? path : `${base}${path}`, documentURL());
+  } catch {
+    return undefined;
+  }
+  // Whether a bare "?" reaches the wire depends on the runtime; drop it so
+  // the signed target is what any runtime sends.
+  if (url.search === '') url.search = '';
+  let target = url.pathname + url.search;
+  let basePath = '';
+  try {
+    basePath = new URL(base, documentURL()).pathname.replace(/\/+$/, '');
+  } catch {
+    basePath = '';
+  }
+  if (basePath !== '' && target.startsWith(`${basePath}/`)) {
+    target = target.slice(basePath.length);
+  }
+  return { href: url.href, target };
+}
+
 export interface HttpClientOptions {
   /** Base URL prepended to relative request paths. */
   baseURL?: string;
@@ -48,6 +110,11 @@ export interface HttpRequestOptions {
   headers?: Record<string, string>;
   /** Timeout override for this request (milliseconds). */
   timeoutMs?: number;
+  /**
+   * Signs this request. It is called with the final method, request target,
+   * and body string, and its headers are sent over all others.
+   */
+  sign?: RequestSigner;
 }
 
 export class HttpClient {
@@ -92,15 +159,21 @@ export class HttpClient {
     body?: unknown,
     options?: HttpRequestOptions,
   ): Promise<T> {
-    const url = /^https?:\/\//i.test(path) ? path : `${this.baseURL}${path}`;
+    const resolved = resolveRequest(this.baseURL, path);
+    const url = resolved?.href ?? (/^https?:\/\//i.test(path) ? path : `${this.baseURL}${path}`);
+    const payload = body === undefined ? undefined : JSON.stringify(body);
+    // Signed last, over the URL and body exactly as they are sent.
+    const signature =
+      options?.sign && resolved ? options.sign(method, resolved.target, payload) : {};
     const response = await fetch(url, {
       method,
       headers: {
         'Content-Type': 'application/json',
         ...this.headers,
         ...(options?.headers ?? {}),
+        ...signature,
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: payload,
       signal: AbortSignal.timeout(options?.timeoutMs ?? this.timeoutMs),
     });
 

@@ -16,6 +16,7 @@ import { xchacha20poly1305 } from '@noble/ciphers/chacha';
 import { WillowError } from '../types';
 import { createTransactionWrapper } from '../consensus/types';
 import { submitTxToApi, SubmitTxOptions } from '../internal/tx';
+import { RequestSigner, resolveRequest } from '../internal/http';
 
 const DEFAULT_CHUNK_SIZE = 262_144; // 256 KB
 
@@ -62,14 +63,24 @@ function concatBytes(chunks: Uint8Array[]): Uint8Array {
 
 export class FileOperations {
   private apiUrl: string;
-  private getAuthHeaders: (method: string, path: string) => Record<string, string>;
+  private getAuthHeaders: RequestSigner;
 
-  constructor(
-    apiUrl: string,
-    getAuthHeaders: (method: string, path: string) => Record<string, string>,
-  ) {
+  /**
+   * @param getAuthHeaders - Makes the headers for each request to the API,
+   *   given its method and its path and query exactly as sent
+   *   (`WillowClient` passes `WillowAuth.getAuthHeaders`, the older form).
+   */
+  constructor(apiUrl: string, getAuthHeaders: RequestSigner) {
     this.apiUrl = apiUrl;
     this.getAuthHeaders = getAuthHeaders;
+  }
+
+  /** GET a path on the API, signed over its path exactly as sent. */
+  private getFromApi(path: string): Promise<Response> {
+    const resolved = resolveRequest(this.apiUrl, path);
+    return fetch(resolved?.href ?? `${this.apiUrl}${path}`, {
+      headers: this.getAuthHeaders('GET', resolved?.target ?? path),
+    });
   }
 
   /**
@@ -208,11 +219,7 @@ export class FileOperations {
     subgroveId: string,
     fileKey: string,
   ): Promise<FileManifest> {
-    const path = `/files/${subgroveId}/${fileKey}`;
-    const resp = await fetch(
-      `${this.apiUrl}${path}`,
-      { headers: this.getAuthHeaders('GET', path) },
-    );
+    const resp = await this.getFromApi(`/files/${subgroveId}/${fileKey}`);
     if (!resp.ok) {
       throw new WillowError(`File not found: ${fileKey}`, 'FILE_NOT_FOUND', resp.status);
     }
@@ -223,11 +230,7 @@ export class FileOperations {
    * List all files in a subgrove.
    */
   async list(subgroveId: string): Promise<FileManifest[]> {
-    const path = `/files/${subgroveId}`;
-    const resp = await fetch(
-      `${this.apiUrl}${path}`,
-      { headers: this.getAuthHeaders('GET', path) },
-    );
+    const resp = await this.getFromApi(`/files/${subgroveId}`);
     if (!resp.ok) {
       throw new WillowError('Failed to list files', 'FILE_LIST_FAILED', resp.status);
     }

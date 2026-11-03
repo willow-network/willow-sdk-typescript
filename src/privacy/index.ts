@@ -10,7 +10,7 @@ import { ApiResponse, WillowError } from "../types";
 import { WillowAuth, signEd25519 } from "../auth";
 import { BroadcastResult } from "../consensus";
 import { Transaction, createTransactionWrapper } from "../consensus/types";
-import { HttpClient, HttpError } from "../internal/http";
+import { HttpClient, HttpError, RequestSigner } from "../internal/http";
 import { submitTxToApi } from "../internal/tx";
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -132,6 +132,11 @@ export class PrivacyOperations {
   private privateKey: string;
   private publicKeyId: string;
   private apiUrl: string;
+  /**
+   * Signs a key-grant read in the older form, over the path exactly as sent
+   * (percent-encoded). These routes take that form; read rights don't apply.
+   */
+  private sign: RequestSigner;
 
   /**
    * Create a new PrivacyOperations instance.
@@ -150,6 +155,7 @@ export class PrivacyOperations {
     this.apiUrl = apiUrl.replace(/\/+$/, "");
     this.api = new HttpClient({ baseURL: this.apiUrl });
     this.auth = auth;
+    this.sign = (method, target) => auth.getAuthHeaders(method, target);
     this.privateKey = privateKey;
     this.publicKeyId = publicKeyId;
   }
@@ -171,9 +177,8 @@ export class PrivacyOperations {
   ): Promise<EncryptedKeyGrant> {
     const did = this.requireDid();
     const path = `/key-grants/${encodeURIComponent(subgroveId)}/${encodeURIComponent(did)}`;
-    const headers = this.auth.getAuthHeaders("GET", path);
     const response = await this.api
-      .get<ApiResponse<EncryptedKeyGrant>>(path, { headers })
+      .get<ApiResponse<EncryptedKeyGrant>>(path, { sign: this.sign })
       .catch((err) => {
         throw toWillowError(err, "Key grant not found", "KEY_GRANT_NOT_FOUND");
       });
@@ -202,9 +207,8 @@ export class PrivacyOperations {
     subgroveId: string,
   ): Promise<string[]> {
     const path = `/key-grants/${encodeURIComponent(subgroveId)}`;
-    const headers = this.auth.getAuthHeaders("GET", path);
     const response = await this.api
-      .get<ApiResponse<string[]>>(path, { headers })
+      .get<ApiResponse<string[]>>(path, { sign: this.sign })
       .catch((err) => {
         throw toWillowError(err, "Failed to list key grantees", "LIST_GRANTEES_FAILED");
       });
@@ -223,7 +227,7 @@ export class PrivacyOperations {
    * Get a GroveDB Merkle proof for a key grant.
    *
    * Calls GET /proof/key-grant/:subgrove_id/:did.
-   * This endpoint is public (proofs are non-sensitive).
+   * Requires the caller to be the grantee or the subgrove's owner or admin.
    *
    * @param subgroveId - Subgrove ID
    * @param did - DID of the grantee
@@ -235,7 +239,7 @@ export class PrivacyOperations {
   ): Promise<KeyGrantProofResponse> {
     const path = `/proof/key-grant/${encodeURIComponent(subgroveId)}/${encodeURIComponent(did)}`;
     const response = await this.api
-      .get<ApiResponse<KeyGrantProofResponse>>(path)
+      .get<ApiResponse<KeyGrantProofResponse>>(path, { sign: this.sign })
       .catch((err) => {
         throw toWillowError(err, "Failed to get key grant proof", "KEY_GRANT_PROOF_FAILED");
       });

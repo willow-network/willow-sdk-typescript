@@ -3,7 +3,7 @@ import { sha3_256 } from '@noble/hashes/sha3';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { base58 } from '@scure/base';
 import { DidDocument, PublicKey } from '../types';
-import { hexToBytes } from '../internal/bytes';
+import { bytesToHex, hexToBytes } from '../internal/bytes';
 
 /** Signature algorithms whose keys can back a self-certifying Willow DID. */
 export type DidKeyAlgorithm = 'Ed25519' | 'secp256k1';
@@ -95,6 +95,9 @@ export function generateWallet() {
 /**
  * Build a DID document from a public key, deriving the self-certifying id.
  *
+ * A secp256k1 key is published in its 33-byte compressed form, which the
+ * chain parses; it rejects the 64-byte `x || y` form without the `04` tag.
+ *
  * The id is derived via {@link deriveDid} — it is bound to the key and is not
  * chosen. Because the id depends on the key, a freshly created DID must be
  * funded (someone transfers at least the registration fee to the derived id)
@@ -114,7 +117,10 @@ export function createDidFromPublicKey(
       {
         id: publicKeyId,
         type: algorithm === 'Ed25519' ? 'Ed25519' : 'EcdsaSecp256k1VerificationKey2019',
-        publicKeyHex: publicKey.replace(/^0x/, ''),
+        publicKeyHex:
+          algorithm === 'secp256k1'
+            ? bytesToHex(toCompressedSecp256k1(publicKey))
+            : publicKey.replace(/^0x/, ''),
       },
     ],
     created: now,
@@ -127,7 +133,8 @@ export function createDidFromPublicKey(
  *
  * The id is the self-certifying derivation over the wallet's compressed
  * secp256k1 public key (see {@link deriveDid}) — it is no longer the old
- * `did:willow:eth:<address>` form, which the chain now rejects.
+ * `did:willow:eth:<address>` form, which the chain now rejects. The document
+ * publishes that 33-byte compressed key.
  */
 export function createDidFromWallet(wallet: { address: string; publicKey: string }): DidDocument {
   const { did, publicKeyId } = deriveDid(wallet.publicKey, 'secp256k1');
@@ -139,7 +146,7 @@ export function createDidFromWallet(wallet: { address: string; publicKey: string
       {
         id: publicKeyId,
         type: 'EcdsaSecp256k1VerificationKey2019',
-        publicKeyHex: wallet.publicKey.replace('0x', ''),
+        publicKeyHex: bytesToHex(toCompressedSecp256k1(wallet.publicKey)),
       },
     ],
     created: now,

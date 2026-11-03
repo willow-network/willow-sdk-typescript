@@ -18,6 +18,7 @@
 
 import { sha256 } from "@noble/hashes/sha256";
 import { HttpClient } from "../internal/http";
+import { requireIndexerUrl } from "../internal/indexer-url";
 import { base64ToBytes } from "../internal/bytes";
 import { bytesToHex } from "../grovedb/bincode";
 import { computeProofRootHash } from "../proof";
@@ -188,6 +189,7 @@ export class VerifiableRpcOperations {
 
   /** Fetch the raw response (proofs attached, unverified). */
   async get(subgroveId: string, queryKey: string): Promise<VerifiableRpcResponse> {
+    requireIndexerUrl(this.indexerBaseUrl);
     return this.http.get<VerifiableRpcResponse>(
       `/verifiable-rpc/${encodeURIComponent(subgroveId)}/${encodeURIComponent(queryKey)}`,
     );
