@@ -9,7 +9,13 @@ import {
   DidDocument,
 } from '../types';
 import { HttpClient } from '../internal/http';
-import { bytesToHex, hexToBytes, utf8ToBytes } from '../internal/bytes';
+import {
+  base64ToBytes,
+  bytesToBase64,
+  bytesToHex,
+  hexToBytes,
+  utf8ToBytes,
+} from '../internal/bytes';
 
 /**
  * Supported signature algorithms
@@ -179,21 +185,53 @@ export function signSecp256k1(message: string, privateKeyHex: string): string {
   return `0x${signature.toCompactHex()}`;
 }
 
+/** Rust's base64 STANDARD engine: padded, canonical. `undefined` if not base64. */
+function decodeBase64Strict(text: string): Uint8Array | undefined {
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(text)) {
+    return undefined;
+  }
+  const bytes = base64ToBytes(text);
+  return bytesToBase64(bytes) === text ? bytes : undefined;
+}
+
+function decodeHex(text: string): Uint8Array | undefined {
+  try {
+    return hexToBytes(text);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Decode a secp256k1 signature string in the server's order: with a `0x`
+ * prefix, hex first; without one, base64 first. A 128-character hex string
+ * is valid base64, so an unprefixed hex signature decodes to the wrong bytes.
+ */
+function decodeSecp256k1Signature(signature: string): Uint8Array | undefined {
+  if (signature.startsWith('0x')) {
+    return decodeHex(signature.slice(2)) ?? decodeBase64Strict(signature);
+  }
+  return decodeBase64Strict(signature) ?? decodeHex(signature);
+}
+
 /**
  * Verify a secp256k1 signature the way Willow does: ECDSA over the Keccak-256
- * of the message, a 64-byte compact `r || s` or a DER signature (hex, with or
- * without `0x`), lower-S only.
+ * of the message, a 64-byte compact `r || s` or a DER signature, lower-S
+ * only. The signature string is decoded as the server decodes it: `0x`-
+ * prefixed hex, else base64 first, so an unprefixed hex signature (as
+ * opposed to the `0x`-prefixed hex {@link signSecp256k1} makes) is refused.
  *
  * `publicKeyHex` may be 33-byte compressed, 65-byte uncompressed (`04…`), or
  * the 64-byte `x || y` form without the `04` tag.
  */
 export function verifySecp256k1(
   message: string,
-  signatureHex: string,
+  signature: string,
   publicKeyHex: string,
 ): boolean {
   try {
-    const signature = hexToBytes(signatureHex);
+    const signatureBytes = decodeSecp256k1Signature(signature);
+    if (!signatureBytes) return false;
     let publicKey = hexToBytes(publicKeyHex);
     if (publicKey.length === 64) {
       const tagged = new Uint8Array(65);
@@ -202,9 +240,9 @@ export function verifySecp256k1(
       publicKey = tagged;
     }
     const digest = keccak_256(utf8ToBytes(message));
-    return secp256k1.verify(signature, digest, publicKey, {
+    return secp256k1.verify(signatureBytes, digest, publicKey, {
       lowS: true,
-      format: signature.length === 64 ? 'compact' : 'der',
+      format: signatureBytes.length === 64 ? 'compact' : 'der',
     });
   } catch {
     return false;

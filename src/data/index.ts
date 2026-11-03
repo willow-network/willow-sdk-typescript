@@ -920,6 +920,8 @@ export class WillowData {
 
     // Indexers verify no request signature, and their CORS doesn't allow
     // X-Nonce, so they get the older form and X-API-Key, never the nonce form.
+    // (A browser can send the nonce form to the API only when the API, or the
+    // gateway in front of it, allows X-Nonce in its CORS headers.)
     const callIndexer = async (info: ApiIndexerInfo): Promise<T> => {
       const url = `${effectiveQueryEndpoint(info).replace(/\/$/, "")}${httpPath}`;
       return this.api.post<T>(url, body, {

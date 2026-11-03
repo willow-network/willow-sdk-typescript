@@ -4,6 +4,50 @@ All notable changes to this package are documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 package adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `WillowAuth.signRequestWithNonce(method, pathAndQuery, body?)` and
+  `WillowAuth.getSignedHeaders(method, pathAndQuery, body?)`: the nonce form
+  of request signing, the only form that carries a DID's read rights (see the
+  README's "Request signing").
+- `signedRequestMessage`, `legacyRequestMessage`, `newRequestNonce`, and
+  `SIGNED_REQUEST_VERSION`, for building and checking request signatures.
+- `signSecp256k1` and `verifySecp256k1`, which sign and verify as the chain
+  does.
+- `resolveRequest(baseURL, path)`, which gives the URL `fetch` sends and the
+  request target the API receives, and `HttpRequestOptions.sign`, a
+  per-request signer run once the URL and body are final.
+- Types: `NonceSignedRequestHeaders`, `SignedRequestHeaders`,
+  `SignRequestOptions`, `RequestSigner`, and `ResolvedRequest`.
+
+### Changed
+
+- With an identity set, `GET /data/:sg/:key`, `GET /proof/:sg/:key`, and
+  `POST /query/:sg`, `/sql/:sg`, and `/graphql/:sg` sent to the API are
+  nonce-signed over the path and query as sent and the exact body.
+  `getProof` is now signed.
+- Other signed requests keep the older `{METHOD}:{PATH}:{TIMESTAMP}` form,
+  now over the path as sent (percent-encoded) without its query string, as
+  the server verifies it. `getKeyGrantProof` is now signed in this form.
+- **secp256k1 request signatures** are ECDSA over the Keccak-256 of the
+  message, lower-S, sent as `0x`-prefixed 64-byte `r || s`. They were EIP-191
+  signatures of a hash, 65 bytes, without a prefix, which the server does not
+  verify.
+- **`createDidFromWallet` and `createDidFromPublicKey`** publish a secp256k1
+  key in its 33-byte compressed form. The chain cannot parse the 64-byte
+  `x || y` form.
+- `client.eth` and `client.verifiableRpc` throw `INDEXER_URL_REQUIRED` when
+  no `indexerUrl` is configured, instead of sending `/verifiable-rpc/*` to the
+  API, which doesn't serve it.
+- `WillowClient.init()` reads the key id from the API's `public_keys`.
+
+### Removed
+
+- `WillowAuth.getAuthParams()`. It built a `?did=` query parameter the server
+  ignores.
+
 ## [0.1.0] - 2026-06-11
 
 First npm release. Everything below describes changes made while preparing

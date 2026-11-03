@@ -14,7 +14,7 @@ import { WillowClient } from '../src/client';
 import { PrivacyOperations } from '../src/privacy';
 import { createDidFromPublicKey, createDidFromWallet } from '../src/utils';
 import { WillowError } from '../src/types';
-import { bytesToHex, hexToBytes, utf8ToBytes } from '../src/internal/bytes';
+import { bytesToBase64, bytesToHex, hexToBytes, utf8ToBytes } from '../src/internal/bytes';
 
 // The api-server's test vector (crates/api-server/src/read_auth_tests.rs,
 // the_signed_message_is_eight_lines), byte for byte.
@@ -93,12 +93,22 @@ describe('request signing: known answers', () => {
   it("accepts the secp256k1 known answer in the SDK's verify, compact or DER", () => {
     const uncompressed = bytesToHex(secp256k1.getPublicKey(hexToBytes(SEED), false));
     expect(verifySecp256k1(VECTOR_MESSAGE, `0x${SECP256K1_COMPACT}`, SECP256K1_PUBLIC_KEY)).toBe(true);
-    expect(verifySecp256k1(VECTOR_MESSAGE, SECP256K1_COMPACT, SECP256K1_PUBLIC_KEY)).toBe(true);
     expect(verifySecp256k1(VECTOR_MESSAGE, `0x${SECP256K1_DER}`, SECP256K1_PUBLIC_KEY)).toBe(true);
+    // Without a prefix the server reads base64 first, as this does.
+    const base64 = bytesToBase64(hexToBytes(SECP256K1_COMPACT));
+    expect(verifySecp256k1(VECTOR_MESSAGE, base64, SECP256K1_PUBLIC_KEY)).toBe(true);
     expect(verifySecp256k1(VECTOR_MESSAGE, `0x${SECP256K1_COMPACT}`, uncompressed)).toBe(true);
     // The 64-byte x || y form without the 04 tag, which older documents carry.
     expect(verifySecp256k1(VECTOR_MESSAGE, `0x${SECP256K1_COMPACT}`, uncompressed.slice(2))).toBe(true);
     expect(verifySecp256k1(`${VECTOR_MESSAGE}x`, `0x${SECP256K1_COMPACT}`, SECP256K1_PUBLIC_KEY)).toBe(false);
+  });
+
+  it('decodes an unprefixed signature base64 first, like the server', () => {
+    // 128 hex characters are valid base64, which the server tries first, so
+    // the unprefixed compact signature decodes to the wrong bytes.
+    expect(verifySecp256k1(VECTOR_MESSAGE, SECP256K1_COMPACT, SECP256K1_PUBLIC_KEY)).toBe(false);
+    // 142 hex characters are not padded base64, so the server falls back to hex.
+    expect(verifySecp256k1(VECTOR_MESSAGE, SECP256K1_DER, SECP256K1_PUBLIC_KEY)).toBe(true);
   });
 
   it('refuses a high-S or recoverable secp256k1 signature, like the server', () => {
