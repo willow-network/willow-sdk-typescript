@@ -1,12 +1,15 @@
-import { ethers } from 'ethers';
 import { ed25519 } from '@noble/curves/ed25519';
+import { secp256k1 } from '@noble/curves/secp256k1';
+import { keccak_256 } from '@noble/hashes/sha3';
+import { sha256 } from '@noble/hashes/sha256';
+import { randomBytes } from '@noble/hashes/utils';
 import {
   ApiResponse,
   WillowError,
   DidDocument,
 } from '../types';
 import { HttpClient } from '../internal/http';
-import { bytesToHex, hexToBytes } from '../internal/bytes';
+import { bytesToHex, hexToBytes, utf8ToBytes } from '../internal/bytes';
 
 /**
  * Supported signature algorithms
@@ -149,6 +152,119 @@ export function getEd25519PublicKey(privateKeyHex: string): string {
   }
 }
 
+/** Parse a secp256k1 private key given as hex, with or without `0x`. */
+function secp256k1PrivateKey(privateKeyHex: string): Uint8Array {
+  const clean = privateKeyHex.replace(/^0x/, '');
+  if (clean.length !== 64) {
+    throw new WillowError(
+      `Invalid secp256k1 private key length: ${clean.length / 2} bytes (expected 32)`,
+      'INVALID_KEY'
+    );
+  }
+  return hexToBytes(clean);
+}
+
+/**
+ * Sign a message with secp256k1, as Willow verifies it: ECDSA over the
+ * Keccak-256 of the UTF-8 message (Ethereum's Keccak, not FIPS SHA3-256, and
+ * not an EIP-191 personal message), deterministic (RFC 6979), lower-S.
+ *
+ * @returns the 64-byte compact `r || s` signature as `0x`-prefixed hex. The
+ *   server reads an unprefixed secp256k1 signature as base64 before hex, so
+ *   request signatures must carry the prefix.
+ */
+export function signSecp256k1(message: string, privateKeyHex: string): string {
+  const digest = keccak_256(utf8ToBytes(message));
+  const signature = secp256k1.sign(digest, secp256k1PrivateKey(privateKeyHex), { lowS: true });
+  return `0x${signature.toCompactHex()}`;
+}
+
+/**
+ * Verify a secp256k1 signature the way Willow does: ECDSA over the Keccak-256
+ * of the message, a 64-byte compact `r || s` or a DER signature (hex, with or
+ * without `0x`), lower-S only.
+ *
+ * `publicKeyHex` may be 33-byte compressed, 65-byte uncompressed (`04…`), or
+ * the 64-byte `x || y` form without the `04` tag.
+ */
+export function verifySecp256k1(
+  message: string,
+  signatureHex: string,
+  publicKeyHex: string,
+): boolean {
+  try {
+    const signature = hexToBytes(signatureHex);
+    let publicKey = hexToBytes(publicKeyHex);
+    if (publicKey.length === 64) {
+      const tagged = new Uint8Array(65);
+      tagged[0] = 0x04;
+      tagged.set(publicKey, 1);
+      publicKey = tagged;
+    }
+    const digest = keccak_256(utf8ToBytes(message));
+    return secp256k1.verify(signature, digest, publicKey, {
+      lowS: true,
+      format: signature.length === 64 ? 'compact' : 'der',
+    });
+  } catch {
+    return false;
+  }
+}
+
+/** The first line of a nonce-signed request's message. */
+export const SIGNED_REQUEST_VERSION = 'willow-request-v2';
+
+/**
+ * The message a nonce-signed request signs, eight lines joined by `\n` with
+ * no trailing newline: the version line, the DID, its key's id, the method,
+ * the path and query exactly as the server receives them, the Unix timestamp,
+ * the nonce, and the lowercase hex SHA-256 of the exact body bytes (of no
+ * bytes, for a request without a body).
+ *
+ * A string body is hashed as its UTF-8 bytes, which is what `fetch` sends.
+ */
+export function signedRequestMessage(
+  did: string,
+  publicKeyId: string,
+  method: string,
+  pathAndQuery: string,
+  timestamp: string,
+  nonce: string,
+  body?: Uint8Array | string,
+): string {
+  const bytes =
+    body === undefined ? new Uint8Array(0) : typeof body === 'string' ? utf8ToBytes(body) : body;
+  return [
+    SIGNED_REQUEST_VERSION,
+    did,
+    publicKeyId,
+    method,
+    pathAndQuery,
+    timestamp,
+    nonce,
+    bytesToHex(sha256(bytes)),
+  ].join('\n');
+}
+
+/**
+ * The message the older request form signs: `{METHOD}:{PATH}:{TIMESTAMP}`,
+ * where PATH is the path alone. The server verifies it against the request's
+ * path without its query string, so anything from the first `?` is dropped.
+ */
+export function legacyRequestMessage(method: string, path: string, timestamp: string): string {
+  const q = path.indexOf('?');
+  return `${method}:${q >= 0 ? path.slice(0, q) : path}:${timestamp}`;
+}
+
+/**
+ * A fresh nonce for a nonce-signed request: 32 lowercase hex characters from
+ * 16 random bytes. The server accepts 16 to 128 characters of
+ * `A-Z a-z 0-9 - _`, and each (DID, nonce) once.
+ */
+export function newRequestNonce(): string {
+  return bytesToHex(randomBytes(16));
+}
+
 /**
  * Per-request signature headers
  */
@@ -158,6 +274,23 @@ export interface SignedRequestHeaders {
   'X-Public-Key-ID': string;
   'X-Signature': string;
   'X-Timestamp': string;
+}
+
+/** Signature headers of a nonce-signed request. */
+export interface NonceSignedRequestHeaders extends SignedRequestHeaders {
+  'X-Nonce': string;
+}
+
+/**
+ * Fixed inputs for {@link WillowAuth.signRequestWithNonce}, for tests and
+ * reproducible signatures. The server accepts each (DID, nonce) once, so a
+ * request sent to it needs a fresh nonce: leave these unset.
+ */
+export interface SignRequestOptions {
+  /** Unix seconds. Default: now. */
+  timestamp?: number | string;
+  /** Default: {@link newRequestNonce}. */
+  nonce?: string;
 }
 
 export class WillowAuth {
@@ -278,51 +411,119 @@ export class WillowAuth {
     return this.getDidDocument(did);
   }
 
-  /**
-   * Sign a request and return the authentication headers.
-   *
-   * Message format: `{METHOD}:{PATH}:{TIMESTAMP}`
-   */
-  signRequest(method: string, path: string): SignedRequestHeaders {
+  private requireIdentity(): { did: string; privateKey: string; publicKeyId: string } {
     if (!this.did || !this.privateKey || !this.publicKeyId) {
       throw new WillowError(
         'Identity not set. Call setIdentity() first.',
         'NO_IDENTITY'
       );
     }
+    return { did: this.did, privateKey: this.privateKey, publicKeyId: this.publicKeyId };
+  }
 
+  /**
+   * Sign a request message and encode the signature as the server decodes
+   * `X-Signature`: Ed25519 as hex, secp256k1 as `0x`-prefixed hex.
+   */
+  private signMessage(message: string, privateKey: string): string {
+    return this.algorithm === 'secp256k1'
+      ? signSecp256k1(message, privateKey)
+      : signEd25519(message, privateKey);
+  }
+
+  /**
+   * Sign a request in the server's older form and return the authentication
+   * headers. The message is `{METHOD}:{PATH}:{TIMESTAMP}`, where PATH is the
+   * path as sent (percent-encoded) without its query string, as the server
+   * verifies it (see {@link legacyRequestMessage}).
+   *
+   * This form proves the DID but carries none of its read rights (a Reader
+   * permission or a place on a free-reader list), and it can be replayed with
+   * any body until the timestamp expires. The client signs reads where read
+   * rights apply with {@link signRequestWithNonce}, and its other signed
+   * requests (writes, key-grant reads, transaction submission) with this form.
+   */
+  signRequest(method: string, path: string): SignedRequestHeaders {
+    const { did, privateKey, publicKeyId } = this.requireIdentity();
     const timestamp = Math.floor(Date.now() / 1000).toString();
-    const message = `${method}:${path}:${timestamp}`;
-
-    let signature: string;
-    if (this.algorithm === 'secp256k1') {
-      const wallet = new ethers.Wallet(this.privateKey);
-      const messageBytes = ethers.toUtf8Bytes(message);
-      const messageHash = ethers.keccak256(messageBytes);
-      // signMessageSync returns a hex string with 0x prefix
-      const sig = wallet.signMessageSync(ethers.getBytes(messageHash));
-      signature = sig.replace('0x', '');
-    } else {
-      signature = signEd25519(message, this.privateKey);
-    }
-
     return {
-      'X-DID': this.did,
-      'X-Public-Key-ID': this.publicKeyId,
-      'X-Signature': signature,
+      'X-DID': did,
+      'X-Public-Key-ID': publicKeyId,
+      'X-Signature': this.signMessage(legacyRequestMessage(method, path, timestamp), privateKey),
       'X-Timestamp': timestamp,
     };
   }
 
   /**
-   * Get authentication headers for an API request.
+   * Sign a request with a one-time nonce over the whole request and return
+   * the authentication headers, `X-Nonce` among them.
    *
-   * Returns the merge of:
-   *  - DID-signature headers (X-DID, X-Public-Key-ID, X-Signature, X-Timestamp)
-   *    when an identity is set via setIdentity().
-   *  - X-API-Key when a key is set via the constructor or setApiKey().
+   * `pathAndQuery` is the request target exactly as the server receives it:
+   * percent-encoded as sent, query string included, without any path the
+   * base URL adds in front. `body` is the exact body sent (omit it for none).
+   * The server accepts the timestamp for 300 s and each (DID, nonce) once,
+   * so sign every attempt of a request anew.
    *
-   * Either, both, or neither may be present.
+   * Only this form carries the DID's read rights: a Reader permission on a
+   * subgrove, or a place on a priced subgrove's free-reader list.
+   *
+   * @param options - Fixed timestamp and nonce, for tests only.
+   */
+  signRequestWithNonce(
+    method: string,
+    pathAndQuery: string,
+    body?: Uint8Array | string,
+    options: SignRequestOptions = {},
+  ): NonceSignedRequestHeaders {
+    const { did, privateKey, publicKeyId } = this.requireIdentity();
+    const timestamp = String(options.timestamp ?? Math.floor(Date.now() / 1000));
+    const nonce = options.nonce ?? newRequestNonce();
+    const message = signedRequestMessage(
+      did,
+      publicKeyId,
+      method,
+      pathAndQuery,
+      timestamp,
+      nonce,
+      body,
+    );
+    return {
+      'X-DID': did,
+      'X-Public-Key-ID': publicKeyId,
+      'X-Signature': this.signMessage(message, privateKey),
+      'X-Timestamp': timestamp,
+      'X-Nonce': nonce,
+    };
+  }
+
+  /**
+   * Headers for a read where the DID's read rights apply (`GET /data/:sg/:key`,
+   * `GET /proof/:sg/:key`, `POST /query/:sg`, `POST /sql/:sg`,
+   * `POST /graphql/:sg`): `X-API-Key` when a key is set, and the nonce-form
+   * signature headers ({@link signRequestWithNonce}) when an identity is set.
+   * Pass the exact target and body of the request as sent.
+   */
+  getSignedHeaders(
+    method: string,
+    pathAndQuery: string,
+    body?: Uint8Array | string,
+  ): Record<string, string> {
+    const apiKeyHeaders = this.apiKeyHeaders();
+    if (!this.hasIdentity()) {
+      return apiKeyHeaders;
+    }
+    return { ...this.signRequestWithNonce(method, pathAndQuery, body), ...apiKeyHeaders };
+  }
+
+  /**
+   * Headers in the older signature form: `X-API-Key` when a key is set, and
+   * {@link signRequest}'s headers when an identity is set. Pass the path as
+   * sent (percent-encoded); a query string is ignored.
+   *
+   * These prove the DID but carry none of its read rights; for a read where
+   * those apply, use {@link getSignedHeaders}. The nonce form is refused for
+   * a short while after the API restarts and allows less clock skew, so the
+   * client keeps other signed requests on this form.
    */
   getAuthHeaders(method: string, path: string): Record<string, string> {
     const apiKeyHeaders = this.apiKeyHeaders();
@@ -330,15 +531,5 @@ export class WillowAuth {
       return apiKeyHeaders;
     }
     return { ...this.signRequest(method, path), ...apiKeyHeaders };
-  }
-
-  /**
-   * Get query parameters for authentication (DID only, for pay-per-read fallback)
-   */
-  getAuthParams(): Record<string, string> {
-    if (!this.did) {
-      return {};
-    }
-    return { did: this.did };
   }
 }

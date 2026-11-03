@@ -31,7 +31,7 @@ import {
   ApiIndexerInfo,
   effectiveQueryEndpoint,
 } from "../indexers";
-import { HttpClient, HttpError } from "../internal/http";
+import { HttpClient, HttpError, RequestSigner } from "../internal/http";
 import { WillowLogger, silentLogger } from "../internal/logger";
 
 export class ValidatorHasNoDataError extends WillowError {
@@ -73,6 +73,17 @@ export class WillowData {
   private proofOptions?: ProofVerificationOptions;
   private logger: WillowLogger;
   private lightClientOptions?: WillowLightClientOptions;
+  /**
+   * Signs a read where the DID's read rights apply (`/data`, `/proof`,
+   * `/query`, `/sql`, `/graphql`): X-API-Key, plus the nonce form with an
+   * identity set. Only that form carries read rights.
+   */
+  private signRead: RequestSigner;
+  /**
+   * Signs any other request in the older form, which the API accepts in the
+   * seconds after a restart and with more clock skew than the nonce form.
+   */
+  private signOther: RequestSigner;
 
   constructor(
     apiUrl: string,
@@ -88,6 +99,8 @@ export class WillowData {
     this.proofOptions = proofVerificationOptions;
     this.api = new HttpClient({ baseURL: apiUrl });
     this.auth = auth;
+    this.signRead = (method, target, body) => auth.getSignedHeaders(method, target, body);
+    this.signOther = (method, target) => auth.getAuthHeaders(method, target);
     this.computedFieldRegistry = new ComputedFieldRegistry();
     this.logger = options?.logger ?? silentLogger;
     this.lightClientOptions = options?.lightClient;
@@ -191,8 +204,6 @@ export class WillowData {
   async registerSubgrove(
     request: RegisterSubgroveRequest,
   ): Promise<DatasetRegistration> {
-    const headers = this.auth.getAuthHeaders('POST', '/register/subgrove');
-
     // Convert to the API's expected format (subgrove endpoint for compatibility)
     const subgroveRequest = {
       subgrove_id: request.dataset_id,
@@ -206,7 +217,7 @@ export class WillowData {
     const response = await this.api.post<ApiResponse<DatasetRegistration>>(
       "/register/subgrove",
       subgroveRequest,
-      { headers },
+      { sign: this.signOther },
     );
 
     if (!response.success) {
@@ -233,11 +244,10 @@ export class WillowData {
     datasetId: string,
     data: Record<string, any>,
   ): Promise<void> {
-    const headers = this.auth.getAuthHeaders('POST', `/data/${datasetId}`);
     const response = await this.api.post<ApiResponse>(
       `/data/${datasetId}`,
       data,
-      { headers },
+      { sign: this.signOther },
     );
 
     if (!response.success) {
@@ -255,12 +265,10 @@ export class WillowData {
     datasetId: string,
     key: string,
   ): Promise<DataRecord> {
-    const headers = this.auth.getAuthHeaders('GET', `/data/${datasetId}/${key}`);
-
     // First get the data
     const response = await this.api.get<ApiResponse<DataRecord>>(
       `/data/${datasetId}/${key}`,
-      { headers },
+      { sign: this.signRead },
     );
 
     if (!response.success) {
@@ -275,10 +283,9 @@ export class WillowData {
 
     // Now get the proof for verification
     try {
-      const proofHeaders = this.auth.getAuthHeaders('GET', `/proof/${datasetId}/${key}`);
       const proofResponse = await this.api.get<ApiResponse<ProofResponse>>(
         `/proof/${datasetId}/${key}`,
-        { headers: proofHeaders },
+        { sign: this.signRead },
       );
 
       if (proofResponse.success && proofResponse.data?.proof) {
@@ -347,10 +354,9 @@ export class WillowData {
     datasetId: string,
     key: string,
   ): Promise<DataRecord> {
-    const headers = this.auth.getAuthHeaders('GET', `/data/${datasetId}/${key}`);
     const response = await this.api.get<ApiResponse<DataRecord>>(
       `/data/${datasetId}/${key}`,
-      { headers },
+      { sign: this.signRead },
     );
 
     if (!response.success) {
@@ -372,11 +378,10 @@ export class WillowData {
     key: string,
     data: any,
   ): Promise<void> {
-    const headers = this.auth.getAuthHeaders('PUT', `/data/${datasetId}/${key}`);
     const response = await this.api.put<ApiResponse>(
       `/data/${datasetId}/${key}`,
       data,
-      { headers },
+      { sign: this.signOther },
     );
 
     if (!response.success) {
@@ -394,10 +399,9 @@ export class WillowData {
     datasetId: string,
     key: string,
   ): Promise<void> {
-    const headers = this.auth.getAuthHeaders('DELETE', `/data/${datasetId}/${key}`);
     const response = await this.api.delete<ApiResponse>(
       `/data/${datasetId}/${key}`,
-      { headers },
+      { sign: this.signOther },
     );
 
     if (!response.success) {
@@ -417,6 +421,7 @@ export class WillowData {
   ): Promise<string> {
     const response = await this.api.get<ApiResponse<ProofResponse>>(
       `/proof/${datasetId}/${key}`,
+      { sign: this.signRead },
     );
 
     if (!response.success) {
@@ -524,11 +529,10 @@ export class WillowData {
       include_proof: true,
     };
 
-    const headers = this.auth.getAuthHeaders('POST', `/query/${datasetId}`);
     const response = await this.api.post<ApiResponse<QueryResponse>>(
       `/query/${datasetId}`,
       queryWithProof,
-      { headers },
+      { sign: this.signRead },
     );
 
     if (!response.success) {
@@ -613,11 +617,10 @@ export class WillowData {
       include_proof: false,
     };
 
-    const headers = this.auth.getAuthHeaders('POST', `/query/${datasetId}`);
     const response = await this.api.post<ApiResponse<QueryResponse>>(
       `/query/${datasetId}`,
       queryWithoutProof,
-      { headers },
+      { sign: this.signRead },
     );
 
     if (!response.success) {
@@ -892,11 +895,10 @@ export class WillowData {
     source: QuerySource,
   ): Promise<{ result: T; source: "validator" | "indexer"; indexerDid?: string; fallback: boolean }> {
     const httpPath = `/${path}/${subgroveId}`;
-    const headers = this.auth.getAuthHeaders("POST", httpPath);
 
     const callValidator = async (): Promise<T> => {
       try {
-        return await this.api.post<T>(httpPath, body, { headers });
+        return await this.api.post<T>(httpPath, body, { sign: this.signRead });
       } catch (err) {
         // When the validator refuses because the data isn't available
         // here (VerifyOnly retention, pruned, not indexed by consensus),
@@ -916,9 +918,13 @@ export class WillowData {
       }
     };
 
+    // Indexers verify no request signature, and their CORS doesn't allow
+    // X-Nonce, so they get the older form and X-API-Key, never the nonce form.
     const callIndexer = async (info: ApiIndexerInfo): Promise<T> => {
       const url = `${effectiveQueryEndpoint(info).replace(/\/$/, "")}${httpPath}`;
-      return this.api.post<T>(url, body, { headers });
+      return this.api.post<T>(url, body, {
+        headers: this.auth.getAuthHeaders("POST", httpPath),
+      });
     };
 
     if (source === "validator") {

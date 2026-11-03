@@ -95,8 +95,10 @@ export class WillowClient {
     this.files = new FileOperations(config.apiUrl, (method, path) =>
       this.auth.getAuthHeaders(method, path),
     );
-    this.eth = new EthOperations(config.indexerUrl ?? config.apiUrl, undefined, config.apiKey);
-    this.verifiableRpc = new VerifiableRpcOperations(config.indexerUrl ?? config.apiUrl);
+    // Only indexers serve `/verifiable-rpc/*`; without `indexerUrl` these
+    // throw INDEXER_URL_REQUIRED rather than asking the API.
+    this.eth = new EthOperations(config.indexerUrl ?? "", undefined, config.apiKey);
+    this.verifiableRpc = new VerifiableRpcOperations(config.indexerUrl ?? "");
 
     this.consensus = new ConsensusClient({
       consensusRpcUrl: cometUrl,
@@ -134,14 +136,19 @@ export class WillowClient {
     let resolvedAlgorithm = algorithm;
     if (!publicKeyId) {
       const didDoc = await this.auth.getDidDocument(this.config.did);
-      if (didDoc.publicKeys.length === 0) {
+      // The API serves the chain's document, whose keys are `public_keys`.
+      const publicKeys =
+        didDoc.publicKeys ??
+        (didDoc as unknown as { public_keys?: DidDocument["publicKeys"] }).public_keys ??
+        [];
+      if (publicKeys.length === 0) {
         throw new Error("No public keys found in DID document");
       }
-      publicKeyId = didDoc.publicKeys[0].id;
+      publicKeyId = publicKeys[0].id;
       // The on-chain DID document's key type is the authoritative algorithm
       // signal for self-certifying ids. An explicit `algorithm` still wins.
       resolvedAlgorithm =
-        resolvedAlgorithm ?? algorithmFromKeyType(didDoc.publicKeys[0].type);
+        resolvedAlgorithm ?? algorithmFromKeyType(publicKeys[0].type);
     }
 
     this.auth.setIdentity(this.config.did, key, publicKeyId, resolvedAlgorithm);

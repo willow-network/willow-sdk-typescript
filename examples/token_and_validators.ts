@@ -70,13 +70,6 @@ interface Validator {
   consensus_pubkey?: string;
 }
 
-interface ValidatorSet {
-  total_validators: number;
-  active_validators: number;
-  total_staked: string;
-  total_voting_power: number;
-}
-
 async function main() {
   console.log('Willow SDK - Token & Validator Operations Example');
   console.log('=================================================\n');
@@ -205,15 +198,12 @@ async function main() {
 
   console.log('7. Validator Set Summary');
   console.log('------------------------');
-  try {
-    const set = await fetchApi<ValidatorSet>(apiUrl, '/validators/set');
-    console.log(`   Total:         ${set.total_validators}`);
-    console.log(`   Active:        ${set.active_validators}`);
-    console.log(`   Total staked:  ${set.total_staked} WILL`);
-    console.log(`   Voting power:  ${set.total_voting_power}\n`);
-  } catch (error) {
-    console.log(`   Note: ${error}\n`);
-  }
+  // `/validators` lists the active set; summarize the list from step 5.
+  const totalStaked = validators.reduce((sum, v) => sum + BigInt(v.stake_amount), 0n);
+  const totalVotingPower = validators.reduce((sum, v) => sum + v.voting_power, 0);
+  console.log(`   Active:        ${validators.length}`);
+  console.log(`   Total staked:  ${totalStaked} WILL`);
+  console.log(`   Voting power:  ${totalVotingPower}\n`);
 
   console.log('ECONOMIC MODEL SUMMARY');
   console.log('======================');

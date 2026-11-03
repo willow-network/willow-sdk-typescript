@@ -5,6 +5,7 @@ import {
   getEd25519PublicKey,
   detectAlgorithm,
   algorithmFromKeyType,
+  verifySecp256k1,
   WillowAuth,
 } from '../src/auth';
 import { ed25519 } from '@noble/curves/ed25519';
@@ -195,17 +196,16 @@ describe('Auth', () => {
       const headers = auth.signRequest('GET', '/v1/data/query');
       const timestamp = headers['X-Timestamp'];
       const message = `GET:/v1/data/query:${timestamp}`;
-      const messageHash = ethers.keccak256(ethers.toUtf8Bytes(message));
 
-      // A secp256k1 signature recovers to the wallet's address; an Ed25519
-      // signature would not be recoverable at all.
-      const recovered = ethers.verifyMessage(
-        ethers.getBytes(messageHash),
-        '0x' + headers['X-Signature'],
+      // ECDSA over the Keccak-256 of the message, as the server verifies it:
+      // 0x-prefixed 64-byte r||s (an Ed25519 signature is 64 bytes of bare hex).
+      expect(headers['X-Signature']).toMatch(/^0x[0-9a-f]{128}$/);
+      expect(verifySecp256k1(message, headers['X-Signature'], wallet.signingKey.publicKey)).toBe(true);
+      const digest = ethers.keccak256(ethers.toUtf8Bytes(message));
+      const recovered = [27, 28].map((v) =>
+        ethers.recoverAddress(digest, { r: headers['X-Signature'].slice(0, 66), s: `0x${headers['X-Signature'].slice(66)}`, v }),
       );
-      expect(recovered.toLowerCase()).toBe(wallet.address.toLowerCase());
-      // secp256k1 signatures are 65 bytes (130 hex chars); Ed25519 is 64 (128).
-      expect(headers['X-Signature'].length).toBe(130);
+      expect(recovered.map((a) => a.toLowerCase())).toContain(wallet.address.toLowerCase());
     });
 
     it('defaults to Ed25519 signing when no algorithm is given', () => {
