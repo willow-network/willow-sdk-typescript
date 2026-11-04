@@ -44,6 +44,8 @@ package adheres to [Semantic Versioning](https://semver.org/).
   `UintInput`).
 - An optional `signFunction` argument to the `PrivacyOperations`
   constructor.
+- `MerkExecutionResult.valueKeys`: the hex keys of every node in a merk
+  proof that carries a value, whatever the limit.
 
 ### Changed
 
@@ -120,6 +122,18 @@ package adheres to [Semantic Versioning](https://semver.org/).
 
 - `WillowAuth.getAuthParams()`. It built a `?did=` query parameter the server
   ignores.
+
+### Fixed
+
+- The GroveDB verifier refuses children under opaque proof nodes: a proof
+  that attaches a child to a Hash node, whose hash would not cover it.
+- The GroveDB verifier accepts a tree element proven without its lower layer
+  (no subquery on it, an empty tree, an exhausted limit), as grovedb returns
+  it. Its value hash is the layered one, so its bytes are not checked as a
+  leaf value, and they bind no document or item value. A lower layer under a
+  key its layer does not prove is refused.
+- `verifyGroveDBProof` with `deserializeElements: false` verifies proofs
+  with lower layers; it refused every one.
 
 ## [0.1.0] - 2026-06-11
 

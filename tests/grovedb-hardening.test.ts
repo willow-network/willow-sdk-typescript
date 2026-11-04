@@ -24,6 +24,7 @@ import {
   GroveDBVerificationError,
   VarintError,
 } from '../src/grovedb';
+import { verifyItemProof, verifyQueryProof } from '../src/proof';
 
 const fx = JSON.parse(
   fs.readFileSync(path.join(__dirname, 'fixtures', 'grovedb', 'partial-proof-live.json'), 'utf8'),
@@ -187,6 +188,20 @@ describe('value-bearing leaf binding', () => {
     const forged = wrapAsGroveDBProof(encodeKVValueHashLeaf(key, evilValue, committedHash));
     expect(() => verifyGroveDBProof(forged)).toThrow(GroveDBVerificationError);
     expect(() => verifyGroveDBProof(forged)).toThrow(/does not hash to its committed valueHash/);
+  });
+
+  it('surfaces tree-shaped bytes on a value hash only as a tree, which binds nothing', async () => {
+    // A tree's value hash can't be re-derived from its bytes alone, so the
+    // leaf check skips tree elements; their bytes must then never stand for a
+    // value. Tree(Some("x"), None) in place of the committed Item:
+    const treeBytes = new Uint8Array([0x02, 0x01, 0x01, 0x78, 0x00]);
+    const proof = wrapAsGroveDBProof(encodeKVValueHashLeaf(key, treeBytes, committedHash));
+    const { results } = verifyGroveDBProof(proof);
+    expect(results.map((r) => r.element?.type)).toEqual(['Tree']);
+    const proofHex = Buffer.from(proof).toString('hex');
+    await expect(verifyItemProof(proofHex, 'balance', 1000)).rejects.toThrow(/does not match/);
+    await expect(verifyItemProof(proofHex, 'balance', treeBytes)).rejects.toThrow(/does not match/);
+    await expect(verifyQueryProof(proofHex, [{ balance: 1000 }])).rejects.toThrow(/not committed/);
   });
 
   it('accepts the honest leaf and surfaces the real value at the same root', () => {

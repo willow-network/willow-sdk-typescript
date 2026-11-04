@@ -13,7 +13,7 @@ import {
   ProvedKeyValue,
   Element
 } from './types';
-import { bytesToHex } from './bincode';
+import { bytesToHex, hexToBytes } from './bincode';
 import { decodeGroveDBProof } from './decoder';
 import { executeMerkProofWithQuery } from './executor';
 import { deserializeElement, isTreeElement, hasRootKey } from './element';
@@ -153,12 +153,20 @@ function tryDeserializeElement(value: Uint8Array): Element | null {
  * match. KV self-binds (its value enters kv_hash), and KVRefValueHash binds its
  * value via combine_hash(valueHash, value_hash(value)) inside the node hash, so
  * neither needs an extra check.
+ *
+ * A tree element (Tree, SumTree, BigSumTree, CountTree, CountSumTree) is the
+ * exception: its value hash is combine_hash(value_hash(bytes), subtree root)
+ * (merk's layered value hash), so without its lower layer — no subquery on it,
+ * an empty tree, an exhausted limit — it can't be re-derived, and grovedb
+ * returns such proofs. Its bytes are surfaced as a tree, not as a value.
  */
 function bindLeafValue(proved: ProvedKeyValue): void {
   if (
     proved.value &&
     (proved.nodeType === 'KVValueHash' || proved.nodeType === 'KVValueHashFeatureType')
   ) {
+    const element = tryDeserializeElement(proved.value);
+    if (element && isTreeElement(element)) return;
     const computed = valueHash(proved.value);
     if (!hashEquals(computed, proved.proof)) {
       throw new GroveDBVerificationError(
@@ -193,6 +201,16 @@ function verifyLayerProof(
     true // left to right
   );
 
+  // grovedb puts a lower layer only under a key this layer proves with a value.
+  for (const keyHex of layerProof.lowerLayers.keys()) {
+    if (!merkResult.valueKeys.has(keyHex)) {
+      throw new GroveDBVerificationError(
+        `Proof has a lower layer under ${pathToString([...currentPath, hexToBytes(keyHex)])}, ` +
+          'a key this layer does not prove'
+      );
+    }
+  }
+
   // Process each proven value
   for (const proved of merkResult.resultSet) {
     // Check if this key has a lower layer proof (subtree)
@@ -200,8 +218,9 @@ function verifyLayerProof(
     const lowerLayer = layerProof.lowerLayers.get(keyHex);
 
     if (lowerLayer && proved.value) {
-      // This is a subtree - verify the lower layer
-      const element = deserializeElements ? tryDeserializeElement(proved.value) : null;
+      // This is a subtree - verify the lower layer. The element is read here
+      // whatever `deserializeElements` says: only a tree can have one.
+      const element = tryDeserializeElement(proved.value);
 
       // Only recurse if element is a tree type with a root key
       if (element && isTreeElement(element) && hasRootKey(element)) {

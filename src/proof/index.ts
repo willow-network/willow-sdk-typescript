@@ -24,6 +24,7 @@ import {
   quickVerify,
   hexToBytes,
   hashToHex,
+  isTreeElement,
   GroveDBVerificationResult,
 } from '../grovedb';
 
@@ -155,13 +156,24 @@ function documentBindsTo(proven: ProvenValue, document: unknown): boolean {
 }
 
 /**
- * Collect the values the proof actually commits to from its proven Item
- * element payloads (or raw leaf bytes when the element didn't deserialize).
+ * The bytes a proven result commits to as a value: an Item's payload, or the
+ * raw leaf bytes when the element didn't deserialize. A tree element is not a
+ * value (and a tree proven without its lower layer is not bound byte for byte),
+ * so it gives none.
+ */
+function provenRaw(result: GroveDBVerificationResult['results'][number]): Uint8Array | null {
+  if (result.element?.type === 'Item') return result.element.value;
+  if (result.element && isTreeElement(result.element)) return null;
+  return result.value;
+}
+
+/**
+ * Collect the values the proof actually commits to from its proven results.
  */
 function provenValues(verification: GroveDBVerificationResult): ProvenValue[] {
   const values: ProvenValue[] = [];
   for (const result of verification.results) {
-    const raw = result.element?.type === 'Item' ? result.element.value : result.value;
+    const raw = provenRaw(result);
     if (!raw) continue;
     values.push(decodeProvenValue(raw));
   }
@@ -249,7 +261,7 @@ export async function verifyItemProof(
   }
 
   if (value !== undefined) {
-    const raw = match.element?.type === 'Item' ? match.element.value : match.value;
+    const raw = provenRaw(match);
     if (!raw || !documentBindsTo(decodeProvenValue(raw), value)) {
       throw new Error(
         `Proven value for key "${key}" does not match the returned data — ` +
