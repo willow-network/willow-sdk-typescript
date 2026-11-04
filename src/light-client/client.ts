@@ -503,11 +503,14 @@ export class LightClient {
 
   /**
    * The chain's latest height as the configured endpoints report it
-   * (CometBFT `/status`): the highest height at least
-   * `minValidatorsForConsensus` of them have reached, or the latest header
-   * this client holds if that is higher. It trusts the endpoints as the
-   * root-hash path does. Verified reads refuse a proof whose height is far
-   * from it, since the API chooses the height it proves at.
+   * (CometBFT `/status`): the highest height that a majority of the
+   * endpoints that answer, and at least `minValidatorsForConsensus` of them,
+   * have reached (the lower median of their heights), or the latest header
+   * this client holds if that is higher. An endpoint reporting a height far
+   * above or below the others' moves it only with a majority. It trusts the
+   * endpoints as the root-hash path does. Verified reads refuse a proof
+   * whose height is far from it, since the API chooses the height it proves
+   * at.
    *
    * @throws LightClientError when fewer than `minValidatorsForConsensus`
    *   endpoints answer.
@@ -529,7 +532,9 @@ export class LightClient {
         `Only ${heights.length} endpoints reported the latest height; ${needed} are needed`
       );
     }
-    const reached = heights[needed - 1];
+    // Heights run highest first: the k-th has been reached by k endpoints.
+    const majority = Math.floor(heights.length / 2) + 1;
+    const reached = heights[Math.max(needed, majority) - 1];
     return this.latestHeight !== undefined && this.latestHeight > reached ? this.latestHeight : reached;
   }
 

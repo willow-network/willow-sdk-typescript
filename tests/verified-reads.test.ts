@@ -142,11 +142,29 @@ describe('LightClient', () => {
   const status = (height: number) =>
     reply({ result: { sync_info: { latest_block_height: String(height), latest_app_hash: 'AA'.repeat(32) } } });
 
-  it('getLatestChainHeight: the highest height enough endpoints have reached', async () => {
-    const heights: Record<string, number> = { 'http://v1': 100, 'http://v2': 104, 'http://v3': 9_999 };
+  it('getLatestChainHeight: the highest height a majority of the endpoints have reached', async () => {
+    const heights: Record<string, number> = {
+      'http://v1': 100,
+      'http://v2': 104,
+      'http://v3': 9_999,
+      'http://v4': 9_999,
+      'http://v5': 102,
+      'http://v6': 1,
+    };
     global.fetch = jest.fn(async (url: string) => status(heights[new URL(url).origin])) as unknown as typeof fetch;
-    await expect(lightClient(['http://v1', 'http://v2', 'http://v3'], 2).getLatestChainHeight()).resolves.toBe(104);
-    await expect(lightClient(['http://v1', 'http://v2', 'http://v3'], 1).getLatestChainHeight()).resolves.toBe(9_999);
+    const three = ['http://v1', 'http://v2', 'http://v3'];
+    await expect(lightClient(three, 2).getLatestChainHeight()).resolves.toBe(104);
+    // One endpoint far ahead does not move it.
+    await expect(lightClient(three, 1).getLatestChainHeight()).resolves.toBe(104);
+    await expect(lightClient(three, 3).getLatestChainHeight()).resolves.toBe(100);
+    // Nor does one far behind.
+    await expect(lightClient(['http://v6', 'http://v1', 'http://v2'], 1).getLatestChainHeight()).resolves.toBe(100);
+    // Two of five far ahead: the height three have reached stands.
+    const five = ['http://v1', 'http://v2', 'http://v3', 'http://v4', 'http://v5'];
+    await expect(lightClient(five, 1).getLatestChainHeight()).resolves.toBe(104);
+    // Of two, both must have reached it.
+    await expect(lightClient(['http://v1', 'http://v3'], 1).getLatestChainHeight()).resolves.toBe(100);
+    await expect(lightClient(['http://v2'], 1).getLatestChainHeight()).resolves.toBe(104);
     global.fetch = jest.fn(async () => {
       throw new Error('down');
     }) as unknown as typeof fetch;
