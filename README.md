@@ -153,7 +153,8 @@ Writes in flight may land in any order, so send a write that depends on
 another (one to a subgrove being registered, say) after the first has landed:
 
 ```typescript
-await Promise.all(records.map(({ key, value }) => client.store('dataset-id', key, value)));
+// At most 24 in flight: a 25th throws NONCE_WINDOW_FULL until earlier ones land.
+await Promise.all(batch.map(({ key, value }) => client.store('dataset-id', key, value)));
 ```
 
 ### Retrieve Data
@@ -648,7 +649,7 @@ Nonce: <nonce>
 The chain accepts a nonce in `base + 1 … base + 24` that it hasn't used, and its base advances only over used nonces with no gap. Every write path that picks a nonce (`WillowClient`, `ConsensusClient`, `WillowData`, and `PrivacyOperations`) takes it from a `NonceAllocator`, which keeps, per DID, the nonces it has handed out that haven't landed and the newest nonce state the chain has reported:
 
 - It reads the account's base (`/account/{did}/nonce` on the API) or, with a CometBFT RPC URL, the base and which of the 24 nonces above it are used (ABCI query `/store/account_nonce_state/{did}`), and hands out the lowest nonce in the window that isn't used, seen to land, or handed out within the last 120 s. Writes in flight together get distinct nonces.
-- When every nonce in the window is taken it throws `NONCE_WINDOW_FULL`; it never takes one above `base + 24`. More than 24 writes from one identity wait for earlier ones to land.
+- When every nonce in the window is taken it throws `NONCE_WINDOW_FULL`; it never takes one above `base + 24`. A batch of more than 24 writes from one identity sends the rest once earlier ones land.
 - A write refused at CheckTx gives its nonce back, unless the refusal says the nonce is held by a pending transaction, already used, or spent. A write accepted at CheckTx holds its nonce, and one whose submission failed in transport keeps it, until it lands or 120 s pass; a nonce handed out 120 s ago that hasn't landed is free again.
 - Every client of one API URL in the process shares one allocator (`NonceAllocator.shared(apiUrl)`) unless given its own (`nonceAllocator` in `WillowConfig` or `ConsensusConfig`, or `PrivacyOperations`' last argument).
 - `files.upload`, `files.delete`, and `files.unregisterStorageNode` take signing options (the chain refuses an unsigned transaction, so without them they throw `SIGNING_REQUIRED`) and sign the nonce the caller passes. Take it with `client.consensus.nextNonce(did)` and report the outcome with `client.consensus.nonces.settle(did, nonce, result)`.
