@@ -23,10 +23,13 @@
  * Binding guarantee: the proven Item bytes are authoritative. A returned
  * document binds only if it is structurally equal to the JSON those bytes
  * decode to — whitespace and object key order are normalized away, but numbers
- * are compared with `Object.is` and must be fidelity-safe (exact safe integers
- * or finite non-integers below 2^53), so `-0`/`0`, `NaN`, and precision-lossy
- * big integers (e.g. 2^53+1) never bind. Numbers outside that range should be
- * carried as strings to bind. A non-JSON stored Item binds only by exact bytes.
+ * are compared with `Object.is` and must be ones JavaScript carries exactly:
+ * a safe integer, or a non-integer of at most 15 significant digits whose
+ * magnitude is below 2^53 and, unless zero, at least 2^-1022. So `-0`/`0`,
+ * `NaN`, precision-lossy big integers (e.g. 2^53+1), and longer decimals
+ * (which `JSON.parse` rounds) never bind. Numbers outside that range should
+ * be carried as strings to bind. A non-JSON stored Item binds only by exact
+ * bytes.
  */
 
 import { QueryResponse, DataRecord } from '../types';
@@ -42,6 +45,7 @@ import {
   decodeProofBytes,
   encodePath,
   enforceExpectedRoot,
+  firstInexactNumber,
   jsonDeepEqual,
 } from './shared';
 
@@ -112,7 +116,8 @@ function pathEqual(a: Uint8Array[], b: Uint8Array[]): boolean {
  * (raw blob) can still bind to a returned value by exact bytes.
  */
 type ProvenValue =
-  | { kind: 'json'; value: unknown }
+  /** `inexact`: the first number in the text JavaScript can't carry exactly. */
+  | { kind: 'json'; value: unknown; inexact?: string }
   | { kind: 'raw'; bytes: Uint8Array };
 
 /**
@@ -123,7 +128,7 @@ type ProvenValue =
 function decodeProvenValue(raw: Uint8Array): ProvenValue {
   try {
     const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(raw);
-    return { kind: 'json', value: JSON.parse(text) };
+    return { kind: 'json', value: JSON.parse(text), inexact: firstInexactNumber(text) };
   } catch {
     return { kind: 'raw', bytes: raw };
   }
@@ -131,12 +136,13 @@ function decodeProvenValue(raw: Uint8Array): ProvenValue {
 
 /**
  * Test whether a returned `document` binds to a proven value. JSON-proven
- * bytes bind by structural equality (number fidelity enforced); non-JSON
- * proven bytes bind only when the document is itself raw bytes equal to them
+ * bytes bind by structural equality (number fidelity enforced), and never
+ * when they hold a number JavaScript can't carry exactly; non-JSON proven
+ * bytes bind only when the document is itself raw bytes equal to them
  * (DataRecord documents are JSON, so they never bind to a raw blob).
  */
 function documentBindsTo(proven: ProvenValue, document: unknown): boolean {
-  if (proven.kind === 'json') return jsonDeepEqual(proven.value, document);
+  if (proven.kind === 'json') return proven.inexact === undefined && jsonDeepEqual(proven.value, document);
   return document instanceof Uint8Array && bytesEqual(proven.bytes, document);
 }
 
@@ -259,7 +265,14 @@ export async function verifyItemProof(
 
   if (value !== undefined) {
     const raw = provenRaw(match);
-    if (!raw || !documentBindsTo(decodeProvenValue(raw), value)) {
+    const proven = raw ? decodeProvenValue(raw) : null;
+    if (proven?.kind === 'json' && proven.inexact !== undefined) {
+      throw new Error(
+        `Proven value for key "${key}" holds the number ${proven.inexact}, which JavaScript can't ` +
+          'carry exactly; store such values as strings',
+      );
+    }
+    if (!proven || !documentBindsTo(proven, value)) {
       throw new Error(
         `Proven value for key "${key}" does not match the returned data — ` +
           'the server returned data the proof does not cover',

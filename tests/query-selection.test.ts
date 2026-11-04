@@ -328,6 +328,26 @@ describe("the API's reading of documents", () => {
   });
 });
 
+describe('a number JavaScript cannot carry exactly does not verify', () => {
+  const one = (text: string) => {
+    const state = stateWith([{ key: 'x', item: `{"v":${text}}` }]);
+    const proof = hex(groveProof(pathProof(state.root, PATH, state.keys)));
+    return verifyQuerySelection('s1', {}, response(proof, [JSON.parse(`{"v":${text}}`)], 1));
+  };
+
+  it('a decimal of more than 15 significant digits, or below the normal range, is refused', async () => {
+    for (const text of ['0.12345678901234567890', '1.0000000000000000001', '1e-320', '9007199254740993']) {
+      await expect(one(text)).rejects.toThrow(/holds the number .*, which JavaScript can't carry exactly/);
+    }
+  });
+
+  it('one of at most 15 significant digits verifies', async () => {
+    for (const text of ['0.123456789012345', '1.5', '-2.5e-300', '9007199254740991']) {
+      await expect(one(text)).resolves.toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+});
+
 describe('the proof and its root are checked before the selection is run', () => {
   const realFetch = global.fetch;
   afterEach(() => {

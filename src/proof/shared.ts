@@ -41,14 +41,53 @@ export function enforceExpectedRoot(computed: string, expected?: string): void {
 }
 
 /**
- * A number is fidelity-safe when two distinct JSON source tokens cannot parse
- * to it: exact safe integers, and finite non-integers below the 2^53 boundary.
- * `NaN`, `±Infinity`, `-0`, and any integer past `MAX_SAFE_INTEGER` (which
- * `JSON.parse` silently rounds — e.g. 2^53+1 → 2^53) are NOT fidelity-safe.
+ * A number value the binding takes on either side: a safe integer other than
+ * `-0`, or a finite non-integer below 2^53 in magnitude. `NaN`, `±Infinity`,
+ * `-0`, and any integer past `MAX_SAFE_INTEGER` (which `JSON.parse` rounds:
+ * 2^53+1 → 2^53) are not. The value alone can't show that it is exact
+ * (`0.1` and `0.10000000000000000001` parse to one value): a proven value's
+ * text is checked by {@link isExactJsonNumber}.
  */
 export function isFidelitySafeNumber(n: number): boolean {
   if (Number.isInteger(n)) return Number.isSafeInteger(n) && !Object.is(n, -0);
   return Number.isFinite(n) && Math.abs(n) < 2 ** 53;
+}
+
+/** The smallest positive normal double; below it a double keeps fewer digits. */
+const MIN_NORMAL = 2 ** -1022;
+
+/**
+ * Whether the number JSON text `text` parses to in JavaScript is the number
+ * it writes, so that no other number's text parses to the same value. An
+ * integer (no fraction or exponent) must be a safe integer. Any other number
+ * must have at most 15 significant digits, which a double keeps through a
+ * round trip, and be zero or of a magnitude a double holds at full precision
+ * (from 2^-1022 up); `0.12345678901234567` (17 digits) and `1e-320` are not
+ * exact. `-0` is left to {@link isFidelitySafeNumber}.
+ */
+export function isExactJsonNumber(text: string): boolean {
+  const value = Number(text);
+  if (!Number.isFinite(value)) return false;
+  if (/^-?[0-9]+$/.test(text)) return Number.isSafeInteger(value);
+  const digits = text
+    .split(/[eE]/)[0]
+    .replace(/[-.]/g, '')
+    .replace(/^0+/, '')
+    .replace(/0+$/, '');
+  if (digits.length === 0) return true;
+  return digits.length <= 15 && Math.abs(value) >= MIN_NORMAL;
+}
+
+/**
+ * The first number in JSON text `text` (valid JSON) that JavaScript can't
+ * carry exactly ({@link isExactJsonNumber}), or `undefined` when there is
+ * none.
+ */
+export function firstInexactNumber(text: string): string | undefined {
+  for (const [token] of text.matchAll(/"(?:[^"\\]|\\.)*"|-?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/g)) {
+    if (token[0] !== '"' && !isExactJsonNumber(token)) return token;
+  }
+  return undefined;
 }
 
 /**

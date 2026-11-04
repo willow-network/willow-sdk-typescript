@@ -26,6 +26,7 @@ jest.mock('../src/grovedb', () => {
 
 import { verifyGroveDBProof } from '../src/grovedb';
 import { verifyQueryProof, verifyItemProof } from '../src/proof';
+import { isExactJsonNumber, firstInexactNumber } from '../src/proof/shared';
 
 const mockVerify = verifyGroveDBProof as jest.MockedFunction<typeof verifyGroveDBProof>;
 
@@ -101,6 +102,41 @@ describe('verifyQueryProof — number-fidelity binding', () => {
   it('binds finite non-integers that round-trip (e.g. 1.5)', async () => {
     mockVerify.mockReturnValue(provenItem('{"x":1.5}'));
     await expect(verifyQueryProof('00', [{ x: 1.5 } as any])).resolves.toBe(ROOT_HEX);
+  });
+});
+
+describe('a number JavaScript cannot carry exactly never binds', () => {
+  // 0.12345678901234567890 and 0.12345678901234568 parse to one double.
+  const LONG = '0.12345678901234567890';
+
+  it('a decimal of more than 15 significant digits, or below the normal range', async () => {
+    for (const text of [LONG, '1.0000000000000000001', '1e-320', '-123456789.1234567']) {
+      mockVerify.mockReturnValue(provenItem(`{"x":${text}}`));
+      const value = JSON.parse(`{"x":${text}}`);
+      await expect(verifyItemProof('00', 'k', value)).rejects.toThrow(
+        new RegExp(`holds the number ${text.replace(/[.+-]/g, '\\$&')}, which JavaScript can't carry exactly`),
+      );
+      await expect(verifyQueryProof('00', [value])).rejects.toThrow(/not committed by the proof/);
+    }
+  });
+
+  it('binds decimals of at most 15 significant digits, and digits in a string', async () => {
+    for (const text of ['0.123456789012345', '1.5e-300', '-0.000001', '123456789.123456', '1.50000000000000000000']) {
+      mockVerify.mockReturnValue(provenItem(`{"x":[${text}],"s":"${LONG}"}`));
+      await expect(verifyItemProof('00', 'k', JSON.parse(`{"x":[${text}],"s":"${LONG}"}`))).resolves.toBe(ROOT_HEX);
+    }
+  });
+
+  it('isExactJsonNumber and firstInexactNumber', () => {
+    expect(isExactJsonNumber('9007199254740991')).toBe(true);
+    expect(isExactJsonNumber('9007199254740992')).toBe(false);
+    expect(isExactJsonNumber('0.0')).toBe(true);
+    expect(isExactJsonNumber('1e400')).toBe(false);
+    expect(isExactJsonNumber('2.5e-308')).toBe(true);
+    expect(isExactJsonNumber('2.2250738585072014e-308')).toBe(false); // 17 digits
+    expect(isExactJsonNumber('1e-308')).toBe(false);
+    expect(firstInexactNumber(`{"a":"1e-400","b\\"":[1,${LONG}],"c":2}`)).toBe(LONG);
+    expect(firstInexactNumber('{"a":"\\"0.12345678901234567890"}')).toBeUndefined();
   });
 });
 

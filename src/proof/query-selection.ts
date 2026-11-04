@@ -37,6 +37,7 @@ import {
   decodeProofBytes,
   encodePath,
   enforceExpectedRoot,
+  isExactJsonNumber,
   jsonDeepEqual,
   subgroveDataPath,
 } from './shared';
@@ -339,10 +340,33 @@ export function provenQueryData(subgroveId: string, response: QueryResponse): Pr
   return { entries: layer.entries, rootHash: hashToHex(layer.rootHash) };
 }
 
+/** The first number in `value` JavaScript can't carry exactly, if any. */
+function inexactNumber(value: NodeJson): string | undefined {
+  switch (value.t) {
+    case 'num':
+      return isExactJsonNumber(value.n) ? undefined : value.n;
+    case 'arr':
+      for (const item of value.v) {
+        const found = inexactNumber(item);
+        if (found !== undefined) return found;
+      }
+      return undefined;
+    case 'obj':
+      for (const item of value.v.values()) {
+        const found = inexactNumber(item);
+        if (found !== undefined) return found;
+      }
+      return undefined;
+    default:
+      return undefined;
+  }
+}
+
 /**
  * Require `response` to be exactly what `selection` selects from the proven
  * entries: its `documents` (in order, each structurally equal to the proven
- * one, numbers exact), `total`, `offset`, and `limit`. Run it only once `data.rootHash` is checked, as the
+ * one, with every number one JavaScript carries exactly), `total`,
+ * `offset`, and `limit`. Run it only once `data.rootHash` is checked, as the
  * error a selection the data makes irreproducible throws
  * ({@link QueryResultNotVerifiableError}) is about the data at that root.
  *
@@ -389,6 +413,13 @@ export function checkQueryResult(
     );
   }
   for (let i = 0; i < documents.length; i++) {
+    const inexact = inexactNumber(expected.documents[i]);
+    if (inexact !== undefined) {
+      throw new Error(
+        `Document at index ${i} holds the number ${inexact}, which JavaScript can't carry exactly; ` +
+          'store such values as strings',
+      );
+    }
     if (!jsonDeepEqual(nodeJsonToJs(expected.documents[i]), documents[i])) {
       throw new Error(
         `Document at index ${i} is not the document the query selects there in the proven ` +
@@ -408,8 +439,10 @@ export function checkQueryResult(
  * root must be `options.expectedRootHash` when that is given; only then is
  * the query's selection run over the entries. The response's `documents`
  * must be the documents the query selects, in order (each structurally
- * equal to the proven one, numbers exact), and its `total`, `offset`, and
- * `limit` the query's.
+ * equal to the proven one, numbers exact: a document holding a number
+ * JavaScript can't carry exactly, such as an integer beyond 2^53 − 1 or a
+ * decimal of more than 15 significant digits, does not verify), and its
+ * `total`, `offset`, and `limit` the query's.
  *
  * `query` is the query as it was sent (without `include_proof`, which the
  * SDK sets).
