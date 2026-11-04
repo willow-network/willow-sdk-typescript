@@ -22,11 +22,15 @@ import { WillowAuth } from "../auth";
 import {
   verifyQueryProof,
   verifyItemProof,
-  verifyQuerySelection,
   subgroveDataPath,
   ProofVerificationOptions,
 } from "../proof";
-import { querySelection } from "../proof/query-selection";
+import {
+  checkQueryResult,
+  provenQueryData,
+  querySelection,
+} from "../proof/query-selection";
+import { enforceExpectedRoot } from "../proof/shared";
 import { verifyKeyAbsence, hashToHex, hexToBytes } from "../grovedb";
 import { LightClient, LightClientConfig } from "../light-client";
 import {
@@ -666,33 +670,35 @@ export class WillowData {
    * subgrove's entire data tree, and the SDK runs the API's selection over it
    * (the one exact-match filter, the sort, `offset`, and `limit`, default
    * 100) and requires the returned `documents` and `total` to be exactly that
-   * (see {@link verifyQuerySelection}). The proof's root must be the light
-   * client's root for the proof's block height, which must be within
-   * `lightClient.maxProofLagBlocks` of the chain's latest; the result carries
+   * (see `verifyQuerySelection`). The selection is the one in the body sent,
+   * read when it is sent, so changing `query` afterwards does not change what
+   * the result is checked against. The proof must reveal the whole data
+   * tree, and its root must be the light client's root for the proof's block
+   * height, which must be within `lightClient.maxProofLagBlocks` of the
+   * chain's latest, before the selection is run; the result carries
    * `verifiedRootHash` and `verifiedHeight`.
    *
-   * A query the API's selection can't be verified for throws
-   * `QUERY_NOT_VERIFIABLE` before anything is sent: a filter on more than one
-   * field (the API applies only one), a filter operator such as `$gt` (the
-   * API applies none), or `search`. So does a result whose order or contents
-   * the SDK can't reproduce (a sort over values that are not all numbers or
-   * all strings, say). Use `queryUnverified` for those.
+   * A query whose selection can't be verified throws `QUERY_NOT_VERIFIABLE`
+   * before anything is sent: a filter on more than one field (the API
+   * applies only one), a filter operator such as `$gt` (the API applies
+   * none), or `search`. Use `queryUnverified` for those. Data at the verified
+   * root whose selection the SDK can't reproduce (a sort over values that are
+   * not all numbers or all strings, say) throws `QUERY_RESULT_NOT_VERIFIABLE`
+   * (a `QueryResultNotVerifiableError` carrying the root).
    */
   async query(
     datasetId: string,
     query: QueryRequest,
   ): Promise<QueryResponse> {
-    // Always include proof by default for security
-    const queryWithProof: QueryRequest = {
-      ...query,
-      include_proof: true,
-    };
+    // The body as it is sent (with the proof always asked for), read once:
+    // the selection is checked against it, not the caller's object later.
+    const sent = JSON.parse(JSON.stringify({ ...query, include_proof: true })) as QueryRequest;
     // Refuse a query whose result can't be verified before sending it.
-    querySelection(queryWithProof);
+    const selection = querySelection(sent);
 
     const response = await this.api.post<ApiResponse<QueryResponse>>(
       `/query/${datasetId}`,
-      queryWithProof,
+      sent,
       { sign: this.signRead },
     );
 
@@ -717,13 +723,15 @@ export class WillowData {
 
     let verified: QueryResponse;
     try {
-      const computedRootHash = await verifyQuerySelection(datasetId, query, result, {
-        expectedRootHash: this.proofOptions?.expectedRootHash,
-      });
+      // The whole data tree and its root first; the selection runs only over
+      // data at a verified root.
+      const data = provenQueryData(datasetId, result);
+      enforceExpectedRoot(data.rootHash, this.proofOptions?.expectedRootHash);
       const { rootHash, height } = await this.verifyRootAtHeight(
-        computedRootHash,
+        data.rootHash,
         (result as { height?: unknown }).height,
       );
+      checkQueryResult(data, selection, result);
       // Only what was verified: the API's other fields are left out.
       verified = {
         documents: result.documents,
@@ -1083,7 +1091,7 @@ export interface QueryResponseExt extends QueryResponse {
  * Add a `verifyProof` method to a QueryResponse, which checks membership
  * only: each document is a value the proof proves (as `verifyQueryProof`),
  * not that the documents are the query's whole result. `client.query`
- * verifies the whole result ({@link verifyQuerySelection}). Pass the
+ * verifies the whole result (`verifyQuerySelection`). Pass the
  * subgrove the query was made against to bind the documents to that
  * subgrove's data ({@link subgroveDataPath}); without it they bind to a value
  * proven at any path in the proof.

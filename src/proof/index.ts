@@ -50,6 +50,7 @@ export type { PathSegment } from './shared';
 export {
   verifyQuerySelection,
   QueryNotVerifiableError,
+  QueryResultNotVerifiableError,
   DEFAULT_QUERY_LIMIT,
 } from './query-selection';
 export type { QuerySelectionOptions } from './query-selection';

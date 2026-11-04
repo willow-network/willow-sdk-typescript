@@ -14,9 +14,12 @@
  * - Bytes that are not UTF-8, a string escape of a lone UTF-16 surrogate, a
  *   byte-order mark, or more than 127 nested arrays and objects are refused
  *   (the node skips such a document); `JSON.parse` takes them.
- * - An object whose first key is serde_json's private number (or raw value)
- *   token is read as a number. A document with such a key is reported as one
- *   this module can't reproduce.
+ * - An object whose first key is exactly serde_json's private number token
+ *   (`$serde_json::private::Number`) or raw-value token
+ *   (`$serde_json::private::RawValue`) is read as that number or raw value,
+ *   not as an object. A document holding such an object is reported as one
+ *   this module can't reproduce. Any other key, and these tokens as a later
+ *   key, are ordinary keys.
  */
 
 /** A JSON value as the node holds it. */
@@ -44,8 +47,12 @@ export class NotReproducibleError extends Error {
 /** serde_json's recursion limit: it refuses the 128th nested array or object. */
 const MAX_NESTING = 127;
 
-/** serde_json's private keys (`$serde_json::private::Number`, `…::RawValue`). */
-const PRIVATE_KEY_PREFIX = '$serde_json::private::';
+/**
+ * serde_json's private tokens: an object whose first key is exactly one of
+ * these is read as a number (with `arbitrary_precision`) or a raw value
+ * (with `raw_value`).
+ */
+const PRIVATE_TOKENS = new Set(['$serde_json::private::Number', '$serde_json::private::RawValue']);
 
 const U64_MAX = (1n << 64n) - 1n;
 const I64_MIN = -(1n << 63n);
@@ -258,13 +265,14 @@ class Parser {
       this.i++;
       return { t: 'obj', v: entries };
     }
-    for (;;) {
+    for (let first = true; ; first = false) {
       this.ws();
       if (this.s[this.i] !== '"') throw REFUSED;
       const key = this.string();
-      if (key.startsWith(PRIVATE_KEY_PREFIX)) {
+      // serde_json reads only an object's first key as its token.
+      if (first && PRIVATE_TOKENS.has(key)) {
         throw new NotReproducibleError(
-          `an object key starts with "${PRIVATE_KEY_PREFIX}", which the node may read as a number`,
+          `an object's first key is "${key}", which the node reads as a number or raw value, not an object`,
         );
       }
       this.ws();

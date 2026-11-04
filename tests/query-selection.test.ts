@@ -15,6 +15,7 @@ import {
   verifyQueryProof,
   subgroveDataPath,
   QueryNotVerifiableError,
+  QueryResultNotVerifiableError,
 } from '../src/proof';
 import { querySelection, selectDocuments } from '../src/proof/query-selection';
 import { parseNodeJson, canonicalNumber, nodeJsonToJs } from '../src/proof/node-json';
@@ -269,8 +270,23 @@ describe("the API's reading of documents", () => {
     ]);
   });
 
-  it("a key serde_json may read as a number is not reproduced", () => {
-    expect(() => select(['{"$serde_json::private::Number":"1"}'])).toThrow(/private/);
+  it("an object whose first key is serde_json's private token is not reproduced", () => {
+    for (const doc of [
+      '{"$serde_json::private::Number":"1"}',
+      '{"$serde_json::private::RawValue":"1"}',
+      '{"a":{"$serde_json::private::Number":"1","b":2}}',
+      '[{"$serde_json::private::\\u004eumber":"1"}]',
+    ]) {
+      expect(() => select([doc])).toThrow(/first key is "\$serde_json::private::(Number|RawValue)"/);
+    }
+    // Anywhere else, or any other key, is an ordinary key, as serde_json reads it.
+    const ordinary = [
+      '{"$serde_json::private::z":1}',
+      '{"a":1,"$serde_json::private::Number":"1"}',
+      '{"$serde_json::private::Numbers":"1"}',
+      '{"$serde_json::private::number":"1"}',
+    ];
+    expect(select(ordinary)).toEqual(ordinary.map((t) => JSON.parse(t)));
   });
 
   it('strings sort by code point; mixed sort values are refused unless all compare equal', async () => {
@@ -309,6 +325,129 @@ describe("the API's reading of documents", () => {
     await expect(
       verifyQuerySelection('s1', {}, response(proof, [{ id: 'a' }, { id: 'target' }], 2)),
     ).rejects.toThrow();
+  });
+});
+
+describe('the proof and its root are checked before the selection is run', () => {
+  const realFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  /** A self-consistent state of `items`, served with no documents. */
+  function forged(items: Array<{ key: string; item: string }>) {
+    const state = stateWith(items);
+    const proof = hex(groveProof(pathProof(state.root, PATH, state.keys)));
+    global.fetch = jest.fn(async () => {
+      const body = { success: true, data: { ...response(proof, [], 0), height: 7 } };
+      return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+    }) as unknown as typeof fetch;
+    return { proof, root: state.ROOT };
+  }
+
+  function dataAt(root: string) {
+    const d = new WillowData('http://api.test', new WillowAuth('http://api.test'), new WillowIndexers('http://api.test'));
+    const rootAt = jest.fn(async () => root);
+    (d as any).lightClient = { getLatestChainHeight: async () => 7, getVerifiedRootHashAtHeight: rootAt };
+    return { d, rootAt };
+  }
+
+  const irreproducible: Array<[string, Array<{ key: string; item: string }>, QueryRequest]> = [
+    ['a private token', [{ key: 'x', item: '{"$serde_json::private::Number":"1"}' }], {}],
+    [
+      'mixed sort values',
+      [
+        { key: 'x', item: '{"v":1}' },
+        { key: 'y', item: '{"v":"a"}' },
+        { key: 'z', item: '{"v":2}' },
+      ],
+      { sort: { field: 'v', order: 'asc' } },
+    ],
+  ];
+
+  it.each(irreproducible)('a forged proof with %s fails verification', async (_, items, query) => {
+    forged(items);
+    const { d, rootAt } = dataAt('ab'.repeat(32));
+    await expect(d.query('s1', query)).rejects.toMatchObject({
+      code: 'PROOF_VERIFICATION_FAILED',
+      message: expect.stringMatching(/root hash mismatch/),
+    });
+    expect(rootAt).toHaveBeenCalledWith(7);
+  });
+
+  it.each(irreproducible)(
+    'the same data at the verified root is QUERY_RESULT_NOT_VERIFIABLE, not a query to read unverified (%s)',
+    async (_, items, query) => {
+      const { root } = forged(items);
+      const err = await dataAt(root).d.query('s1', query).catch((e) => e);
+      expect(err).toBeInstanceOf(QueryResultNotVerifiableError);
+      expect(err).not.toBeInstanceOf(QueryNotVerifiableError);
+      expect(err).toMatchObject({ code: 'QUERY_RESULT_NOT_VERIFIABLE', rootHash: root });
+      expect(err.message).not.toMatch(/queryUnverified/);
+    },
+  );
+
+  it('verifyQuerySelection checks expectedRootHash first, and reports the root it ran the selection at', async () => {
+    const [, items, query] = irreproducible[1];
+    const { proof, root } = forged(items);
+    await expect(
+      verifyQuerySelection('s1', query, response(proof, [], 0), { expectedRootHash: 'ab'.repeat(32) }),
+    ).rejects.toThrow(/Root hash mismatch/);
+    await expect(verifyQuerySelection('s1', query, response(proof, [], 0))).rejects.toMatchObject({
+      code: 'QUERY_RESULT_NOT_VERIFIABLE',
+      rootHash: root,
+    });
+    // A query the API does not apply is still refused as the query.
+    await expect(
+      verifyQuerySelection('s1', { search: { field: 'v', query: 'a' } } as QueryRequest, response(proof, [], 0)),
+    ).rejects.toThrow(QueryNotVerifiableError);
+  });
+});
+
+describe('a query is verified against the body that was sent', () => {
+  const realFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  it('a caller changing its query object while pages are in flight still verifies each page', async () => {
+    const all = docsOf('a', 'b', 'c', 'd', 'e', 'f', 'g');
+    const sent: Array<Record<string, any>> = [];
+    global.fetch = jest.fn(async (_url: string, init?: RequestInit) => {
+      const q = JSON.parse(init!.body as string);
+      sent.push(q);
+      // Answer after the caller has moved on.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const status = q.filters?.status;
+      const matching = all.filter((doc) => status === undefined || doc.status === status);
+      const off = q.offset ?? 0;
+      const lim = q.limit ?? 100;
+      const body = {
+        success: true,
+        data: { ...response(FULL, matching.slice(off, off + lim), matching.length, off, lim), height: 7 },
+      };
+      return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+    }) as unknown as typeof fetch;
+    const d = new WillowData('http://api.test', new WillowAuth('http://api.test'), new WillowIndexers('http://api.test'));
+    (d as any).lightClient = { getLatestChainHeight: async () => 7, getVerifiedRootHashAtHeight: async () => S.ROOT };
+
+    const q: QueryRequest = { filters: { status: 'active' }, limit: 2, offset: 0 };
+    const pages: Array<Promise<unknown>> = [];
+    for (let i = 0; i < 3; i++) {
+      pages.push(d.query('s1', q).then((r) => r.documents));
+      q.offset! += 1;
+      (q.filters as Record<string, unknown>).status = i === 1 ? 'inactive' : 'active';
+    }
+    await expect(Promise.all(pages)).resolves.toEqual([
+      docsOf('b', 'd'),
+      docsOf('d', 'f'),
+      docsOf('e', 'g'),
+    ]);
+    expect(sent.map((b) => [b.filters.status, b.offset])).toEqual([
+      ['active', 0],
+      ['active', 1],
+      ['inactive', 2],
+    ]);
   });
 });
 

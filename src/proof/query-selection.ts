@@ -12,12 +12,15 @@
  * that selection over them as the API does, and requires the response's
  * documents and `total` to be it.
  *
- * Where the API's selection can't be reproduced exactly, the query is not
- * verifiable and {@link QueryNotVerifiableError} is thrown: a filter on more
- * than one field (the API applies only one), a filter operator (the API
- * applies none), `search` (the API applies none), a sort over values that
- * are not all numbers or all strings (the API's order is then not
- * determined), or a document the API's JSON reader may read differently.
+ * A query whose selection can't be reproduced exactly is not verifiable and
+ * throws {@link QueryNotVerifiableError}, before anything is sent: a filter
+ * on more than one field (the API applies only one), a filter operator (the
+ * API applies none), or `search` (the API applies none). The proof's
+ * completeness and root are checked before the selection is run, so a
+ * selection the data makes irreproducible (a sort over values that are not
+ * all numbers or all strings, whose order is then not determined, or a
+ * document the API's JSON reader may read differently) is reported, as
+ * {@link QueryResultNotVerifiableError}, only for data at a checked root.
  */
 
 import { QueryRequest, QueryResponse, WillowError } from '../types';
@@ -47,14 +50,37 @@ const U32_MAX = 0xffff_ffff;
 const QUERY_KEYS = new Set(['filters', 'search', 'sort', 'limit', 'offset', 'include_proof', 'includes']);
 
 /**
- * A query whose result the SDK can't verify, because the API's selection for
- * it can't be reproduced exactly (code `QUERY_NOT_VERIFIABLE`). Its result
- * may be read unverified (`queryUnverified`).
+ * A query whose result the SDK can't verify whatever the data, because the
+ * API's selection for the query itself can't be reproduced exactly (code
+ * `QUERY_NOT_VERIFIABLE`). `client.query` throws it before sending anything.
+ * Its result may be read unverified (`queryUnverified`).
  */
 export class QueryNotVerifiableError extends WillowError {
   constructor(message: string) {
     super(message, 'QUERY_NOT_VERIFIABLE');
     this.name = 'QueryNotVerifiableError';
+  }
+}
+
+/**
+ * A query result the SDK can't verify because of the data it is selected
+ * from (code `QUERY_RESULT_NOT_VERIFIABLE`): the proof reveals the whole data
+ * tree at `rootHash`, but the API's selection over those entries can't be
+ * reproduced (a sort over values that are not all numbers or all strings,
+ * say). `client.query` throws it only once `rootHash` is the light client's
+ * root for the proof's height; {@link verifyQuerySelection} checks
+ * `rootHash` only against `expectedRootHash`, so without one it is the
+ * proof's own root, to compare with a trusted root before acting on the
+ * error.
+ */
+export class QueryResultNotVerifiableError extends WillowError {
+  /** The root (hex) of the data the selection was run over. */
+  readonly rootHash: string;
+
+  constructor(message: string, rootHash: string) {
+    super(message, 'QUERY_RESULT_NOT_VERIFIABLE');
+    this.name = 'QueryResultNotVerifiableError';
+    this.rootHash = rootHash;
   }
 }
 
@@ -292,42 +318,54 @@ export interface QuerySelectionOptions {
   expectedRootHash?: string;
 }
 
+/** The entries a query response's proof reveals at the data path, and its root. */
+export interface ProvenQueryData {
+  entries: CompleteEntry[];
+  /** The proof's root (hex). */
+  rootHash: string;
+}
+
 /**
- * Verify that a `POST /query/:subgrove` response is exactly the API's answer
- * to `query` over the subgrove's data as the proof proves it, and return the
- * proof's root hash (hex), which the caller must compare to a trusted root.
- *
- * The proof must reveal every entry of the subgrove's data tree at
- * `["subgroves", subgroveId, "data"]` (no pruned or hidden node). The
- * response's `documents` must be the documents the query selects, in order
- * (each structurally equal to the proven one, numbers exact), and its
- * `total`, `offset`, and `limit` the query's.
- *
- * `query` is the query as given to `client.query` (without `include_proof`,
- * which the SDK sets).
- *
- * @throws QueryNotVerifiableError when the API's selection for this query
- *   or these documents can't be reproduced.
- * @throws Error when the proof or the response does not verify.
+ * The whole data tree a `POST /query/:subgrove` response's proof reveals at
+ * `["subgroves", subgroveId, "data"]`, and the proof's root. Throws when the
+ * proof is missing, does not verify, or leaves any entry there unrevealed.
  */
-export async function verifyQuerySelection(
-  subgroveId: string,
-  query: QueryRequest,
-  response: QueryResponse,
-  options?: QuerySelectionOptions,
-): Promise<string> {
-  const selection = querySelection({ ...query, include_proof: true });
+export function provenQueryData(subgroveId: string, response: QueryResponse): ProvenQueryData {
   if (!response.proof) throw new Error('Query response does not contain proof data');
   const layer = verifyCompleteLayer(
     decodeProofBytes(response.proof),
     encodePath(subgroveDataPath(subgroveId)),
   );
+  return { entries: layer.entries, rootHash: hashToHex(layer.rootHash) };
+}
 
+/**
+ * Require `response` to be exactly what `selection` selects from the proven
+ * entries: its `documents` (in order, each structurally equal to the proven
+ * one, numbers exact), `total`, `offset`, and `limit`. Run it only once `data.rootHash` is checked, as the
+ * error a selection the data makes irreproducible throws
+ * ({@link QueryResultNotVerifiableError}) is about the data at that root.
+ *
+ * @throws QueryResultNotVerifiableError when the API's selection over these
+ *   entries can't be reproduced.
+ * @throws Error when the response is not the selection.
+ */
+export function checkQueryResult(
+  data: ProvenQueryData,
+  selection: QuerySelection,
+  response: QueryResponse,
+): void {
   let expected: { documents: NodeJson[]; total: number };
   try {
-    expected = selectDocuments(layer.entries, selection);
+    expected = selectDocuments(data.entries, selection);
   } catch (error) {
-    if (error instanceof NotReproducibleError) throw notVerifiable(error.message);
+    if (error instanceof NotReproducibleError) {
+      throw new QueryResultNotVerifiableError(
+        `This query's result can't be verified from the subgrove's data at root ${data.rootHash}: ` +
+          `${error.message}`,
+        data.rootHash,
+      );
+    }
     throw error;
   }
 
@@ -358,8 +396,40 @@ export async function verifyQuerySelection(
       );
     }
   }
+}
 
-  const computed = hashToHex(layer.rootHash);
-  enforceExpectedRoot(computed, options?.expectedRootHash);
-  return computed;
+/**
+ * Verify that a `POST /query/:subgrove` response is exactly the API's answer
+ * to `query` over the subgrove's data as the proof proves it, and return the
+ * proof's root hash (hex), which the caller must compare to a trusted root.
+ *
+ * The proof must reveal every entry of the subgrove's data tree at
+ * `["subgroves", subgroveId, "data"]` (no pruned or hidden node), and its
+ * root must be `options.expectedRootHash` when that is given; only then is
+ * the query's selection run over the entries. The response's `documents`
+ * must be the documents the query selects, in order (each structurally
+ * equal to the proven one, numbers exact), and its `total`, `offset`, and
+ * `limit` the query's.
+ *
+ * `query` is the query as it was sent (without `include_proof`, which the
+ * SDK sets).
+ *
+ * @throws QueryNotVerifiableError when the API's selection for this query
+ *   can't be reproduced, whatever the data.
+ * @throws QueryResultNotVerifiableError when the selection over the proven
+ *   data can't be reproduced; its `rootHash` is checked only against
+ *   `expectedRootHash`.
+ * @throws Error when the proof or the response does not verify.
+ */
+export async function verifyQuerySelection(
+  subgroveId: string,
+  query: QueryRequest,
+  response: QueryResponse,
+  options?: QuerySelectionOptions,
+): Promise<string> {
+  const selection = querySelection({ ...query, include_proof: true });
+  const data = provenQueryData(subgroveId, response);
+  enforceExpectedRoot(data.rootHash, options?.expectedRootHash);
+  checkQueryResult(data, selection, response);
+  return data.rootHash;
 }
