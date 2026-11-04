@@ -403,7 +403,9 @@ export class FileOperations {
     source?.nonces.settle(did, nonce, result);
     if (!result.success) {
       throw new TransactionSubmitError(
-        `${failure}: ${result.rawLog || result.errorMessage || 'unknown error'}`,
+        result.pending
+          ? `${failure}: ${result.errorMessage}`
+          : `${failure}: ${result.rawLog || result.errorMessage || 'unknown error'}`,
         'TX_SUBMIT_FAILED',
         { did, nonce, transaction, result },
       );

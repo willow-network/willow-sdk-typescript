@@ -502,7 +502,9 @@ export class PrivacyOperations {
 
     if (!result.success) {
       throw new TransactionSubmitError(
-        `Transaction rejected: ${result.rawLog || result.errorMessage || "unknown error"}`,
+        result.pending
+          ? `Transaction unconfirmed: ${result.errorMessage}`
+          : `Transaction rejected: ${result.rawLog || result.errorMessage || "unknown error"}`,
         "BROADCAST_FAILED",
         { did, nonce, transaction: txWrapper, result },
       );

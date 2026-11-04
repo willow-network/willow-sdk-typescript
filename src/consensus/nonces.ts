@@ -64,7 +64,8 @@ function mergeStates(a: AccountNonceState, b: AccountNonceState): AccountNonceSt
   return { base, used: usedAbove(a, base) | usedAbove(b, base) };
 }
 
-function isUsed(chain: AccountNonceState, nonce: number): boolean {
+/** Whether `chain` shows `nonce` used: at or below the base, or its bit set. */
+export function isUsed(chain: AccountNonceState, nonce: number): boolean {
   if (nonce <= chain.base) return true;
   const offset = nonce - chain.base - 1;
   return offset < NONCE_WINDOW && (chain.used & (1 << offset)) !== 0;
@@ -184,11 +185,12 @@ export class NonceAllocator {
   }
 
   /**
-   * Record a submission's outcome: accepted holds the nonce; refused gives it
-   * back unless the refusal says it is held, used, or spent.
+   * Record a submission's outcome: accepted, or pending (its outcome
+   * unknown), holds the nonce; refused gives it back unless the refusal says
+   * it is held, used, or spent.
    */
   settle(did: string, nonce: number, result: BroadcastResult): void {
-    if (result.success) {
+    if (result.success || result.pending) {
       this.hold(did, nonce);
       return;
     }

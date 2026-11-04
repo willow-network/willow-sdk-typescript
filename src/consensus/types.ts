@@ -173,12 +173,18 @@ export function createConsensusConfig(config: Partial<ConsensusConfig> & Pick<Co
  * Result of transaction broadcast
  */
 export interface BroadcastResult {
+  /** CheckTx accepted the transaction. */
   success: boolean;
   /**
-   * The transaction's hash. Absent when the submission was a repeat of one
-   * the mempool already holds (CometBFT's "tx already exists in cache"),
-   * which counts as accepted.
+   * The outcome is unknown (`success` is false): CometBFT answered that it
+   * already holds these bytes ("tx already exists in cache"). It caches a
+   * transaction before CheckTx runs and drops it if CheckTx refuses it, so
+   * the transaction may be in CheckTx, in the mempool, committed, or about to
+   * be refused. Its nonce stays held; confirm by the account's nonce state
+   * (`ConsensusClient.isNonceUsed`).
    */
+  pending?: boolean;
+  /** The transaction's hash. Absent when the outcome is `pending`. */
   txHash?: string;
   height?: number;
   errorCode?: number;

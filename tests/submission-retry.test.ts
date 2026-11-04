@@ -218,7 +218,7 @@ describe('a failed submission carries what was sent, to post again', () => {
     expect(await c.nextNonce(DID)).toBe(6);
   });
 
-  it('resubmit posts the same signed body; a repeat the mempool holds counts as accepted', async () => {
+  it('resubmit posts the same signed body; a repeat the mempool holds is pending, not accepted', async () => {
     let fail = true;
     const sent = stubChain(4, () => {
       if (fail) throw new Error('timeout');
@@ -228,10 +228,20 @@ describe('a failed submission carries what was sent, to post again', () => {
     const err = await c.storeData('sg', 'k', { a: 1 }, DID, SIGNER).catch((e) => e);
     fail = false;
     const result = await c.resubmit(err);
-    expect(result).toMatchObject({ success: true });
+    expect(result).toMatchObject({ success: false, pending: true });
+    expect(result.errorMessage).toMatch(/unconfirmed/);
     expect(result.txHash).toBeUndefined();
     expect(sent).toHaveLength(2);
     expect(sent[1]).toBe(sent[0]);
+    // Its outcome is unknown, so its nonce stays held.
+    expect(await c.nextNonce(DID)).toBe(6);
+  });
+
+  it('isNonceUsed reads whether the chain has used a nonce', async () => {
+    stubChain(4, () => accepted());
+    const c = new ConsensusClient({ apiUrl: 'http://api.test', nonceAllocator: new NonceAllocator() });
+    expect(await c.isNonceUsed(DID, 4)).toBe(true);
+    expect(await c.isNonceUsed(DID, 5)).toBe(false);
   });
 
   it('resubmit settles the nonce with the answer', async () => {
@@ -249,13 +259,13 @@ describe('a failed submission carries what was sent, to post again', () => {
     expect(sent).toHaveLength(2);
   });
 
-  it("a write's own retries treat a repeat the mempool holds as accepted", async () => {
+  it("a write's own retry that meets the mempool's copy reports it pending and keeps the nonce", async () => {
     const sent = stubChain(4, (_, attempt) => {
       if (attempt === 1) throw new Error('timeout');
       return inCache();
     });
     const c = new ConsensusClient({ apiUrl: 'http://api.test', nonceAllocator: new NonceAllocator(), maxRetries: 1 });
-    expect(await c.storeData('sg', 'k', {}, DID, SIGNER)).toMatchObject({ success: true });
+    expect(await c.storeData('sg', 'k', {}, DID, SIGNER)).toMatchObject({ success: false, pending: true });
     expect(sent[1]).toBe(sent[0]);
     expect(await c.nextNonce(DID)).toBe(6);
   });
@@ -291,7 +301,13 @@ describe('a failed submission carries what was sent, to post again', () => {
     // The consensus client of the same allocator posts it again.
     sent = stubChain(4, () => inCache());
     const c = new ConsensusClient({ apiUrl: 'http://api.test', nonceAllocator: allocator });
-    expect(await c.resubmit(err)).toMatchObject({ success: true });
+    expect(await c.resubmit(err)).toMatchObject({ success: false, pending: true });
     expect(sent[0]).toBe(toJson(err.transaction));
+
+    // A grant whose answer is the mempool's copy is unconfirmed, not refused.
+    sent = stubChain(4, () => inCache());
+    err = await privacy.grantSubgroveKey('private-1', grant).catch((e) => e);
+    expect(err).toMatchObject({ code: 'BROADCAST_FAILED', result: { pending: true } });
+    expect(err.message).toMatch(/unconfirmed/);
   });
 });

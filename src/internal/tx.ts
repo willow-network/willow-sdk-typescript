@@ -32,9 +32,11 @@ export class TxTransportError extends Error {
 }
 
 /**
- * CometBFT's answer to a transaction its mempool cache already holds: the
- * same bytes were accepted before (pending, or committed without a refusal),
- * so a repeat of a signed transaction that gets it was accepted.
+ * CometBFT's answer to a transaction its mempool cache already holds. It
+ * caches a transaction before CheckTx runs and drops it again if CheckTx
+ * refuses it, so the answer means only that the same bytes were seen: they
+ * may be in CheckTx, in the mempool, committed, or about to be refused. The
+ * outcome is unknown.
  */
 const TX_IN_CACHE = 'tx already exists in cache';
 
@@ -52,8 +54,9 @@ const TX_IN_CACHE = 'tx already exists in cache';
  *
  * A repeat of a transaction CometBFT already holds ("tx already exists in
  * cache", which the API relays as an RPC error) returns
- * `BroadcastResult{ success: true }` without a `txHash`: the same signed
- * bytes were accepted before.
+ * `BroadcastResult{ success: false, pending: true }` without a `txHash`: the
+ * same signed bytes were seen, but whether they are accepted is unknown.
+ * Confirm by the account's nonce state (`ConsensusClient.isNonceUsed`).
  */
 export async function submitTxToApi(
   apiUrl: string,
@@ -89,7 +92,14 @@ export async function submitTxToApi(
   }
 
   if (typeof body.error === 'string' && body.error.includes(TX_IN_CACHE)) {
-    return { success: true, rawLog: body.error };
+    return {
+      success: false,
+      pending: true,
+      errorMessage:
+        'unconfirmed: CometBFT already holds this transaction, which is in CheckTx, in the mempool, ' +
+        "committed, or about to be refused; confirm it by the account's nonce state",
+      rawLog: body.error,
+    };
   }
 
   if (!response.ok) {
