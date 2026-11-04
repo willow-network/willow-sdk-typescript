@@ -18,7 +18,12 @@ import {
   QuerySource,
 } from "../types";
 import { WillowAuth } from "../auth";
-import { verifyQueryProof, verifyItemProof, ProofVerificationOptions } from "../proof";
+import {
+  verifyQueryProof,
+  verifyItemProof,
+  subgroveDataPath,
+  ProofVerificationOptions,
+} from "../proof";
 import { LightClient, LightClientConfig } from "../light-client";
 import {
   ComputedFieldRegistry,
@@ -359,7 +364,7 @@ export class WillowData {
         const proofData = proofResponse.data;
 
         // Verify the proof and compute root hash
-        const path = ["subgroves", datasetId, "data"];
+        const path = subgroveDataPath(datasetId);
         const computedRootHash = await verifyItemProof(
           proofData.proof,
           key,
@@ -610,11 +615,13 @@ export class WillowData {
     // Verify proof if present
     if (result.proof) {
       try {
-        // Verify the proof and compute root hash
+        // Verify the proof and compute root hash. The documents bind only
+        // to values proven at this subgrove's data path, so a proof of
+        // another subgrove's data at the same root is refused.
         const computedRootHash = await verifyQueryProof(
           result.proof,
           result.documents,
-          this.proofOptions,
+          { ...this.proofOptions, path: subgroveDataPath(datasetId) },
         );
 
         // Get verified root hash at the same block height as the proof
@@ -830,6 +837,9 @@ export class WillowData {
     checkpointId: string,
     query: HistoricalQueryRequest,
   ): Promise<HistoricalQueryResponse> {
+    // The path the indexer proves at, which the documents must be proven at.
+    const path = historicalQueryPath(query);
+
     // Force proof inclusion for verification
     const queryWithProof: HistoricalQueryRequest = {
       ...query,
@@ -849,8 +859,12 @@ export class WillowData {
         ? result.data
         : [result.data];
 
-      // Verify proof and get computed root hash
-      const computedRoot = await verifyQueryProof(result.proof, documents, this.proofOptions);
+      // Verify proof and get computed root hash. The documents bind only to
+      // values proven at the path the query was made at.
+      const computedRoot = await verifyQueryProof(result.proof, documents, {
+        ...this.proofOptions,
+        path,
+      });
 
       // Compare with the checkpoint's state root (both should be hex strings)
       const normalizedComputed = computedRoot.toLowerCase().replace(/^0x/, "");
@@ -1035,6 +1049,27 @@ export class WillowData {
 }
 
 /**
+ * The path of a historical query, as bytes: the path the indexer proves at.
+ */
+function historicalQueryPath(query: HistoricalQueryRequest): Uint8Array[] {
+  const invalid = () =>
+    new WillowError(
+      "A historical query's path must be an array of byte arrays (integers 0..255)",
+      "INVALID_QUERY",
+    );
+  if (!Array.isArray(query.path)) throw invalid();
+  return query.path.map((segment) => {
+    if (
+      !Array.isArray(segment) ||
+      !segment.every((b) => Number.isInteger(b) && b >= 0 && b <= 255)
+    ) {
+      throw invalid();
+    }
+    return Uint8Array.from(segment);
+  });
+}
+
+/**
  * Extension methods for QueryResponse
  */
 export interface QueryResponseExt extends QueryResponse {
@@ -1042,9 +1077,15 @@ export interface QueryResponseExt extends QueryResponse {
 }
 
 /**
- * Add verification method to QueryResponse
+ * Add verification method to QueryResponse. Pass the subgrove the query was
+ * made against to bind the documents to that subgrove's data
+ * ({@link subgroveDataPath}); without it they bind to a value proven at any
+ * path in the proof.
  */
-export function extendQueryResponse(response: QueryResponse): QueryResponseExt {
+export function extendQueryResponse(
+  response: QueryResponse,
+  subgroveId?: string,
+): QueryResponseExt {
   return {
     ...response,
     async verifyProof(): Promise<string> {
@@ -1054,7 +1095,11 @@ export function extendQueryResponse(response: QueryResponse): QueryResponseExt {
           "NO_PROOF",
         );
       }
-      return verifyQueryProof(response.proof, response.documents);
+      return verifyQueryProof(
+        response.proof,
+        response.documents,
+        subgroveId === undefined ? undefined : { path: subgroveDataPath(subgroveId) },
+      );
     },
   };
 }

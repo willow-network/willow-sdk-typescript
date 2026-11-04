@@ -11,13 +11,42 @@ import {
   CryptoHash,
   GroveDBVerificationError,
   ProvedKeyValue,
-  Element
+  Element,
+  NULL_HASH
 } from './types';
 import { bytesToHex, hexToBytes } from './bincode';
 import { decodeGroveDBProof } from './decoder';
-import { executeMerkProofWithQuery } from './executor';
+import { executeMerkProof, executeMerkProofWithQuery } from './executor';
 import { deserializeElement, isTreeElement, hasRootKey } from './element';
 import { combineHash, valueHash, hashEquals, hashToHex } from './hash';
+import { Tree, compareBytes } from './tree';
+
+/**
+ * One entry a proof proves: a key at a path and what the proof binds to it.
+ */
+export interface ProvenEntry {
+  path: Uint8Array[];
+  key: Uint8Array;
+  /**
+   * The element bytes the proof binds to the key (for a reference, the
+   * referenced element's). `null` for a non-empty subtree proven without its
+   * lower layer: its value hash is `combine_hash(value_hash(bytes), subtree
+   * root)`, which its bytes alone can't re-derive, so the proof binds no bytes
+   * to it and none are given.
+   */
+  value: Uint8Array | null;
+  /**
+   * The element `value` decodes to, when `deserializeElements` is set (the
+   * default) and `value` is given; otherwise `null`.
+   */
+  element: Element | null;
+  /**
+   * The proof gives this entry as a subtree, not a value (the verifier always
+   * sets it). A subtree binds no value: when `value` is `null` the proof
+   * shows only that the key is present.
+   */
+  tree?: boolean;
+}
 
 /**
  * Result of verifying a GroveDB proof
@@ -25,13 +54,8 @@ import { combineHash, valueHash, hashEquals, hashToHex } from './hash';
 export interface GroveDBVerificationResult {
   /** Root hash of the entire GroveDB tree */
   rootHash: CryptoHash;
-  /** Proven key-value pairs with their paths */
-  results: Array<{
-    path: Uint8Array[];
-    key: Uint8Array;
-    value: Uint8Array | null;
-    element: Element | null;
-  }>;
+  /** Proven entries with their paths */
+  results: ProvenEntry[];
 }
 
 /**
@@ -44,9 +68,10 @@ export interface VerifyOptions {
   deserializeElements?: boolean;
   /**
    * The GroveDB path the query was made at. When set, the proof envelope must
-   * carry a lower layer for every segment (see `checkEnvelope`); without it an
-   * empty result set at that path cannot be told apart from a proof whose
-   * subtree was silently dropped.
+   * carry a lower layer for every segment, and no lower layer off the path
+   * (see `checkEnvelope`), or end at a subtree on the path that it proves
+   * empty; without it an empty result set at that path cannot be told apart
+   * from a proof whose subtree was silently dropped.
    */
   expectedPath?: Uint8Array[];
 }
@@ -58,34 +83,66 @@ export interface VerifyOptions {
  * the same root hash with that subtree's results silently gone, so a proof of
  * "K = V" verifies as "K is absent". Requiring a layer for every path segment
  * closes it (once a layer is present its root is hash-bound to the parent).
+ *
+ * A proof of a query at a path carries, above the path, only the layer of the
+ * path's next segment, and none below it. A lower layer off the path is
+ * refused: it would carry entries proven at another path (another
+ * subgrove's data, say) beside the queried one.
+ *
  * `prove_options` is prover-chosen bytes that steer limit accounting, so it is
  * pinned to the default the chain's prover uses.
  */
 export function checkEnvelope(proof: GroveDBProof, expectedPath: Uint8Array[]): void {
+  checkHeader(proof);
+  const depth = envelopeDepth(proof, expectedPath);
+  if (depth < expectedPath.length) throw noLowerLayer(expectedPath, depth);
+}
+
+function checkHeader(proof: GroveDBProof): void {
   if (proof.version !== 0) {
     throw new GroveDBVerificationError(`Unsupported proof version: ${proof.version}`);
   }
   checkProveOptions(proof);
-  let layer: LayerProof = proof.proof.rootLayer;
-  for (let i = 0; i < expectedPath.length; i++) {
-    const next = layer.lowerLayers.get(bytesToHex(expectedPath[i]));
-    if (!next) {
-      throw new GroveDBVerificationError(
-        `envelope: no lower layer for path segment ${i} (${pathToString([expectedPath[i]])}); ` +
-          'the proof does not descend to the query path',
-      );
-    }
-    layer = next;
-  }
-  if (layer.lowerLayers.size !== 0) {
-    throw new GroveDBVerificationError('envelope: unexpected lower layers below the query path');
-  }
 }
 
 function checkProveOptions(proof: GroveDBProof): void {
   if (!proof.proof.proveOptions.decreaseLimitOnEmptySubQueryResult) {
     throw new GroveDBVerificationError('envelope: non-default prove_options');
   }
+}
+
+/**
+ * How many segments of `expectedPath` the envelope descends: the path's
+ * length, or the segment whose lower layer it stops before. Refuses a lower
+ * layer off the path, and any lower layer below it.
+ */
+function envelopeDepth(proof: GroveDBProof, expectedPath: Uint8Array[]): number {
+  let layer: LayerProof = proof.proof.rootLayer;
+  for (let i = 0; i < expectedPath.length; i++) {
+    const segment = bytesToHex(expectedPath[i]);
+    for (const keyHex of layer.lowerLayers.keys()) {
+      if (keyHex !== segment) {
+        throw new GroveDBVerificationError(
+          `envelope: a lower layer under ${pathToString([...expectedPath.slice(0, i), hexToBytes(keyHex)])}, ` +
+            'off the query path'
+        );
+      }
+    }
+    const next = layer.lowerLayers.get(segment);
+    if (!next) return i;
+    layer = next;
+  }
+  if (layer.lowerLayers.size !== 0) {
+    throw new GroveDBVerificationError('envelope: unexpected lower layers below the query path');
+  }
+  return expectedPath.length;
+}
+
+function noLowerLayer(expectedPath: Uint8Array[], i: number): GroveDBVerificationError {
+  return new GroveDBVerificationError(
+    `envelope: no lower layer for path segment ${i} (${pathToString([expectedPath[i]])}); ` +
+      'the proof does not descend to the query path'
+  );
 }
 
 /**
@@ -100,35 +157,49 @@ export function verifyGroveDBProof(
   options: VerifyOptions = {}
 ): GroveDBVerificationResult {
   const proof = decodeGroveDBProof(proofBytes);
-  return verifyProof(proof, options);
+  const { rootHash, results } = verifyProof(proof, options);
+  return { rootHash, results };
 }
 
 /**
- * Verify a decoded GroveDB proof
+ * Verify a decoded GroveDB proof. `depth` is how far it descends along
+ * `options.expectedPath`: short of the path's length only when it ends at a
+ * subtree on the path that it proves empty.
  */
 function verifyProof(
   proof: GroveDBProof,
   options: VerifyOptions
-): GroveDBVerificationResult {
-  if (proof.version !== 0) {
-    throw new GroveDBVerificationError(`Unsupported proof version: ${proof.version}`);
-  }
-  checkProveOptions(proof);
-  if (options.expectedPath) {
-    checkEnvelope(proof, options.expectedPath);
-  }
+): GroveDBVerificationResult & { depth: number | null } {
+  checkHeader(proof);
+  const expectedPath = options.expectedPath;
+  const depth = expectedPath ? envelopeDepth(proof, expectedPath) : null;
 
-  const results: GroveDBVerificationResult['results'] = [];
+  const results: ProvenEntry[] = [];
+  const emptyTrees = new Set<string>();
 
   const rootHash = verifyLayerProof(
     proof.proof.rootLayer,
     [],
     results,
+    emptyTrees,
     options.limit ?? null,
     options.deserializeElements ?? true
   );
 
-  return { rootHash, results };
+  // A proof that stops before the end of the path must prove the subtree it
+  // stops at empty: then there is nothing under it to return.
+  if (expectedPath && depth !== null && depth < expectedPath.length) {
+    if (!emptyTrees.has(entryId(expectedPath.slice(0, depth), expectedPath[depth]))) {
+      throw noLowerLayer(expectedPath, depth);
+    }
+  }
+
+  return { rootHash, results, depth };
+}
+
+/** A path and key as one string, to look an entry up by. */
+function entryId(path: Uint8Array[], key: Uint8Array): string {
+  return [...path, key].map((p) => bytesToHex(p)).join('/');
 }
 
 /**
@@ -141,6 +212,15 @@ function tryDeserializeElement(value: Uint8Array): Element | null {
     return null;
   }
 }
+
+/** How a surfaced leaf's bytes are bound to the proof. */
+type LeafBinding =
+  /** Its bytes are bound (an item, a reference, or a value-hash-checked leaf). */
+  | 'bound'
+  /** An empty subtree: its value hash re-derives from its bytes and an empty root. */
+  | 'emptyTree'
+  /** A non-empty subtree without its lower layer: its bytes are not bound. */
+  | 'unboundTree';
 
 /**
  * Bind a surfaced leaf value to the proof that committed it.
@@ -156,17 +236,29 @@ function tryDeserializeElement(value: Uint8Array): Element | null {
  *
  * A tree element (Tree, SumTree, BigSumTree, CountTree, CountSumTree) is the
  * exception: its value hash is combine_hash(value_hash(bytes), subtree root)
- * (merk's layered value hash), so without its lower layer — no subquery on it,
- * an empty tree, an exhausted limit — it can't be re-derived, and grovedb
- * returns such proofs. Its bytes are surfaced as a tree, not as a value.
+ * (merk's layered value hash). An empty subtree's root is the null hash, so its
+ * value hash is re-derived and checked. A non-empty one's can't be without its
+ * lower layer (no subquery on it, an exhausted limit), and grovedb returns
+ * such proofs: its bytes are not bound, and it is surfaced as a subtree with
+ * no bytes. The element must decode with no trailing bytes, so other bytes
+ * can't pass as a tree.
  */
-function bindLeafValue(proved: ProvedKeyValue): void {
+function bindLeafValue(proved: ProvedKeyValue, element: Element | null): LeafBinding {
   if (
     proved.value &&
     (proved.nodeType === 'KVValueHash' || proved.nodeType === 'KVValueHashFeatureType')
   ) {
-    const element = tryDeserializeElement(proved.value);
-    if (element && isTreeElement(element)) return;
+    if (element && isTreeElement(element)) {
+      if (hasRootKey(element)) return 'unboundTree';
+      const layered = combineHash(valueHash(proved.value), NULL_HASH);
+      if (!hashEquals(layered, proved.proof)) {
+        throw new GroveDBVerificationError(
+          `Empty subtree does not hash to its committed valueHash: ` +
+          `expected ${hashToHex(proved.proof)}, got ${hashToHex(layered)}`
+        );
+      }
+      return 'emptyTree';
+    }
     const computed = valueHash(proved.value);
     if (!hashEquals(computed, proved.proof)) {
       throw new GroveDBVerificationError(
@@ -175,6 +267,7 @@ function bindLeafValue(proved: ProvedKeyValue): void {
       );
     }
   }
+  return 'bound';
 }
 
 /**
@@ -183,6 +276,7 @@ function bindLeafValue(proved: ProvedKeyValue): void {
  * @param layerProof - The layer proof to verify
  * @param currentPath - Current path in the tree
  * @param results - Accumulator for proven values
+ * @param emptyTrees - Accumulator for the entries proven to be empty subtrees
  * @param limit - Maximum results (null for unlimited)
  * @param deserializeElements - Whether to parse element bytes
  * @returns Root hash of this layer
@@ -190,7 +284,8 @@ function bindLeafValue(proved: ProvedKeyValue): void {
 function verifyLayerProof(
   layerProof: LayerProof,
   currentPath: Uint8Array[],
-  results: GroveDBVerificationResult['results'],
+  results: ProvenEntry[],
+  emptyTrees: Set<string>,
   limit: number | null,
   deserializeElements: boolean
 ): CryptoHash {
@@ -231,6 +326,7 @@ function verifyLayerProof(
           lowerLayer,
           newPath,
           results,
+          emptyTrees,
           limit !== null ? limit - results.length : null,
           deserializeElements
         );
@@ -253,17 +349,93 @@ function verifyLayerProof(
       }
     } else if (proved.value) {
       // Leaf value - bind the bytes to their committed valueHash, then add.
-      bindLeafValue(proved);
+      // The element is read whatever `deserializeElements` says, to tell a
+      // subtree from a value.
+      const element = tryDeserializeElement(proved.value);
+      const binding = bindLeafValue(proved, element);
+      if (binding === 'emptyTree') emptyTrees.add(entryId(currentPath, proved.key));
+      const bound = binding !== 'unboundTree';
       results.push({
         path: currentPath,
         key: proved.key,
-        value: proved.value,
-        element: deserializeElements ? tryDeserializeElement(proved.value) : null
+        value: bound ? proved.value : null,
+        element: bound && deserializeElements ? element : null,
+        tree: element !== null && isTreeElement(element)
       });
     }
   }
 
   return merkResult.rootHash;
+}
+
+/**
+ * Verify a proof that `key` is absent under `path`, and return its root hash
+ * (to compare against a trusted root).
+ *
+ * The proof must descend to `path` with no lower layer off it, as
+ * {@link checkEnvelope} requires, or end at a subtree on the path that it
+ * proves empty (nothing is under it). At `path`, the merk proof must show
+ * where `key` falls in key order with nothing unrevealed there: the proven
+ * keys on either side of it adjacent in the tree, or `key` before the first
+ * node or after the last with nothing beyond it. A pruned subtree or a node
+ * with a hidden key in that place could hold `key`, so either is refused.
+ *
+ * @throws GroveDBVerificationError when the proof is invalid, or doesn't prove
+ *   `key` absent at `path` (including when `key` is present).
+ */
+export function verifyKeyAbsence(
+  proofBytes: Uint8Array,
+  path: Uint8Array[],
+  key: Uint8Array
+): CryptoHash {
+  const proof = decodeGroveDBProof(proofBytes);
+  const { rootHash, depth } = verifyProof(proof, { expectedPath: path });
+  if (depth !== null && depth < path.length) return rootHash;
+
+  let layer: LayerProof = proof.proof.rootLayer;
+  for (const segment of path) layer = layer.lowerLayers.get(bytesToHex(segment))!;
+  if (!merkProvesAbsent(executeMerkProof(layer.merkProof, false), key)) {
+    throw new GroveDBVerificationError(
+      `The proof does not prove ${pathToString([...path, key])} absent`
+    );
+  }
+  return rootHash;
+}
+
+/**
+ * Whether a reconstructed merk tree (children kept, not collapsed) shows `key`
+ * absent: its in-order nodes, read as the full tree's in key order, have no
+ * node with `key`, and the proven nodes on either side of where it would be
+ * are adjacent (no pruned subtree or hidden-key node between them).
+ */
+function merkProvesAbsent(tree: Tree, key: Uint8Array): boolean {
+  const nodes: Tree[] = [];
+  const stack: Tree[] = [];
+  let current: Tree | null = tree;
+  while (current || stack.length > 0) {
+    while (current) {
+      stack.push(current);
+      current = current.left ? current.left.tree : null;
+    }
+    const node = stack.pop()!;
+    nodes.push(node);
+    current = node.right ? node.right.tree : null;
+  }
+
+  let before = -1;
+  let after = nodes.length;
+  let lastKey: Uint8Array | null = null;
+  for (let i = 0; i < nodes.length; i++) {
+    const k = nodes[i].getKey();
+    if (!k) continue;
+    if (lastKey && compareBytes(k, lastKey) <= 0) return false;
+    lastKey = k;
+    const c = compareBytes(k, key);
+    if (c === 0) return false;
+    if (c < 0) before = i;
+    else if (after === nodes.length) after = i;
+  }
+  return after === before + 1;
 }
 
 /**

@@ -62,6 +62,8 @@ describe('GroveDB envelope descent', () => {
     // proof_dropped_layer is byte for byte grovedb's proof of the Supply tree
     // element itself (no subquery on it): its value hash is the layered one,
     // combine_hash(value_hash(bytes), subtree root), so it is not a leaf check.
+    // The (non-empty) subtree's bytes are not bound, so it is surfaced as a
+    // subtree with no bytes and no element: only its key is proven present.
     const f = FIXTURES['single-key'];
     const bytes = hexToBytes(f.proof_dropped_layer);
     for (const deserializeElements of [true, false]) {
@@ -70,7 +72,9 @@ describe('GroveDB envelope descent', () => {
       expect(r.results.length).toBe(1);
       expect(r.results[0].path.map((p) => new TextDecoder().decode(p))).toEqual(f.path.slice(0, 3));
       expect(new TextDecoder().decode(r.results[0].key)).toBe(f.path[3]);
-      if (deserializeElements) expect(r.results[0].element?.type).toBe('Tree');
+      expect(r.results[0].tree).toBe(true);
+      expect(r.results[0].value).toBeNull();
+      expect(r.results[0].element).toBeNull();
     }
     // At the tree's own path it verifies; at the path below it, it doesn't descend.
     expect(() => verifyGroveDBProof(bytes, { expectedPath: pathOf(f).slice(0, 3) })).not.toThrow();
@@ -92,8 +96,9 @@ describe('GroveDB envelope descent', () => {
   test('renamed lower layer is rejected at the query path', () => {
     for (const name of ['single-key', 'range-all', 'absent-key']) {
       const f = FIXTURES[name];
+      // The renamed layer hangs off the query path, which is refused as such.
       expect(() => verifyGroveDBProof(hexToBytes(f.proof_renamed_layer), { expectedPath: pathOf(f) })).toThrow(
-        /does not descend/,
+        /off the query path/,
       );
       expect(() => checkEnvelope(decodeGroveDBProof(hexToBytes(f.proof_renamed_layer)), pathOf(f))).toThrow();
     }
@@ -128,7 +133,7 @@ describe('GroveDB envelope descent', () => {
     const root = await verifyItemProof(f.proof, f.key!, undefined, f.path);
     expect(root).toBe(f.root);
     await expect(verifyItemProof(f.proof_renamed_layer, f.key!, undefined, f.path)).rejects.toThrow(
-      /does not descend/,
+      /off the query path/,
     );
     await expect(verifyItemProof(f.proof_dropped_layer, f.key!, undefined, f.path)).rejects.toThrow(
       /does not descend/,
@@ -138,6 +143,8 @@ describe('GroveDB envelope descent', () => {
   test('verifyQueryProof descends when options.path is given', async () => {
     const f = FIXTURES['range-all'];
     expect(await verifyQueryProof(f.proof, [], { path: f.path })).toBe(f.root);
-    await expect(verifyQueryProof(f.proof_renamed_layer, [], { path: f.path })).rejects.toThrow(/does not descend/);
+    await expect(verifyQueryProof(f.proof_renamed_layer, [], { path: f.path })).rejects.toThrow(
+      /off the query path/,
+    );
   });
 });

@@ -37,12 +37,29 @@ export interface ProofVerificationOptions {
    */
   expectedRootHash?: string;
   /**
-   * The GroveDB path the query was made at (e.g. `["subgroves", id, "data"]`).
-   * When set, the proof must descend to it: a proof whose subtree was renamed
-   * or dropped verifies to the same root with an empty result set, and only
-   * the path check tells that apart from a real absence.
+   * The GroveDB path the query was made at, each segment a string (sent as
+   * its UTF-8 bytes) or bytes: for a subgrove's data,
+   * {@link subgroveDataPath}`(id)` (`["subgroves", id, "data"]`). When set,
+   * the proof must descend to it (or prove a subtree on it empty) with no
+   * lower layer off it, and a document binds only to a value proven at
+   * exactly this path. A proof whose subtree was renamed or dropped verifies
+   * to the same root with an empty result set, and a proof can carry another
+   * path's values beside the queried one at the same root: only the path
+   * check tells these apart. Without it, a document binds to a value proven
+   * at any path in the proof.
    */
-  path?: string[];
+  path?: PathSegment[];
+}
+
+/** A GroveDB path segment: a string (its UTF-8 bytes) or the bytes. */
+export type PathSegment = string | Uint8Array;
+
+/**
+ * The GroveDB path of a subgrove's data, `["subgroves", subgroveId, "data"]`:
+ * the path `POST /query/:subgrove` and `GET /proof/:subgrove/:key` prove at.
+ */
+export function subgroveDataPath(subgroveId: string): string[] {
+  return ['subgroves', subgroveId, 'data'];
 }
 
 export interface ProofVerificationResult {
@@ -53,6 +70,16 @@ export interface ProofVerificationResult {
 
 function textEncode(s: string): Uint8Array {
   return new TextEncoder().encode(s);
+}
+
+function encodePath(path: PathSegment[]): Uint8Array[] {
+  return path.map((segment) => (typeof segment === 'string' ? textEncode(segment) : segment));
+}
+
+function pathLabel(path: PathSegment[]): string {
+  return path
+    .map((segment) => (typeof segment === 'string' ? segment : `0x${hashToHex(segment)}`))
+    .join(', ');
 }
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -157,22 +184,25 @@ function documentBindsTo(proven: ProvenValue, document: unknown): boolean {
 
 /**
  * The bytes a proven result commits to as a value: an Item's payload, or the
- * raw leaf bytes when the element didn't deserialize. A tree element is not a
- * value (and a tree proven without its lower layer is not bound byte for byte),
+ * raw leaf bytes when the element didn't deserialize. A subtree is not a
+ * value (and one proven without its lower layer is not bound byte for byte),
  * so it gives none.
  */
 function provenRaw(result: GroveDBVerificationResult['results'][number]): Uint8Array | null {
+  if (result.tree) return null;
   if (result.element?.type === 'Item') return result.element.value;
   if (result.element && isTreeElement(result.element)) return null;
   return result.value;
 }
 
 /**
- * Collect the values the proof actually commits to from its proven results.
+ * Collect the values the proof actually commits to from its proven results:
+ * with `path`, only those proven at exactly that path.
  */
-function provenValues(verification: GroveDBVerificationResult): ProvenValue[] {
+function provenValues(verification: GroveDBVerificationResult, path?: Uint8Array[]): ProvenValue[] {
   const values: ProvenValue[] = [];
   for (const result of verification.results) {
+    if (path && !pathEqual(result.path, path)) continue;
     const raw = provenRaw(result);
     if (!raw) continue;
     values.push(decodeProvenValue(raw));
@@ -181,14 +211,16 @@ function provenValues(verification: GroveDBVerificationResult): ProvenValue[] {
 }
 
 /**
- * Require every returned document to bind to a value the proof commits to.
+ * Require every returned document to bind to a value the proof commits to
+ * (at `path`, when given).
  */
 function bindDocumentsToProof(
   verification: GroveDBVerificationResult,
   documents: DataRecord[],
+  path?: Uint8Array[],
 ): void {
   if (documents.length === 0) return;
-  const proven = provenValues(verification);
+  const proven = provenValues(verification, path);
   for (let i = 0; i < documents.length; i++) {
     if (!proven.some((v) => documentBindsTo(v, documents[i]))) {
       throw new Error(
@@ -203,9 +235,11 @@ function bindDocumentsToProof(
  * Verify a query/range proof and return the computed root hash (hex).
  *
  * Every entry in `documents` must deep-equal a value the proof commits to;
- * a valid proof paired with unrelated documents is rejected. The caller must
- * compare the returned root to a trusted root hash to establish that the
- * proven state is canonical.
+ * a valid proof paired with unrelated documents is rejected. Pass the path
+ * the query was made at (`options.path`, e.g. {@link subgroveDataPath}) to
+ * bind them to values proven there: without it, a value proven at any path
+ * binds. The caller must compare the returned root to a trusted root hash to
+ * establish that the proven state is canonical.
  */
 export async function verifyQueryProof(
   proofHex: string,
@@ -213,11 +247,9 @@ export async function verifyQueryProof(
   options?: ProofVerificationOptions,
 ): Promise<string> {
   const bytes = decodeProofBytes(proofHex);
-  const result = verifyGroveDBProof(
-    bytes,
-    options?.path ? { expectedPath: options.path.map((segment) => textEncode(segment)) } : {},
-  );
-  bindDocumentsToProof(result, documents);
+  const expectedPath = options?.path ? encodePath(options.path) : undefined;
+  const result = verifyGroveDBProof(bytes, expectedPath ? { expectedPath } : {});
+  bindDocumentsToProof(result, documents, expectedPath);
   const computed = hashToHex(result.rootHash);
   enforceExpectedRoot(computed, options?.expectedRootHash);
   return computed;
@@ -239,13 +271,13 @@ export async function verifyItemProof(
   proofHex: string,
   key: string,
   value: unknown,
-  path: string[] = [],
+  path: PathSegment[] = [],
   options?: ProofVerificationOptions,
 ): Promise<string> {
   const bytes = decodeProofBytes(proofHex);
 
   const expectedKey = textEncode(key);
-  const expectedPath = path.map((segment) => textEncode(segment));
+  const expectedPath = encodePath(path);
   // A non-empty path is required to descend; `[]` (a root-level item) keeps
   // the legacy behaviour and is checked only through the result match below.
   const verification = verifyGroveDBProof(
@@ -257,7 +289,7 @@ export async function verifyItemProof(
     (r) => pathEqual(r.path, expectedPath) && bytesEqual(r.key, expectedKey),
   );
   if (!match) {
-    throw new Error(`Proof does not contain key "${key}" at path [${path.join(', ')}]`);
+    throw new Error(`Proof does not contain key "${key}" at path [${pathLabel(path)}]`);
   }
 
   if (value !== undefined) {
@@ -293,13 +325,19 @@ export async function computeProofRootHash(proofHex: string): Promise<string> {
 export const extractRootHashFromProof = computeProofRootHash;
 
 /**
- * Verify the proof attached to a `QueryResponse`, binding its documents.
+ * Verify the proof attached to a `QueryResponse`, binding its documents. Pass
+ * the queried path in `options.path` (for `POST /query/:subgrove`,
+ * {@link subgroveDataPath}`(subgrove)`) to bind them to that subgrove's data;
+ * see {@link verifyQueryProof}.
  */
-export async function verifyQueryResponse(response: QueryResponse): Promise<string> {
+export async function verifyQueryResponse(
+  response: QueryResponse,
+  options?: ProofVerificationOptions,
+): Promise<string> {
   if (!response.proof) {
     throw new Error('Query response does not contain proof data');
   }
-  return verifyQueryProof(response.proof, response.documents);
+  return verifyQueryProof(response.proof, response.documents, options);
 }
 
 /**
@@ -335,7 +373,7 @@ export class GroveDBProofVerifier {
     proofHex: string,
     key: string,
     value: unknown,
-    path: string[] = [],
+    path: PathSegment[] = [],
   ): Promise<ProofVerificationResult> {
     try {
       const rootHash = await verifyItemProof(proofHex, key, value, path, this.options);

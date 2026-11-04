@@ -196,8 +196,9 @@ describe('value-bearing leaf binding', () => {
     // value. Tree(Some("x"), None) in place of the committed Item:
     const treeBytes = new Uint8Array([0x02, 0x01, 0x01, 0x78, 0x00]);
     const proof = wrapAsGroveDBProof(encodeKVValueHashLeaf(key, treeBytes, committedHash));
+    // Unbound: surfaced as a subtree with neither bytes nor an element.
     const { results } = verifyGroveDBProof(proof);
-    expect(results.map((r) => r.element?.type)).toEqual(['Tree']);
+    expect(results.map((r) => [r.tree, r.value, r.element])).toEqual([[true, null, null]]);
     const proofHex = Buffer.from(proof).toString('hex');
     await expect(verifyItemProof(proofHex, 'balance', 1000)).rejects.toThrow(/does not match/);
     await expect(verifyItemProof(proofHex, 'balance', treeBytes)).rejects.toThrow(/does not match/);

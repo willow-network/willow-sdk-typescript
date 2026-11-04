@@ -113,7 +113,7 @@ describe('TS GroveDB verifier ↔ Rust prover fixture round-trip', () => {
     it('high-level verifyItemProof rejects wrong path', async () => {
       await expect(
         verifyItemProof(f.proof_hex, f.key, undefined, ['wrong', 'path']),
-      ).rejects.toThrow(/does not contain key|does not descend/);
+      ).rejects.toThrow(/does not contain key|does not descend|off the query path/);
     });
   });
 
