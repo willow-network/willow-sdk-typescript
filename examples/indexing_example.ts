@@ -2,7 +2,7 @@
  * Willow TypeScript SDK - Indexing Example
  *
  * Demonstrates:
- * 1. Defining schemas with multiple index types
+ * 1. Defining a schema
  * 2. Storing indexed data
  * 3. Querying via the various index types
  *
@@ -34,17 +34,18 @@ async function main() {
   const schema: SchemaDefinition = {
     version: 1,
     fields: {
-      productId: { type: 'string', indexed: true, required: true },
-      category: { type: 'string', indexed: true, required: true },
-      brand: { type: 'string', indexed: true },
-      price: { type: 'number', indexed: true, required: true },
-      stock: { type: 'number', indexed: true },
-      rating: { type: 'number', indexed: true },
-      name: { type: 'string', indexed: true, required: true },
-      description: { type: 'string', indexed: true },
-      images: { type: 'array' },
-      specifications: { type: 'object' },
+      productId: 'string',
+      category: 'string',
+      brand: 'string',
+      price: 'number',
+      stock: 'number',
+      rating: 'number',
+      name: 'string',
+      description: 'string',
+      images: 'array',
+      specifications: 'object',
     },
+    required_fields: ['productId', 'category', 'price', 'name'],
   };
 
   const datasetRequest: RegisterSubgroveRequest = {

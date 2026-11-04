@@ -18,7 +18,7 @@ import { toJson } from '../internal/json';
 import type { WillowLogger } from '../internal/logger';
 import type { NonceAllocator } from './nonces';
 import type { PrivacyConfig } from '../privacy';
-import { invalid, text, textLine } from './fields';
+import { invalid, keySubgroveId, text, textLine, willowDid } from './fields';
 import { chainDidDocument, keyGrantWire, registerSubgroveWire } from './wire';
 import { registerSubgroveBincode } from './bincode';
 
@@ -670,8 +670,8 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
       const t = transaction as GrantSubgroveKeyTx;
       return {
         GrantSubgroveKey: {
-          subgrove_id: text('subgroveId', t.subgroveId),
-          encrypted_key_grant: keyGrantWire('encryptedKeyGrant', t.encryptedKeyGrant),
+          subgrove_id: keySubgroveId('subgroveId', t.subgroveId),
+          encrypted_key_grant: grantToDid('encryptedKeyGrant', t.encryptedKeyGrant),
           sender_did: text('senderDid', t.senderDid),
           signature: sig,
           public_key_id: publicKeyId,
@@ -683,9 +683,7 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
       const t = transaction as RevokeSubgroveKeyTx;
       return {
         RevokeSubgroveKey: {
-          subgrove_id: t.subgroveId,
-          revokee_did: t.revokeeDid,
-          sender_did: t.senderDid,
+          ...revokeFields(t),
           signature: sig,
           public_key_id: publicKeyId,
           nonce,
@@ -696,9 +694,9 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
       const t = transaction as RotateSubgroveKeyTx;
       return {
         RotateSubgroveKey: {
-          subgrove_id: text('subgroveId', t.subgroveId),
+          subgrove_id: keySubgroveId('subgroveId', t.subgroveId),
           new_epoch: safeUint('newEpoch', t.newEpoch, 32),
-          new_grants: keyGrantsWire(t.newGrants),
+          new_grants: granteesAreDids(keyGrantsWire(t.newGrants)),
           sender_did: text('senderDid', t.senderDid),
           signature: sig,
           public_key_id: publicKeyId,
@@ -739,6 +737,35 @@ function uintLine(label: string, value: number | undefined, bits: 32 | 64 = 64):
 function keyGrantsWire(grants: unknown): Record<string, unknown>[] {
   if (!Array.isArray(grants)) throw invalid('newGrants must be an array');
   return grants.map((g, i) => keyGrantWire(`newGrants[${i}]`, g));
+}
+
+/**
+ * A key grant as a grant or rotation carries it ({@link keyGrantWire}),
+ * whose grantee is a Willow DID: the chain refuses a grant to anything else.
+ */
+function grantToDid(label: string, value: unknown): Record<string, unknown> {
+  const g = keyGrantWire(label, value);
+  willowDid(`${label}.grantee_did`, g.grantee_did);
+  return g;
+}
+
+/** A rotation's grants, each grantee checked as {@link grantToDid} checks one. */
+function granteesAreDids(grants: Record<string, unknown>[]): Record<string, unknown>[] {
+  grants.forEach((g, i) => willowDid(`newGrants[${i}].grantee_did`, g.grantee_did));
+  return grants;
+}
+
+/**
+ * A revoke's subgrove id and DIDs, checked: the chain refuses a revoke whose
+ * subgrove id is empty or holds a `:`, or whose revokee or sender is not a
+ * Willow DID.
+ */
+function revokeFields(tx: RevokeSubgroveKeyTx): Record<string, string> {
+  return {
+    subgrove_id: keySubgroveId('subgroveId', tx.subgroveId),
+    revokee_did: willowDid('revokeeDid', tx.revokeeDid),
+    sender_did: willowDid('senderDid', tx.senderDid),
+  };
 }
 
 /**
@@ -888,8 +915,9 @@ export function registerSubgroveUnsignedBincode(tx: RegisterSubgroveTx): Uint8Ar
  *   (see {@link registerSubgroveUnsignedBincode}), or a DataStorage or
  *   FileStorage registration breaks the chain's rules for it: a subgrove id
  *   that isn't 1–64 ASCII letters, digits, `-`, or `_` starting with a letter
- *   or digit (`INVALID_SUBGROVE_ID`), or a schema that declares indexes
- *   (`SCHEMA_INDEXES_UNSUPPORTED`).
+ *   or digit (`INVALID_SUBGROVE_ID`), schema text the chain doesn't parse as
+ *   a schema (`INVALID_SCHEMA`; see `serializeSchema`), or a schema that
+ *   declares indexes (`SCHEMA_INDEXES_UNSUPPORTED`).
  */
 export function registerSubgroveSignMessage(tx: RegisterSubgroveTx): string {
   nonceLine(tx.nonce);
@@ -939,16 +967,24 @@ function grantLines(g: Record<string, unknown>): string[] {
  * @throws WillowError if a text field holds a `\n` or a lone surrogate, a
  *   byte field holds a value outside 0..255, `key_epoch` is outside u32,
  *   `granted_at` is outside u64 (or an unsafe JS number), or the nonce is not
- *   a non-negative safe integer.
+ *   a non-negative safe integer; or, as the chain refuses them, if the
+ *   subgrove id is empty or holds a `:` (`INVALID_SUBGROVE_ID`) or the
+ *   grantee is not a Willow DID (`INVALID_DID`): `did:willow:` followed by
+ *   one or more ASCII letters, digits, `_`, or `-`, at most 128 bytes.
  */
 export function grantSubgroveKeySignMessage(tx: GrantSubgroveKeyTx): string {
-  return [
+  const grant = keyGrantWire('encryptedKeyGrant', tx.encryptedKeyGrant);
+  const message = [
     'GrantSubgroveKey',
     textLine('Subgrove', tx.subgroveId),
     textLine('Sender', tx.senderDid),
-    ...grantLines(keyGrantWire('encryptedKeyGrant', tx.encryptedKeyGrant)),
+    ...grantLines(grant),
     nonceLine(tx.nonce),
   ].join('\n');
+  // The lines first: a line break is refused as such, before the id and DID rules.
+  keySubgroveId('subgroveId', tx.subgroveId);
+  willowDid('encryptedKeyGrant.grantee_did', grant.grantee_did);
+  return message;
 }
 
 /**
@@ -964,12 +1000,12 @@ export function grantSubgroveKeySignMessage(tx: GrantSubgroveKeyTx): string {
  * Nonce: <nonce>
  * ```
  *
- * @throws WillowError as {@link grantSubgroveKeySignMessage}, or if
- *   `newEpoch` is outside u32.
+ * @throws WillowError as {@link grantSubgroveKeySignMessage} (for every
+ *   grant's grantee), or if `newEpoch` is outside u32.
  */
 export function rotateSubgroveKeySignMessage(tx: RotateSubgroveKeyTx): string {
   const grants = keyGrantsWire(tx.newGrants);
-  return [
+  const message = [
     'RotateSubgroveKey',
     textLine('Subgrove', tx.subgroveId),
     textLine('Sender', tx.senderDid),
@@ -978,6 +1014,32 @@ export function rotateSubgroveKeySignMessage(tx: RotateSubgroveKeyTx): string {
     ...grants.flatMap(grantLines),
     nonceLine(tx.nonce),
   ].join('\n');
+  // The lines first: a line break is refused as such, before the id and DID rules.
+  keySubgroveId('subgroveId', tx.subgroveId);
+  granteesAreDids(grants);
+  return message;
+}
+
+/**
+ * The message a RevokeSubgroveKey transaction is signed over:
+ *
+ * ```
+ * RevokeSubgroveKey:<subgroveId>:<revokeeDid>:<senderDid>:<nonce>
+ * ```
+ *
+ * The chain refuses a revoke whose subgrove id is empty or holds a `:`, or
+ * whose revokee or sender is not a Willow DID (`did:willow:` followed by one
+ * or more ASCII letters, digits, `_`, or `-`, at most 128 bytes), so the SDK
+ * refuses to sign one.
+ *
+ * @throws WillowError `INVALID_SUBGROVE_ID` or `INVALID_DID` for such a
+ *   field, or if a field holds a lone surrogate or the nonce is not a
+ *   non-negative safe integer.
+ */
+export function revokeSubgroveKeySignMessage(tx: RevokeSubgroveKeyTx): string {
+  const f = revokeFields(tx);
+  const nonce = safeUint('Nonce', tx.nonce, 64);
+  return `RevokeSubgroveKey:${f.subgrove_id}:${f.revokee_did}:${f.sender_did}:${nonce}`;
 }
 
 /**
@@ -1025,6 +1087,9 @@ export function createSignMessage(txType: string, transaction: Transaction): str
 
     case 'RotateSubgroveKey':
       return rotateSubgroveKeySignMessage(transaction as RotateSubgroveKeyTx);
+
+    case 'RevokeSubgroveKey':
+      return revokeSubgroveKeySignMessage(transaction as RevokeSubgroveKeyTx);
 
     case 'UnregisterStorageNode':
       return unregisterStorageNodeSignMessage(transaction as UnregisterStorageNodeTx);

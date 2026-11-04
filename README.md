@@ -639,10 +639,11 @@ Nonce: <nonce>
 - u64 and u128 values (funding, read prices, indexer stakes and rewards) are never rounded: pass a value above 2^53 − 1 as a `bigint` or a decimal string. The SDK sends it as its exact digits.
 - A retention window belongs to a BlockchainIndexing mode; the SDK refuses one for another mode.
 - The SDK refuses to sign when a subgrove id, owner, sender, grantee, key id, granting DID, or node DID holds a `\n` (0x0A), when a text field holds a lone UTF-16 surrogate (it has no UTF-8 form), or when a number is outside its type.
-- RevokeSubgroveKey is signed over `RevokeSubgroveKey:<subgrove id>:<revokee DID>:<sender DID>:<nonce>`, which binds every field.
+- RevokeSubgroveKey (`privacy.revokeSubgroveKey`) is signed over `RevokeSubgroveKey:<subgrove id>:<revokee DID>:<sender DID>:<nonce>`, which binds every field. `revokeSubgroveKeySignMessage(tx)` returns it.
+- The chain refuses a key grant, rotation, or revoke whose subgrove id is empty or holds a `:` (`INVALID_SUBGROVE_ID`), a grant or rotation whose grantee is not a Willow DID, and a revoke whose revokee or sender is not one (`INVALID_DID`). A Willow DID is `did:willow:` followed by one or more ASCII letters, digits, `_`, or `-`, at most 128 bytes in all. The SDK refuses these before signing, and `PrivacyOperations` before taking a nonce.
 - A DID registration (`client.registerDid`, `consensus.registerDid`) is signed over the JSON text of the DID document as the chain's `DidDocument` writes it (its fields in order, absent options as `null`), at nonce 1. `registerDidSignMessage(tx)` returns it.
 
-`registerSubgroveSignMessage(tx)`, `grantSubgroveKeySignMessage(tx)`, `rotateSubgroveKeySignMessage(tx)`, and `unregisterStorageNodeSignMessage(tx)` return the exact message for a transaction.
+`registerSubgroveSignMessage(tx)`, `grantSubgroveKeySignMessage(tx)`, `rotateSubgroveKeySignMessage(tx)`, `revokeSubgroveKeySignMessage(tx)`, and `unregisterStorageNodeSignMessage(tx)` return the exact message for a transaction.
 
 ### Nonces
 
@@ -674,9 +675,9 @@ const result = await client.registerSubgrove({
   schema: {
     version: 1,
     fields: {
-      name: { type: 'string' },
-      score: { type: 'number' },
-      active: { type: 'boolean' },
+      name: 'string',
+      score: 'number',
+      active: 'boolean',
     },
     required_fields: ['name'],
   },
@@ -686,11 +687,31 @@ const result = await client.registerSubgrove({
 });
 ```
 
-The chain refuses a DataStorage or FileStorage registration whose subgrove id
-is not 1–64 ASCII letters, digits, `-`, or `_` starting with a letter or
-digit, or whose schema declares indexes. The SDK refuses both before signing
-or taking a nonce, with `INVALID_SUBGROVE_ID` or
-`SCHEMA_INDEXES_UNSUPPORTED`; leave `indexes` out or empty.
+A data or file subgrove's schema goes on chain as JSON text, which the chain
+parses as its schema: a `version` (u32, default 1), `fields` mapping each
+field name to one of `string`, `number`, `boolean`, `array`, `object`, or
+`bytes` (default `{}`), `indexes` (default `[]`), and `required_fields`
+(default `[]`). The SDK sends a `SchemaDefinition` in exactly that shape
+(`serializeSchema(schema)` returns the text):
+
+```json
+{"version":1,"fields":{"active":"boolean","name":"string","score":"number"},"indexes":[],"required_fields":["name"]}
+```
+
+A field's type can also be written as an object, `{ type: 'string' }`; it is
+sent as its `type`, and `required: true` adds the field to
+`required_fields`. A type the chain has none of is refused with
+`INVALID_SCHEMA`, as is schema text given to `consensus.registerSubgrove`
+that the chain would not parse (the chain refuses such a registration in its
+block, which spends the nonce).
+
+The chain also refuses a DataStorage or FileStorage registration whose
+subgrove id is not 1–64 ASCII letters, digits, `-`, or `_` starting with a
+letter or digit, or whose schema declares indexes. The SDK refuses both,
+with `INVALID_SUBGROVE_ID` or `SCHEMA_INDEXES_UNSUPPORTED`; leave `indexes`
+out or empty. The chain's schema has no per-field index, so a field marked
+`indexed: true` is refused as well. Each of these refusals comes before the
+registration is signed, and it takes no nonce.
 
 ## Error Handling
 
@@ -788,8 +809,10 @@ try {
 | `registerSubgroveUnsignedBincode(tx)` | The bincode a registration's `Config` hashes |
 | `grantSubgroveKeySignMessage(tx)` | The message a key grant signs |
 | `rotateSubgroveKeySignMessage(tx)` | The message a key rotation signs |
+| `revokeSubgroveKeySignMessage(tx)` | The message a key revoke signs |
 | `unregisterStorageNodeSignMessage(tx)` | The message a storage node's removal signs |
 | `registerDidSignMessage(tx)` | The message a DID registration signs |
+| `serializeSchema(schema)` | A data or file subgrove's schema as the JSON text the chain parses (see [Register Subgrove](#register-subgrove)) |
 | `isValidDid(did)` | Validate DID format |
 
 ## Security Model

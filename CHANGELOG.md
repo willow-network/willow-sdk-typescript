@@ -53,6 +53,12 @@ package adheres to [Semantic Versioning](https://semver.org/).
   `ConsensusClient.nonces`; a `nonceAllocator` option in `WillowConfig` and
   `ConsensusConfig`, and an optional last argument to the
   `PrivacyOperations` constructor.
+- `serializeSchema(schema)`, which returns a data or file subgrove's schema
+  as the JSON text the chain parses, `SCHEMA_FIELD_TYPES`, and the
+  `SchemaFieldType` type. A `SchemaDefinition`'s field may be written as the
+  chain's own type (`name: 'string'`) as well as a `FieldType`.
+- `revokeSubgroveKeySignMessage`, which returns the message a
+  RevokeSubgroveKey signs; `privacy.revokeSubgroveKey` uses it.
 
 ### Changed
 
@@ -161,6 +167,19 @@ package adheres to [Semantic Versioning](https://semver.org/).
   (`INVALID_SUBGROVE_ID`), or whose schema declares indexes
   (`SCHEMA_INDEXES_UNSUPPORTED`), is refused before it is signed or takes a
   nonce. The chain refuses both. The examples no longer declare indexes.
+- A field marked `indexed: true` is refused (`SCHEMA_INDEXES_UNSUPPORTED`):
+  the chain's schema has no per-field index. `FieldType.indexed` is
+  deprecated.
+- A data or file registration whose schema text the chain would not parse
+  as its schema (not JSON, a field type it has no variant for, a `version`
+  outside u32, a value of the wrong kind) is refused before it is signed
+  (`INVALID_SCHEMA`). The chain refuses one in its block, which spends the
+  nonce.
+- A key grant, rotation, or revoke whose subgrove id is empty or holds a
+  `:` (`INVALID_SUBGROVE_ID`), a grant or rotation to a grantee that is not
+  a Willow DID, and a revoke whose revokee or sender is not one
+  (`INVALID_DID`) are refused before they are signed, and by
+  `PrivacyOperations` before a nonce is taken. The chain refuses each.
 
 ### Removed
 
@@ -169,6 +188,14 @@ package adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A data or file subgrove's schema is sent in the chain's shape.** A
+  `SchemaDefinition`'s fields went as objects (`{"name":{"type":"string"}}`),
+  which the chain does not parse as its schema, so it refused, in its
+  block, every registration that declared a field. `registerSubgrove` now
+  sends
+  `{"version":…,"fields":{"name":"string"},"indexes":[],"required_fields":[…]}`,
+  each field as its type and each field marked `required` in
+  `required_fields`.
 - The GroveDB verifier refuses children under opaque proof nodes: a proof
   that attaches a child to a Hash node, whose hash would not cover it.
 - The GroveDB verifier accepts a tree element proven without its lower layer

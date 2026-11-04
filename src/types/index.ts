@@ -164,9 +164,20 @@ export interface DidDocument {
 }
 
 // Dataset Types
+
+/** A field type of the chain's schema, as the schema writes it. */
+export type SchemaFieldType = 'string' | 'number' | 'boolean' | 'array' | 'object' | 'bytes';
+
+/** A field's type, with the SDK's flags; sent as its `type`. */
 export interface FieldType {
-  type: 'string' | 'number' | 'boolean' | 'array' | 'object' | 'bytes';
+  type: SchemaFieldType;
+  /**
+   * @deprecated The chain's schema has no per-field index, and a data or
+   * file subgrove's schema can't declare indexes: the SDK refuses `true`
+   * (`SCHEMA_INDEXES_UNSUPPORTED`).
+   */
   indexed?: boolean;
+  /** `true` adds the field to the schema's `required_fields`. */
   required?: boolean;
 }
 
@@ -177,9 +188,20 @@ export interface IndexDefinition {
   type?: 'unique' | 'hash' | 'range' | 'fulltext' | 'compound';
 }
 
+/**
+ * A data or file subgrove's schema. The SDK sends it in the chain's shape
+ * (see `serializeSchema`): `{"version":1,"fields":{"name":"string"},
+ * "indexes":[],"required_fields":["name"]}`.
+ */
 export interface SchemaDefinition {
+  /** u32. */
   version: number;
-  fields: Record<string, FieldType>;
+  /**
+   * Each field's type: the chain's own form (`name: 'string'`) or a
+   * {@link FieldType} (`name: { type: 'string', required: true }`). The
+   * SDK refuses a type the chain has none of.
+   */
+  fields: Record<string, SchemaFieldType | FieldType>;
   /**
    * The chain refuses a DataStorage or FileStorage registration whose schema
    * declares indexes, and the SDK refuses to sign one: leave this out or

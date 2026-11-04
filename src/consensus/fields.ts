@@ -58,6 +58,46 @@ export function textLine(label: string, value: unknown): string {
   return `${label}: ${v}`;
 }
 
+/** The longest DID the chain takes, in bytes. */
+const MAX_DID_LEN = 128;
+
+/** `did:willow:` and an identifier of one or more ASCII letters, digits, `_`, or `-`. */
+const WILLOW_DID = /^did:willow:[A-Za-z0-9_-]+$/;
+
+/**
+ * A DID as the chain takes one: `did:willow:` followed by one or more ASCII
+ * letters, digits, `_`, or `-`, at most 128 bytes in all (such a DID is
+ * ASCII, so its bytes and characters are the same). Anything else is refused
+ * with `INVALID_DID`.
+ */
+export function willowDid(label: string, value: unknown): string {
+  const v = text(label, value);
+  if (!WILLOW_DID.test(v) || v.length > MAX_DID_LEN) {
+    throw new WillowError(
+      `${label} must be 'did:willow:' followed by one or more ASCII letters, digits, '_', or ` +
+        `'-', at most ${MAX_DID_LEN} bytes in all; got ${JSON.stringify(v)}`,
+      'INVALID_DID',
+    );
+  }
+  return v;
+}
+
+/**
+ * The subgrove id of a key grant, revoke, or rotation: not empty and with no
+ * `:`, which the chain refuses. Anything else is refused with
+ * `INVALID_SUBGROVE_ID`.
+ */
+export function keySubgroveId(label: string, value: unknown): string {
+  const v = text(label, value);
+  if (v === '' || v.includes(':')) {
+    throw new WillowError(
+      `${label} must be a non-empty subgrove id with no ':'; got ${JSON.stringify(v)}`,
+      'INVALID_SUBGROVE_ID',
+    );
+  }
+  return v;
+}
+
 export type UintBits = 8 | 32 | 64 | 128;
 
 /**

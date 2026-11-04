@@ -17,6 +17,7 @@ export type { AccountNonceState, NonceAllocatorOptions } from './nonces';
 export { ConsensusConfigBuilder, localConfig, testnetConfig, mainnetConfig } from './config';
 
 export * from './types';
+export { serializeSchema, SCHEMA_FIELD_TYPES } from './schema';
 
 // Re-export commonly used functions
 export {

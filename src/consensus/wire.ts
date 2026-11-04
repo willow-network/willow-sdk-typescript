@@ -20,6 +20,7 @@ import {
   wireInt,
   wireUint,
 } from './fields';
+import { checkStorageSchema } from './schema';
 
 export type WireInt = number | bigint;
 
@@ -305,9 +306,10 @@ const STORAGE_SUBGROVE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 /**
  * The chain's rules for a DataStorage or FileStorage registration, checked
  * before signing: its subgrove id is 1–64 ASCII letters, digits, `-`, or `_`,
- * starting with a letter or digit, and its schema declares no indexes (writes
- * to an indexed subgrove are refused). The chain refuses a registration that
- * breaks either.
+ * starting with a letter or digit, and its schema is JSON the chain parses as
+ * a schema that declares no indexes (writes to an indexed subgrove are
+ * refused); see {@link checkStorageSchema}. The chain refuses a registration
+ * that breaks either.
  */
 export function checkStorageRegistration(subgroveId: string, schema: string): void {
   if (!STORAGE_SUBGROVE_ID.test(subgroveId)) {
@@ -317,21 +319,7 @@ export function checkStorageRegistration(subgroveId: string, schema: string): vo
       'INVALID_SUBGROVE_ID',
     );
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(schema);
-  } catch {
-    return; // the chain refuses a schema that isn't JSON on its own terms
-  }
-  if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-    const indexes = (parsed as Record<string, unknown>).indexes;
-    if (indexes !== undefined && !(Array.isArray(indexes) && indexes.length === 0)) {
-      throw new WillowError(
-        "Schema indexes are not supported: a data or file subgrove's schema can't declare indexes",
-        'SCHEMA_INDEXES_UNSUPPORTED',
-      );
-    }
-  }
+  checkStorageSchema(schema);
 }
 
 export function registerSubgroveWire(

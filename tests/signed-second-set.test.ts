@@ -244,7 +244,7 @@ describe('second set of signed messages: refusals', () => {
   const file = registerTx(body(vector('RegisterSubgrove (file)'))[1]);
   const indexedSchema = JSON.stringify({
     version: 1,
-    fields: { name: { type: 'string' } },
+    fields: { name: 'string' },
     indexes: [{ name: 'by_name', fields: ['name'], unique: false }],
     required_fields: [],
   });

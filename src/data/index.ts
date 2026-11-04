@@ -33,6 +33,7 @@ import {
 import { HttpClient, HttpError, RequestSigner } from "../internal/http";
 import { WillowLogger, silentLogger } from "../internal/logger";
 import { ConsensusClient } from "../consensus/client";
+import { serializeSchema } from "../consensus/schema";
 import type {
   BroadcastResult,
   RegisterSubgroveOptions,
@@ -45,8 +46,11 @@ import type {
  *
  * The request's `name`, `writers`, and `readers` become a `DataStorage` mode
  * (`readers` maps to the on-chain `free_readers`) unless `options.mode` is
- * given. Throws `IDENTITY_MISMATCH` when the request's `owner_did` is not the
- * identity, and throws when the transaction is refused.
+ * given. A DataStorage or FileStorage schema is sent in the chain's shape
+ * ({@link serializeSchema}), and one the chain can't take is refused before
+ * anything is signed. Throws `IDENTITY_MISMATCH` when the request's
+ * `owner_did` is not the identity, and throws when the transaction is
+ * refused.
  */
 export async function registerSubgroveRequest(
   consensus: Pick<ConsensusClient, "registerSubgrove">,
@@ -70,9 +74,18 @@ export async function registerSubgroveRequest(
         free_readers: request.readers,
       },
     };
+  // A data or file subgrove's schema goes in the chain's shape; the chain
+  // reads no other mode's schema, which goes as it is.
+  const storage =
+    typeof mode === "object" &&
+    mode !== null &&
+    ("DataStorage" in mode || "FileStorage" in mode);
+  const schema = storage
+    ? serializeSchema(request.schema)
+    : JSON.stringify(request.schema ?? {});
   const result = await consensus.registerSubgrove(
     request.dataset_id,
-    JSON.stringify(request.schema ?? {}),
+    schema,
     auth.getDid()!,
     signer,
     { name: request.name, ...options, mode },

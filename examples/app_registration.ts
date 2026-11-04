@@ -2,7 +2,7 @@
  * Willow TypeScript SDK - Dataset Registration Example
  *
  * Demonstrates how to:
- * 1. Define schemas with multiple index types
+ * 1. Define schemas
  * 2. Register a dataset (subgrove + schema)
  * 3. Inspect dataset access permissions
  *
@@ -51,17 +51,17 @@ async function main() {
   const productsSchema: SchemaDefinition = {
     version: 1,
     fields: {
-      sku: { type: 'string', indexed: true, required: true },
-      name: { type: 'string', indexed: true, required: true },
-      description: { type: 'string', indexed: true },
-      category: { type: 'string', indexed: true, required: true },
-      price: { type: 'number', indexed: true, required: true },
-      stock: { type: 'number', indexed: true },
-      rating: { type: 'number', indexed: true },
-      tags: { type: 'array', indexed: true },
-      images: { type: 'array' },
-      specifications: { type: 'object' },
-      created_at: { type: 'number', indexed: true },
+      sku: 'string',
+      name: 'string',
+      description: 'string',
+      category: 'string',
+      price: 'number',
+      stock: 'number',
+      rating: 'number',
+      tags: 'array',
+      images: 'array',
+      specifications: 'object',
+      created_at: 'number',
     },
     required_fields: ['sku', 'name', 'category', 'price'],
   };
@@ -89,14 +89,14 @@ async function main() {
   const ordersSchema: SchemaDefinition = {
     version: 1,
     fields: {
-      order_id: { type: 'string', indexed: true, required: true },
-      customer_did: { type: 'string', indexed: true, required: true },
-      items: { type: 'array', required: true },
-      total: { type: 'number', indexed: true, required: true },
-      status: { type: 'string', indexed: true, required: true },
-      shipping_address: { type: 'object' },
-      created_at: { type: 'number', indexed: true },
-      updated_at: { type: 'number', indexed: true },
+      order_id: 'string',
+      customer_did: 'string',
+      items: 'array',
+      total: 'number',
+      status: 'string',
+      shipping_address: 'object',
+      created_at: 'number',
+      updated_at: 'number',
     },
     required_fields: ['order_id', 'customer_did', 'items', 'total', 'status'],
   };
@@ -124,13 +124,13 @@ async function main() {
   const usersSchema: SchemaDefinition = {
     version: 1,
     fields: {
-      user_did: { type: 'string', indexed: true, required: true },
-      username: { type: 'string', indexed: true, required: true },
-      display_name: { type: 'string', indexed: true },
-      bio: { type: 'string' },
-      avatar_url: { type: 'string' },
-      joined_at: { type: 'number', indexed: true },
-      reputation: { type: 'number', indexed: true },
+      user_did: 'string',
+      username: 'string',
+      display_name: 'string',
+      bio: 'string',
+      avatar_url: 'string',
+      joined_at: 'number',
+      reputation: 'number',
     },
     required_fields: ['user_did', 'username'],
   };

@@ -14,6 +14,7 @@ import {
   Transaction,
   createTransactionWrapper,
   grantSubgroveKeySignMessage,
+  revokeSubgroveKeySignMessage,
   rotateSubgroveKeySignMessage,
 } from "../consensus/types";
 import { HttpClient, HttpError, RequestSigner } from "../internal/http";
@@ -289,6 +290,10 @@ export class PrivacyOperations {
    * Builds a GrantSubgroveKey transaction, signs every field of it and its
    * nonce ({@link grantSubgroveKeySignMessage}), and submits it.
    *
+   * The chain refuses a grant whose subgrove id is empty or holds a `:`
+   * (`INVALID_SUBGROVE_ID`), or whose grantee is not a Willow DID
+   * (`INVALID_DID`); such a grant is refused before a nonce is taken.
+   *
    * @param subgroveId - Subgrove ID
    * @param grant - The encrypted key grant for the grantee
    * @returns Broadcast result with transaction hash
@@ -298,14 +303,15 @@ export class PrivacyOperations {
     grant: EncryptedKeyGrant,
   ): Promise<BroadcastResult> {
     const did = this.requireDid();
+    const unsigned = {
+      subgroveId,
+      encryptedKeyGrant: grant,
+      senderDid: did,
+      publicKeyId: this.publicKeyId,
+    };
+    grantSubgroveKeySignMessage({ ...unsigned, nonce: 0 }); // refuses a field before a nonce is taken
     return this.submitWithNonce(did, "GrantSubgroveKey", (nonce) => {
-      const tx = {
-        subgroveId,
-        encryptedKeyGrant: grant,
-        senderDid: did,
-        publicKeyId: this.publicKeyId,
-        nonce,
-      };
+      const tx = { ...unsigned, nonce };
       return { ...tx, signature: this.signMessage(grantSubgroveKeySignMessage(tx)) };
     });
   }
@@ -313,7 +319,13 @@ export class PrivacyOperations {
   /**
    * Revoke a subgrove encryption key from a DID.
    *
-   * Builds a RevokeSubgroveKey transaction, signs it, and submits it.
+   * Builds a RevokeSubgroveKey transaction, signs it
+   * ({@link revokeSubgroveKeySignMessage}), and submits it.
+   *
+   * The chain refuses a revoke whose subgrove id is empty or holds a `:`
+   * (`INVALID_SUBGROVE_ID`), or whose revokee or sender (the identity) is not
+   * a Willow DID (`INVALID_DID`); such a revoke is refused before a nonce is
+   * taken.
    *
    * @param subgroveId - Subgrove ID
    * @param revokeDid - DID to revoke access from
@@ -324,18 +336,16 @@ export class PrivacyOperations {
     revokeDid: string,
   ): Promise<BroadcastResult> {
     const did = this.requireDid();
+    const unsigned = {
+      subgroveId,
+      revokeeDid: revokeDid,
+      senderDid: did,
+      publicKeyId: this.publicKeyId,
+    };
+    revokeSubgroveKeySignMessage({ ...unsigned, nonce: 0 }); // refuses a field before a nonce is taken
     return this.submitWithNonce(did, "RevokeSubgroveKey", (nonce) => {
-      // Sign message format must match the Rust consensus handler:
-      // "RevokeSubgroveKey:{subgrove_id}:{revokee_did}:{sender_did}:{nonce}"
-      const message = `RevokeSubgroveKey:${subgroveId}:${revokeDid}:${did}:${nonce}`;
-      return {
-        subgroveId,
-        revokeeDid: revokeDid,
-        senderDid: did,
-        signature: this.signMessage(message),
-        publicKeyId: this.publicKeyId,
-        nonce,
-      };
+      const tx = { ...unsigned, nonce };
+      return { ...tx, signature: this.signMessage(revokeSubgroveKeySignMessage(tx)) };
     });
   }
 
@@ -350,6 +360,10 @@ export class PrivacyOperations {
    * exactly current_epoch + 1. All existing grants are deleted and
    * replaced with the provided new grants.
    *
+   * The chain refuses a rotation whose subgrove id is empty or holds a `:`
+   * (`INVALID_SUBGROVE_ID`), or with a grantee that is not a Willow DID
+   * (`INVALID_DID`); such a rotation is refused before a nonce is taken.
+   *
    * @param subgroveId - Subgrove ID
    * @param newEpoch - New key epoch (must be current_epoch + 1)
    * @param newGrants - New encrypted key grants for all authorized DIDs
@@ -361,15 +375,16 @@ export class PrivacyOperations {
     newGrants: EncryptedKeyGrant[],
   ): Promise<BroadcastResult> {
     const did = this.requireDid();
+    const unsigned = {
+      subgroveId,
+      newEpoch,
+      newGrants,
+      senderDid: did,
+      publicKeyId: this.publicKeyId,
+    };
+    rotateSubgroveKeySignMessage({ ...unsigned, nonce: 0 }); // refuses a field before a nonce is taken
     return this.submitWithNonce(did, "RotateSubgroveKey", (nonce) => {
-      const tx = {
-        subgroveId,
-        newEpoch,
-        newGrants,
-        senderDid: did,
-        publicKeyId: this.publicKeyId,
-        nonce,
-      };
+      const tx = { ...unsigned, nonce };
       return { ...tx, signature: this.signMessage(rotateSubgroveKeySignMessage(tx)) };
     });
   }
