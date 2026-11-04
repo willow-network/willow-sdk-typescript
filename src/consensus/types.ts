@@ -859,7 +859,9 @@ function nonceLine(nonce: number | undefined): string {
  *
  * @throws WillowError if a field is not one the chain can decode as given
  *   (a text field with a lone surrogate, an integer outside its type or an
- *   unsafe JS number, an unknown enum variant, a missing required field).
+ *   unsafe JS number, an unknown enum variant, a missing required field), or
+ *   a DataStorage or FileStorage registration breaks the chain's rules for
+ *   its subgrove id or schema (see {@link registerSubgroveSignMessage}).
  */
 export function registerSubgroveUnsignedBincode(tx: RegisterSubgroveTx): Uint8Array {
   return registerSubgroveBincode(registerSubgroveWire(tx, []));
@@ -882,16 +884,23 @@ export function registerSubgroveUnsignedBincode(tx: RegisterSubgroveTx): Uint8Ar
  * with no trailing newline. Set the nonce before building the message.
  *
  * @throws WillowError if `subgroveId` or `ownerDid` holds a `\n`, the nonce
- *   is missing or not a non-negative safe integer, or a field can't be
- *   encoded (see {@link registerSubgroveUnsignedBincode}).
+ *   is missing or not a non-negative safe integer, a field can't be encoded
+ *   (see {@link registerSubgroveUnsignedBincode}), or a DataStorage or
+ *   FileStorage registration breaks the chain's rules for it: a subgrove id
+ *   that isn't 1–64 ASCII letters, digits, `-`, or `_` starting with a letter
+ *   or digit (`INVALID_SUBGROVE_ID`), or a schema that declares indexes
+ *   (`SCHEMA_INDEXES_UNSUPPORTED`).
  */
 export function registerSubgroveSignMessage(tx: RegisterSubgroveTx): string {
   nonceLine(tx.nonce);
+  // The lines first: a line break is refused as such, before the id's rules.
+  const subgrove = textLine('Subgrove', tx.subgroveId);
+  const owner = textLine('Owner', tx.ownerDid);
   const w = registerSubgroveWire(tx, []);
   return [
     'RegisterSubgrove',
-    textLine('Subgrove', w.subgrove_id),
-    textLine('Owner', w.owner_did),
+    subgrove,
+    owner,
     `Config: ${bytesToHex(sha256(registerSubgroveBincode(w)))}`,
     `Nonce: ${w.nonce}`,
   ].join('\n');

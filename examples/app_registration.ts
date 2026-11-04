@@ -63,14 +63,6 @@ async function main() {
       specifications: { type: 'object' },
       created_at: { type: 'number', indexed: true },
     },
-    indexes: [
-      { name: 'unique_sku', fields: ['sku'], unique: true, type: 'unique' },
-      { name: 'by_category', fields: ['category'], unique: false, type: 'hash' },
-      { name: 'by_price', fields: ['price'], unique: false, type: 'range' },
-      { name: 'by_rating', fields: ['rating'], unique: false, type: 'range' },
-      { name: 'product_search', fields: ['name', 'description'], unique: false, type: 'fulltext' },
-      { name: 'category_price', fields: ['category', 'price'], unique: false, type: 'compound' },
-    ],
     required_fields: ['sku', 'name', 'category', 'price'],
   };
 
@@ -87,7 +79,7 @@ async function main() {
     const result = await client.registerSubgrove(productsDataset);
     console.log('   Products subgrove registered');
     console.log(`   Tx hash: ${result.txHash}`);
-    console.log(`   Indexes:    ${productsSchema.indexes?.length ?? 0}\n`);
+    console.log();
   } catch (error) {
     console.log(`   Note: ${error}\n`);
   }
@@ -106,12 +98,6 @@ async function main() {
       created_at: { type: 'number', indexed: true },
       updated_at: { type: 'number', indexed: true },
     },
-    indexes: [
-      { name: 'unique_order_id', fields: ['order_id'], unique: true, type: 'unique' },
-      { name: 'by_customer', fields: ['customer_did'], unique: false, type: 'hash' },
-      { name: 'by_status', fields: ['status'], unique: false, type: 'hash' },
-      { name: 'by_date', fields: ['created_at'], unique: false, type: 'range' },
-    ],
     required_fields: ['order_id', 'customer_did', 'items', 'total', 'status'],
   };
 
@@ -146,11 +132,6 @@ async function main() {
       joined_at: { type: 'number', indexed: true },
       reputation: { type: 'number', indexed: true },
     },
-    indexes: [
-      { name: 'unique_did', fields: ['user_did'], unique: true, type: 'unique' },
-      { name: 'unique_username', fields: ['username'], unique: true, type: 'unique' },
-      { name: 'by_reputation', fields: ['reputation'], unique: false, type: 'range' },
-    ],
     required_fields: ['user_did', 'username'],
   };
 
@@ -174,7 +155,7 @@ async function main() {
 
   console.log('Summary');
   console.log('=======');
-  console.log('  - products: public catalog with full-text + range indexing');
+  console.log('  - products: public catalog');
   console.log('  - orders:   private order records');
   console.log('  - users:    public profiles, owner-managed');
   console.log();

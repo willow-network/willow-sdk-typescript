@@ -672,9 +672,6 @@ const result = await client.registerSubgrove({
       score: { type: 'number' },
       active: { type: 'boolean' },
     },
-    indexes: [
-      { name: 'by_name', fields: ['name'], unique: false, type: 'hash' },
-    ],
     required_fields: ['name'],
   },
   owner_did: didDocument.id,
@@ -682,6 +679,12 @@ const result = await client.registerSubgrove({
   readers: [],
 });
 ```
+
+The chain refuses a DataStorage or FileStorage registration whose subgrove id
+is not 1–64 ASCII letters, digits, `-`, or `_` starting with a letter or
+digit, or whose schema declares indexes. The SDK refuses both before signing
+or taking a nonce, with `INVALID_SUBGROVE_ID` or
+`SCHEMA_INDEXES_UNSUPPORTED`; leave `indexes` out or empty.
 
 ## Error Handling
 

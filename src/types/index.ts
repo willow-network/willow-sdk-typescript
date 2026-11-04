@@ -180,6 +180,11 @@ export interface IndexDefinition {
 export interface SchemaDefinition {
   version: number;
   fields: Record<string, FieldType>;
+  /**
+   * The chain refuses a DataStorage or FileStorage registration whose schema
+   * declares indexes, and the SDK refuses to sign one: leave this out or
+   * empty.
+   */
   indexes?: IndexDefinition[];
   required_fields?: string[];
 }

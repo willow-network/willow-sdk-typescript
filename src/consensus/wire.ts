@@ -7,6 +7,7 @@
  */
 
 import type { RegisterSubgroveTx } from './types';
+import { WillowError } from '../types';
 import { base64ToBytes, bytesToHex } from '../internal/bytes';
 import {
   bool,
@@ -294,12 +295,51 @@ function initialFundingWire(value: unknown): string | null {
  * `RegisterSubgroveTx`, in its order, with the values the API would fill in
  * for an omitted field written out.
  */
+/** A data or file subgrove id: 1–64 ASCII letters, digits, `-`, or `_`, starting with a letter or digit. */
+const STORAGE_SUBGROVE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+/**
+ * The chain's rules for a DataStorage or FileStorage registration, checked
+ * before signing: its subgrove id is 1–64 ASCII letters, digits, `-`, or `_`,
+ * starting with a letter or digit, and its schema declares no indexes (writes
+ * to an indexed subgrove are refused). The chain refuses a registration that
+ * breaks either.
+ */
+export function checkStorageRegistration(subgroveId: string, schema: string): void {
+  if (!STORAGE_SUBGROVE_ID.test(subgroveId)) {
+    throw new WillowError(
+      `Invalid subgrove id ${JSON.stringify(subgroveId)}: a data or file subgrove's id is 1–64 ` +
+        "ASCII letters, digits, '-', or '_', starting with a letter or digit",
+      'INVALID_SUBGROVE_ID',
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(schema);
+  } catch {
+    return; // the chain refuses a schema that isn't JSON on its own terms
+  }
+  if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const indexes = (parsed as Record<string, unknown>).indexes;
+    if (indexes !== undefined && !(Array.isArray(indexes) && indexes.length === 0)) {
+      throw new WillowError(
+        "Schema indexes are not supported: a data or file subgrove's schema can't declare indexes",
+        'SCHEMA_INDEXES_UNSUPPORTED',
+      );
+    }
+  }
+}
+
 export function registerSubgroveWire(
   tx: RegisterSubgroveTx,
   signature: number[],
 ): Record<string, unknown> {
   const name = tx.name ?? tx.subgroveId;
   const checkpoint = tx.checkpointVerification ?? { required_tee: null };
+  const mode = modeWire(tx, name) as Record<string, unknown>;
+  if ('DataStorage' in mode || 'FileStorage' in mode) {
+    checkStorageRegistration(text('subgroveId', tx.subgroveId), text('schema', tx.schema));
+  }
   return {
     subgrove_id: text('subgroveId', tx.subgroveId),
     name: text('name', name),
@@ -313,7 +353,7 @@ export function registerSubgroveWire(
         teeType('checkpointVerification.required_tee', t),
       ),
     },
-    mode: modeWire(tx, name),
+    mode,
     privacy: optional(tx.privacy, privacyWire),
     initial_owner_key_grant: optional(tx.initialOwnerKeyGrant, (g) =>
       keyGrantWire('initialOwnerKeyGrant', g),

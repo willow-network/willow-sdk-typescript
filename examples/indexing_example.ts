@@ -45,14 +45,6 @@ async function main() {
       images: { type: 'array' },
       specifications: { type: 'object' },
     },
-    indexes: [
-      { name: 'unique_product_id', fields: ['productId'], unique: true, type: 'unique' },
-      { name: 'by_category', fields: ['category'], unique: false, type: 'hash' },
-      { name: 'by_brand', fields: ['brand'], unique: false, type: 'hash' },
-      { name: 'by_price', fields: ['price'], unique: false, type: 'range' },
-      { name: 'product_search', fields: ['name', 'description'], unique: false, type: 'fulltext' },
-      { name: 'category_price', fields: ['category', 'price'], unique: false, type: 'compound' },
-    ],
   };
 
   const datasetRequest: RegisterSubgroveRequest = {

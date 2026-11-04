@@ -241,6 +241,54 @@ describe('second set of signed messages: refusals', () => {
     lineBreak(() => registerSubgroveSignMessage({ ...data, [f]: 'a\nb' }));
   });
 
+  const file = registerTx(body(vector('RegisterSubgrove (file)'))[1]);
+  const indexedSchema = JSON.stringify({
+    version: 1,
+    fields: { name: { type: 'string' } },
+    indexes: [{ name: 'by_name', fields: ['name'], unique: false }],
+    required_fields: [],
+  });
+
+  it.each(['', 'a'.repeat(65), '-lead', '_lead', 'has space', 'dot.ted', 'colon:id', 'ünï', 'a\tb'])(
+    'RegisterSubgrove refuses the data or file subgrove id %j before signing',
+    (id) => {
+      for (const tx of [data, file]) {
+        refuses(() => registerSubgroveSignMessage({ ...tx, subgroveId: id }), 'INVALID_SUBGROVE_ID');
+        refuses(() => registerSubgroveUnsignedBincode({ ...tx, subgroveId: id }), 'INVALID_SUBGROVE_ID');
+      }
+    },
+  );
+
+  it('RegisterSubgrove accepts the data and file subgrove ids the chain accepts', () => {
+    for (const id of ['0', 'a'.repeat(64), 'A-b_9', 'notes-1']) {
+      for (const tx of [data, file]) {
+        expect(registerSubgroveSignMessage({ ...tx, subgroveId: id }).split('\n')[1]).toBe(
+          `Subgrove: ${id}`,
+        );
+      }
+    }
+  });
+
+  it('RegisterSubgrove refuses a data or file schema that declares indexes', () => {
+    for (const tx of [data, file]) {
+      refuses(
+        () => registerSubgroveSignMessage({ ...tx, schema: indexedSchema }),
+        'SCHEMA_INDEXES_UNSUPPORTED',
+        /Schema indexes are not supported/,
+      );
+    }
+    // An empty or absent list declares none.
+    const none = JSON.stringify({ version: 1, fields: {}, required_fields: [] });
+    expect(() => registerSubgroveSignMessage({ ...data, schema: none })).not.toThrow();
+    expect(registerSubgroveSignMessage(data)).toBe(vector('RegisterSubgrove (data)').message);
+  });
+
+  it('the data and file rules leave an indexing registration alone', () => {
+    expect(() =>
+      registerSubgroveSignMessage({ ...indexing, subgroveId: '_any.id', schema: indexedSchema }),
+    ).not.toThrow();
+  });
+
   it('RegisterSubgrove hashes a line break in a field it does not write as a line', () => {
     const msg = registerSubgroveSignMessage({ ...data, description: 'two\nlines' });
     expect(msg.split('\n')).toHaveLength(5);
@@ -574,6 +622,43 @@ describe('second set in flight', () => {
     expect(sent.signature).toBe(v.secp256k1_compact_signature_hex);
     expect(verifySecp256k1(v.message, `0x${sent.signature}`, SECP_PUB)).toBe(true);
     expect(verifyEd25519(v.message, sent.signature, ED_PUB)).toBe(false);
+  });
+
+  it('client.registerSubgrove refuses an indexed schema or a bad id without sending anything', async () => {
+    const { submitted } = stubFetch(3);
+    const allocator = new NonceAllocator();
+    const client = new WillowClient({
+      apiUrl: 'http://api.test',
+      consensusRpcUrl: 'http://rpc.test',
+      nonceAllocator: allocator,
+    });
+    client.auth.setIdentity(OWNER, SEED, KAT.public_key_id, 'Ed25519');
+    const request = {
+      dataset_id: 'sg-1',
+      name: '',
+      schema: { version: 1, fields: {}, indexes: [], required_fields: [] },
+      owner_did: OWNER,
+      writers: [],
+      readers: [],
+    };
+    await expect(
+      client.registerSubgrove({
+        ...request,
+        schema: {
+          version: 1,
+          fields: { name: { type: 'string' } },
+          indexes: [{ name: 'by_name', fields: ['name'], unique: false }],
+          required_fields: [],
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'SCHEMA_INDEXES_UNSUPPORTED' });
+    await expect(client.registerSubgrove({ ...request, dataset_id: 'sg.1' })).rejects.toMatchObject({
+      code: 'INVALID_SUBGROVE_ID',
+    });
+    expect(submitted).toHaveLength(0);
+    // Neither took a nonce: the next registration signs base + 1.
+    await client.registerSubgrove(request);
+    expect(unsigned(submitted[0]).w.nonce).toBe(4);
   });
 
   it('client.data.registerSubgrove sends a RegisterSubgrove transaction, not a REST call', async () => {

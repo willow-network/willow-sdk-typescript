@@ -136,6 +136,11 @@ package adheres to [Semantic Versioning](https://semver.org/).
   process share the allocator.
 - `ConsensusClient` without an `apiUrl` or an RPC URL refuses to pick a
   nonce (`API_URL_REQUIRED`); it used nonce 1.
+- A DataStorage or FileStorage registration whose subgrove id is not 1–64
+  ASCII letters, digits, `-`, or `_` starting with a letter or digit
+  (`INVALID_SUBGROVE_ID`), or whose schema declares indexes
+  (`SCHEMA_INDEXES_UNSUPPORTED`), is refused before it is signed or takes a
+  nonce. The chain refuses both. The examples no longer declare indexes.
 
 ### Removed
 
