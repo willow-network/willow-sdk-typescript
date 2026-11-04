@@ -13,6 +13,9 @@ import { FileOperations } from '../src/files';
 import { WillowAuth } from '../src/auth';
 import { PrivacyOperations, EncryptedKeyGrant } from '../src/privacy';
 import { toJson } from '../src/internal/json';
+import { createDidFromPublicKey } from '../src/utils';
+import { ed25519 } from '@noble/curves/ed25519';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 
 const DID = 'did:willow:writer';
 const SEED = '03'.repeat(32);
@@ -309,5 +312,71 @@ describe('a failed submission carries what was sent, to post again', () => {
     err = await privacy.grantSubgroveKey('private-1', grant).catch((e) => e);
     expect(err).toMatchObject({ code: 'BROADCAST_FAILED', result: { pending: true } });
     expect(err.message).toMatch(/unconfirmed/);
+  });
+});
+
+describe('a write that did not go through carries what was sent', () => {
+  it("ConsensusClient's pending or refused result carries its submission", async () => {
+    let sent = stubChain(4, () => inCache());
+    const c = new ConsensusClient({ apiUrl: 'http://api.test', nonceAllocator: new NonceAllocator() });
+    const pending = await c.storeData('sg', 'k', { a: 1 }, DID, SIGNER);
+    expect(pending).toMatchObject({ success: false, pending: true, submission: { did: DID, nonce: 5 } });
+    expect(toJson(pending.submission!.transaction)).toBe(sent[0]);
+
+    // It can be posted again under its nonce.
+    sent = stubChain(4, () => accepted());
+    expect(await c.resubmit(pending.submission!)).toMatchObject({ success: true, txHash: 'AB12' });
+    expect(sent[0]).toBe(toJson(pending.submission!.transaction));
+
+    sent = stubChain(4, () => refused('Insufficient balance'));
+    const refusal = await c.storeData('sg', 'k2', {}, DID, SIGNER);
+    expect(refusal).toMatchObject({ success: false, submission: { did: DID } });
+    expect(refusal.pending).toBeUndefined();
+
+    stubChain(4, () => accepted());
+    expect((await c.storeData('sg', 'k3', {}, DID, SIGNER)).submission).toBeUndefined();
+  });
+
+  it('a pending registerDid carries nonce 1', async () => {
+    const doc = createDidFromPublicKey(bytesToHex(ed25519.getPublicKey(hexToBytes(SEED))), 'Ed25519');
+    const sent = stubChain(0, () => inCache());
+    const c = new ConsensusClient({ apiUrl: 'http://api.test', nonceAllocator: new NonceAllocator() });
+    const result = await c.registerDid(doc, { privateKey: SEED, publicKeyId: `${doc.id}#key-1` });
+    expect(result).toMatchObject({ pending: true, submission: { did: doc.id, nonce: 1 } });
+    expect(toJson(result.submission!.transaction)).toBe(sent[0]);
+  });
+
+  it("WillowClient's and WillowData's writes throw it as a TransactionSubmitError", async () => {
+    const sent = stubChain(4, () => inCache());
+    const client = new WillowClient({ apiUrl: 'http://api.test', nonceAllocator: new NonceAllocator() });
+    client.auth.setIdentity(DID, SEED, KEY_ID, 'Ed25519');
+
+    const store = await client.store('sg', 'k', { a: 1 }).catch((e) => e);
+    expect(store).toBeInstanceOf(TransactionSubmitError);
+    expect(store).toMatchObject({ code: 'TX_SUBMIT_FAILED', did: DID, nonce: 5, result: { pending: true } });
+    expect(store.message).toMatch(/^store failed: unconfirmed/);
+    expect(toJson(store.transaction)).toBe(sent[0]);
+
+    const request = {
+      dataset_id: 'sg-1',
+      name: 'sg-1',
+      schema: { version: 1, fields: {} },
+      owner_did: DID,
+      writers: [],
+      readers: [],
+    };
+    for (const register of [() => client.registerSubgrove(request), () => client.data.registerSubgrove(request)]) {
+      const err = await register().catch((e) => e);
+      expect(err).toBeInstanceOf(TransactionSubmitError);
+      expect(err).toMatchObject({ code: 'TX_SUBMIT_FAILED', did: DID, result: { pending: true } });
+      expect(err.message).toMatch(/^registerSubgrove failed/);
+      expect(sent).toContain(toJson(err.transaction));
+    }
+
+    // A refusal carries it too, with the chain's answer.
+    stubChain(4, () => refused('Insufficient balance'));
+    const refusal = await client.store('sg', 'k', {}).catch((e) => e);
+    expect(refusal).toMatchObject({ code: 'TX_SUBMIT_FAILED', result: { rawLog: 'Insufficient balance' } });
+    expect(refusal.message).toBe('store failed: Insufficient balance');
   });
 });

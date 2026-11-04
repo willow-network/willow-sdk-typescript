@@ -47,6 +47,7 @@ import { HttpClient, HttpError, RequestSigner } from "../internal/http";
 import { WillowLogger, silentLogger } from "../internal/logger";
 import { ConsensusClient } from "../consensus/client";
 import { serializeSchema } from "../consensus/schema";
+import { writeNotAccepted } from "../internal/tx";
 import type {
   BroadcastResult,
   RegisterSubgroveOptions,
@@ -62,8 +63,9 @@ import type {
  * given. A DataStorage or FileStorage schema is sent in the chain's shape
  * ({@link serializeSchema}), and one the chain can't take is refused before
  * anything is signed. Throws `IDENTITY_MISMATCH` when the request's
- * `owner_did` is not the identity, and throws when the transaction is
- * refused.
+ * `owner_did` is not the identity. A registration refused at CheckTx, or
+ * whose outcome is pending, throws a `TransactionSubmitError`
+ * (`TX_SUBMIT_FAILED`) carrying the DID, nonce, signed body, and `result`.
  */
 export async function registerSubgroveRequest(
   consensus: Pick<ConsensusClient, "registerSubgrove">,
@@ -103,11 +105,7 @@ export async function registerSubgroveRequest(
     signer,
     { name: request.name, ...options, mode },
   );
-  if (!result.success) {
-    throw new Error(
-      `registerSubgrove failed: ${result.errorMessage ?? result.rawLog ?? "unknown"}`,
-    );
-  }
+  if (!result.success) throw writeNotAccepted("registerSubgrove", result);
   return result;
 }
 

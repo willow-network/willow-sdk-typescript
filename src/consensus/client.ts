@@ -133,7 +133,7 @@ export class ConsensusClient {
       throw did && sent ? submissionError(error, { did, nonce: 1, transaction }) : error;
     }
     if (did && (result.success || result.pending)) this.nonces.hold(did, 1);
-    return result;
+    return did && !result.success ? { ...result, submission: { did, nonce: 1, transaction } } : result;
   }
 
   /**
@@ -627,8 +627,9 @@ export class ConsensusClient {
    * {@link TransactionSubmitError} a write threw, or its `did`, `nonce`, and
    * `transaction`. Whichever attempt lands first spends the nonce, and the
    * other is refused, so the write runs at most once. A repeat of one the
-   * mempool already holds returns `pending` (its outcome unknown): confirm
-   * it with {@link isNonceUsed}.
+   * mempool already holds returns `pending` (its outcome unknown; see
+   * {@link isNonceUsed}). A result that is not `success` carries the
+   * submission again.
    *
    * The nonce is held while the post is in flight and settled with the
    * allocator after, as for a new write; a transport failure throws a
@@ -668,7 +669,8 @@ export class ConsensusClient {
       throw submissionError(error, submission);
     }
     this.nonces.settle(did, nonce, result);
-    return result;
+    // A write that didn't go through carries what was sent, to confirm or post again.
+    return result.success ? result : { ...result, submission };
   }
 
   /**
@@ -813,9 +815,12 @@ export class ConsensusClient {
   }
 
   /**
-   * Whether the chain has used `nonce` for `did`: a write signed with it
-   * has landed (or been spent by a refusal in its block). Use it to confirm a
-   * submission whose outcome is `pending`. With a CometBFT RPC URL it reads
+   * Whether the chain has used `nonce` for `did`: a transaction signed with
+   * it has been included in a block. That does not say the write applied: a
+   * transaction refused in its block spends its nonce too, so read the state
+   * the write changes to confirm it. For a submission whose outcome is
+   * `pending`, an unused nonce means it has not landed yet, and
+   * {@link resubmit} may post it again. With a CometBFT RPC URL it reads
    * which nonces in the window are used; without one, only the base, so a
    * nonce used above the base reads as unused until the base passes it.
    */

@@ -6,6 +6,7 @@ import { VerifiableRpcOperations } from "./verifiable-rpc";
 import { ConsensusClient } from "./consensus";
 import { didDocumentKeyType } from "./consensus/wire";
 import { BroadcastResult, RegisterSubgroveOptions, Signer } from "./consensus/types";
+import { writeNotAccepted } from "./internal/tx";
 import { WillowIndexers } from "./indexers";
 import { WillowSubscriptions } from "./subscriptions";
 import {
@@ -170,7 +171,9 @@ export class WillowClient {
    * The document is sent as the chain's `DidDocument`: each key in
    * `publicKeys` is controlled by the DID and listed for authentication. The
    * DID must already hold the registration fee. Returns the consensus
-   * `BroadcastResult`; throws when the transaction is refused.
+   * `BroadcastResult`. A registration refused at CheckTx, or whose outcome
+   * is pending, throws a `TransactionSubmitError` (`TX_SUBMIT_FAILED`)
+   * carrying the DID, nonce, signed body, and `result`.
    */
   async registerDid(didDocument: DidDocument): Promise<BroadcastResult> {
     this.requireIdentity();
@@ -185,11 +188,7 @@ export class WillowClient {
     const keyType = didDocumentKeyType(didDocument, this.auth.getPublicKeyId()!);
     const signer = this.auth.transactionSigner(algorithmFromKeyType(keyType));
     const result = await this.consensus.registerDid(didDocument, signer);
-    if (!result.success) {
-      throw new Error(
-        `registerDid failed: ${result.errorMessage ?? result.rawLog ?? 'unknown'}`,
-      );
-    }
+    if (!result.success) throw writeNotAccepted('registerDid', result);
     return result;
   }
 
@@ -242,7 +241,11 @@ export class WillowClient {
   }
 
   /**
-   * Store data via a consensus transaction.
+   * Store data via a consensus transaction. A write refused at CheckTx, or
+   * whose outcome is pending (`result.pending`), throws a
+   * `TransactionSubmitError` (`TX_SUBMIT_FAILED`) carrying the DID, nonce,
+   * signed body, and `result`, to confirm it or post it again
+   * (`consensus.resubmit(error)`).
    */
   async store(
     datasetId: string,
@@ -257,11 +260,7 @@ export class WillowClient {
       this.auth.getDid()!,
       this.signer(),
     );
-    if (!result.success) {
-      throw new Error(
-        `store failed: ${result.errorMessage ?? result.rawLog ?? 'unknown'}`,
-      );
-    }
+    if (!result.success) throw writeNotAccepted('store', result);
   }
 
   /**

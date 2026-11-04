@@ -8,7 +8,7 @@
  * misparse) them. Every SDK module that broadcasts goes through here.
  */
 
-import { BroadcastResult } from '../consensus/types';
+import { BroadcastResult, TransactionSubmitError } from '../consensus/types';
 import { toJson } from './json';
 
 export interface SubmitTxOptions {
@@ -121,4 +121,17 @@ export async function submitTxToApi(
     errorMessage: code !== 0 ? body.data.log : undefined,
     rawLog: body.data.log,
   };
+}
+
+/**
+ * The error a write's result that is not `success` is thrown as by the
+ * `WillowClient` and `WillowData` writes: a {@link TransactionSubmitError}
+ * (`TX_SUBMIT_FAILED`) carrying the result and its submission (DID, nonce,
+ * and signed body), so a pending write can be confirmed and a refused one
+ * sent again. A result without a submission gives a plain `Error`.
+ */
+export function writeNotAccepted(what: string, result: BroadcastResult): Error {
+  const message = `${what} failed: ${result.errorMessage ?? result.rawLog ?? 'unknown'}`;
+  if (!result.submission) return new Error(message);
+  return new TransactionSubmitError(message, 'TX_SUBMIT_FAILED', { ...result.submission, result });
 }

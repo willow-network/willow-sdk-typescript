@@ -180,10 +180,21 @@ export interface BroadcastResult {
    * already holds these bytes ("tx already exists in cache"). It caches a
    * transaction before CheckTx runs and drops it if CheckTx refuses it, so
    * the transaction may be in CheckTx, in the mempool, committed, or about to
-   * be refused. Its nonce stays held; confirm by the account's nonce state
-   * (`ConsensusClient.isNonceUsed`).
+   * be refused. Its nonce stays held. `submission` carries the DID, nonce,
+   * and signed body. `ConsensusClient.isNonceUsed(did, nonce)` says whether
+   * a transaction with the nonce has been included in a block, not whether
+   * it applied: a refusal in the block spends the nonce too, so read the
+   * state the write changes to see that it applied. While the nonce is
+   * unused, `ConsensusClient.resubmit(result.submission)` posts the same
+   * signed body again; whichever copy lands first spends the nonce.
    */
   pending?: boolean;
+  /**
+   * The signed write as it was sent (its DID, nonce, and body), on a result
+   * that is not `success` from a write `ConsensusClient` signed: pending, or
+   * refused at CheckTx. Post it again with `ConsensusClient.resubmit`.
+   */
+  submission?: SignedSubmission;
   /** The transaction's hash. Absent when the outcome is `pending`. */
   txHash?: string;
   height?: number;
