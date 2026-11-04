@@ -14,7 +14,13 @@ import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex, randomBytes } from '@noble/hashes/utils';
 import { xchacha20poly1305 } from '@noble/ciphers/chacha';
 import { WillowError } from '../types';
-import { createTransactionWrapper } from '../consensus/types';
+import {
+  createTransactionWrapper,
+  deleteFileManifestSignMessage,
+  DeleteFileManifestTx,
+  storeFileManifestSignMessage,
+  StoreFileManifestTx,
+} from '../consensus/types';
 import { submitTxToApi, SubmitTxOptions } from '../internal/tx';
 import { RequestSigner, resolveRequest } from '../internal/http';
 
@@ -46,6 +52,7 @@ export interface FileSigningOptions {
   privateKey: string;
   publicKeyId: string;
   signFunction: (message: string, privateKey: string) => string;
+  /** The nonce the transaction carries. The signature covers it. */
   nonce: number;
 }
 
@@ -107,13 +114,9 @@ export class FileOperations {
     const chunkHashes = chunks.map((c) => sha256(c));
     const chunkMerkleRoot = bytesToHex(computeMerkleRoot(chunkHashes));
 
-    // Submit StoreFileManifestTx to consensus
-    const ownerDid = signing?.ownerDid ?? '';
-    const signMessage = `store_file:${subgroveId}:${fileKey}:${contentHash}:${data.length}`;
-    const signature = signing
-      ? signing.signFunction(signMessage, signing.privateKey)
-      : '';
-    const manifestTx = createTransactionWrapper('StoreFileManifest', {
+    // Submit StoreFileManifestTx to consensus, signed over every field it
+    // carries, nonce included.
+    const manifest: StoreFileManifestTx = {
       subgroveId,
       fileKey,
       filename,
@@ -123,12 +126,14 @@ export class FileOperations {
       chunkCount,
       chunkSize,
       chunkMerkleRoot,
-      ownerDid,
-      signature,
+      ownerDid: signing?.ownerDid ?? '',
       publicKeyId: signing?.publicKeyId ?? '',
       nonce: signing?.nonce ?? 0,
-    });
-    const txResult = await this.submitTx(manifestTx);
+    };
+    manifest.signature = signing
+      ? signing.signFunction(storeFileManifestSignMessage(manifest), signing.privateKey)
+      : '';
+    const txResult = await this.submitTx(createTransactionWrapper('StoreFileManifest', manifest));
     if (!txResult.success) {
       throw new WillowError(
         `Failed to submit file manifest: ${txResult.rawLog || txResult.errorMessage || 'unknown error'}`,
@@ -246,19 +251,17 @@ export class FileOperations {
     fileKey: string,
     signing?: FileSigningOptions,
   ): Promise<void> {
-    const signMessage = `delete_file:${subgroveId}:${fileKey}`;
-    const signature = signing
-      ? signing.signFunction(signMessage, signing.privateKey)
-      : '';
-    const deleteTx = createTransactionWrapper('DeleteFileManifest', {
+    const deleteTx: DeleteFileManifestTx = {
       subgroveId,
       fileKey,
       ownerDid: signing?.ownerDid ?? '',
-      signature,
       publicKeyId: signing?.publicKeyId ?? '',
       nonce: signing?.nonce ?? 0,
-    });
-    const result = await this.submitTx(deleteTx);
+    };
+    deleteTx.signature = signing
+      ? signing.signFunction(deleteFileManifestSignMessage(deleteTx), signing.privateKey)
+      : '';
+    const result = await this.submitTx(createTransactionWrapper('DeleteFileManifest', deleteTx));
     if (!result.success) {
       throw new WillowError(
         `Failed to delete file: ${result.rawLog || result.errorMessage || 'unknown error'}`,

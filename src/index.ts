@@ -170,6 +170,9 @@ export {
   localConfig as consensusLocalConfig,
   testnetConfig as consensusTestnetConfig,
   mainnetConfig as consensusMainnetConfig,
+  storeDataSignMessage,
+  storeFileManifestSignMessage,
+  deleteFileManifestSignMessage,
 } from "./consensus";
 export type {
   ConsensusConfig,
@@ -179,6 +182,8 @@ export type {
   RegisterSubgroveTx,
   TransferTx,
   DataStoreTx,
+  StoreFileManifestTx,
+  DeleteFileManifestTx,
   Transaction,
   Signer,
   SignFunction,
