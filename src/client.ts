@@ -4,6 +4,7 @@ import { FileOperations } from "./files";
 import { EthOperations } from "./eth-state";
 import { VerifiableRpcOperations } from "./verifiable-rpc";
 import { ConsensusClient } from "./consensus";
+import { didDocumentKeyType } from "./consensus/wire";
 import { BroadcastResult, RegisterSubgroveOptions, Signer } from "./consensus/types";
 import { WillowIndexers } from "./indexers";
 import { WillowSubscriptions } from "./subscriptions";
@@ -158,7 +159,9 @@ export class WillowClient {
   /**
    * Register a DID by a RegisterDid transaction, signed by the identity set
    * with `auth.setIdentity` (the DID being registered, and a key in its
-   * document).
+   * document) with the algorithm of that key in the document. An identity
+   * whose algorithm was guessed takes the key's; one given another is
+   * refused (`ALGORITHM_MISMATCH`).
    *
    * The document is sent as the chain's `DidDocument`: each key in
    * `publicKeys` is controlled by the DID and listed for authentication. The
@@ -174,7 +177,10 @@ export class WillowClient {
         'IDENTITY_MISMATCH',
       );
     }
-    const result = await this.consensus.registerDid(didDocument, this.signer());
+    // Sign with the algorithm of the document's key, which the chain verifies.
+    const keyType = didDocumentKeyType(didDocument, this.auth.getPublicKeyId()!);
+    const signer = this.auth.transactionSigner(algorithmFromKeyType(keyType));
+    const result = await this.consensus.registerDid(didDocument, signer);
     if (!result.success) {
       throw new Error(
         `registerDid failed: ${result.errorMessage ?? result.rawLog ?? 'unknown'}`,

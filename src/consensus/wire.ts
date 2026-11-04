@@ -172,7 +172,11 @@ function wasmModuleWire(label: string, value: unknown): Record<string, unknown> 
   };
 }
 
-/** The access lists of a data or file mode; `readers` is the chain's alias of `free_readers`. */
+/**
+ * The access lists of a data or file mode. `readers` is taken as
+ * `free_readers` (the chain reads that alias in a DataStorage mode); the SDK
+ * always sends `free_readers`.
+ */
 function accessLists(label: string, m: Record<string, unknown>) {
   return {
     writers: texts(`${label}.writers`, m.writers ?? []),
@@ -379,6 +383,21 @@ function sdkKeyHex(label: string, k: Record<string, unknown>): string | null {
     return bytesToHex(base64ToBytes(text(`${label}.publicKeyBase64`, k.publicKeyBase64)));
   }
   return null;
+}
+
+/**
+ * The `type` of the key `publicKeyId` in a DID document, in the SDK's shape
+ * (`publicKeys`) or the chain's (`public_keys`), when it lists one.
+ */
+export function didDocumentKeyType(doc: unknown, publicKeyId: string): string | undefined {
+  if (doc === null || typeof doc !== 'object') return undefined;
+  const d = doc as Record<string, unknown>;
+  const keys = Array.isArray(d.publicKeys) ? d.publicKeys : Array.isArray(d.public_keys) ? d.public_keys : [];
+  for (const key of keys) {
+    const k = key as Record<string, unknown> | null;
+    if (k && k.id === publicKeyId && typeof k.type === 'string') return k.type;
+  }
+  return undefined;
 }
 
 /**

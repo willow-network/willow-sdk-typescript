@@ -307,7 +307,11 @@ describe('request signing: through the client', () => {
       jsonResponse({ success: true, data: { tx_hash: 'AB12', code: 0, log: '' } }),
     );
     const client = vectorClient();
-    await client.files.delete('sg', 'k');
+    await client.files.delete('sg', 'k', {
+      ...client.auth.transactionSigner(),
+      ownerDid: client.auth.getDid()!,
+      nonce: 1,
+    });
     const [req] = received();
     expect(`${req.method} ${req.target}`).toBe('POST /tx/submit');
     expect(verifiesAsOlderForm(req)).toBe(true);

@@ -82,9 +82,9 @@ export interface Signer {
 /** Optional RegisterSubgrove parameters. */
 export interface RegisterSubgroveOptions {
   /**
-   * Human-readable subgrove name. This is the top-level name the chain
-   * stores and signs over (the per-mode `name` is ignored by the
-   * validator for the signing message). Defaults to the subgrove id.
+   * Human-readable subgrove name: the top-level name the chain stores.
+   * Defaults to the subgrove id. Like every field, it and the mode's own
+   * `name` are signed through the registration's `Config` hash.
    */
   name?: string;
   mode?: SubgroveMode;

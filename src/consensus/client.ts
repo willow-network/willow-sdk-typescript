@@ -8,7 +8,8 @@ import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, Re
 import { canonicalizeAnchorBody, computeAnchorMerkleRoot, sha256Hex } from './anchor-canonical';
 import { submitTxToApi } from '../internal/tx';
 import { NonceAllocator, AccountNonceState, NONCE_WINDOW, parseAccountNonceStateBase64 } from './nonces';
-import { signEd25519 } from '../auth';
+import { signEd25519, signSecp256k1, algorithmFromKeyType } from '../auth';
+import { didDocumentKeyType } from './wire';
 import { WillowLogger, silentLogger } from '../internal/logger';
 
 /** Misconfiguration (no consensusRpcUrl) must surface, never degrade to a fallback. */
@@ -64,7 +65,10 @@ export class ConsensusClient {
    * `didDocument` is the SDK's `DidDocument` (from `createDidFromPublicKey`
    * or `createDidFromWallet`) or the chain's own shape. It is sent as the
    * chain's `DidDocument`, and signed over that document's JSON text (see
-   * `registerDidSignMessage`). The signer is a key in the document. A DID's
+   * `registerDidSignMessage`). The signer is a key in the document, and
+   * signs with that key's algorithm: a signer without a `signFunction` takes
+   * the SDK's for the key's type, and one whose `signFunction` is the SDK's
+   * for the other algorithm is refused (`ALGORITHM_MISMATCH`). A DID's
    * registration is its first transaction, so its nonce is 1.
    */
   async registerDid(didDocument: any, signer: Signer): Promise<BroadcastResult>;
@@ -82,6 +86,20 @@ export class ConsensusClient {
     signFunction?: SignFunction
   ): Promise<BroadcastResult> {
     const signer = resolveSigner(signerOrPrivateKey, publicKeyId, signFunction);
+    const given =
+      typeof signerOrPrivateKey === 'string' ? signFunction : signerOrPrivateKey.signFunction;
+    const keyAlgorithm = algorithmFromKeyType(didDocumentKeyType(didDocument, signer.publicKeyId));
+    if (keyAlgorithm !== undefined) {
+      const sdkFunction = keyAlgorithm === 'secp256k1' ? signSecp256k1 : signEd25519;
+      const otherFunction = keyAlgorithm === 'secp256k1' ? signEd25519 : signSecp256k1;
+      if (given === otherFunction) {
+        throw new ConsensusError(
+          `The key ${signer.publicKeyId} is ${keyAlgorithm}, but the signer signs with the other algorithm`,
+          'ALGORITHM_MISMATCH',
+        );
+      }
+      if (given === undefined) signer.signFunction = sdkFunction;
+    }
     const tx: RegisterDidTx = {
       didDocument,
       signature: '', // Will be filled by signing

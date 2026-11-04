@@ -118,9 +118,10 @@ package adheres to [Semantic Versioning](https://semver.org/).
   API has no REST registration route.
 - `WillowData.storeData`, `batchStore`, `updateData`, and `deleteData`, and
   `WillowClient.update` and `delete`, throw `UNSUPPORTED_OPERATION` without
-  sending anything. The API serves no data writes over REST, and the SDK
-  builds no UpdateData or DeleteData transaction; a StoreData of an existing
-  key is refused in its block. Write each new key with `client.store`.
+  sending anything. The API takes no data writes over REST (those routes
+  answer 501), and the SDK builds no UpdateData or DeleteData transaction;
+  a StoreData of an existing key is refused in its block. Write each new
+  key with `client.store`.
 - A registration's retention window goes into its BlockchainIndexing mode,
   in the chain's form; one for another mode is refused. It was sent as a
   top-level field the chain does not read.
@@ -136,6 +137,25 @@ package adheres to [Semantic Versioning](https://semver.org/).
   process share the allocator.
 - `ConsensusClient` without an `apiUrl` or an RPC URL refuses to pick a
   nonce (`API_URL_REQUIRED`); it used nonce 1.
+- **A transaction is not signed with a guessed secp256k1.** An identity set
+  without an algorithm whose key is `0x`-prefixed hex was guessed
+  secp256k1, and its transactions signed so; an Ed25519 key can share that
+  form. Transactions now throw `ALGORITHM_REQUIRED` until the algorithm is
+  given to `setIdentity` (or read by `init()`); requests still sign with
+  the guess. `WillowAuth.transactionSigner(keyAlgorithm?)` takes the
+  algorithm of the key the chain will verify with.
+- `registerDid` (`WillowClient` and `ConsensusClient`) signs with the
+  algorithm of the document's key: a guessed identity, or a signer without
+  a `signFunction`, takes it, and an identity given another algorithm (or a
+  signer whose `signFunction` is the SDK's other one) is refused
+  (`ALGORITHM_MISMATCH`).
+- `WillowData.registerSubgrove` and `WillowClient.registerSubgrove` throw
+  `IDENTITY_MISMATCH` when the request's `owner_did` is not the identity;
+  the identity was registered as owner regardless.
+- `files.upload`, `files.delete`, and `files.unregisterStorageNode` take
+  signing options as a required argument and throw `SIGNING_REQUIRED`
+  without them, sending nothing. They sent an unsigned transaction, which
+  the chain refuses.
 - A DataStorage or FileStorage registration whose subgrove id is not 1–64
   ASCII letters, digits, `-`, or `_` starting with a letter or digit
   (`INVALID_SUBGROVE_ID`), or whose schema declares indexes

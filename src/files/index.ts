@@ -64,6 +64,16 @@ export interface FileSigningOptions {
   nonce: number;
 }
 
+/** The chain refuses an unsigned transaction: refuse to send one. */
+function requireSigning(signing: FileSigningOptions | undefined, what: string): void {
+  if (!signing) {
+    throw new WillowError(
+      `${what} is a transaction the chain accepts only signed; pass signing options`,
+      'SIGNING_REQUIRED',
+    );
+  }
+}
+
 function concatBytes(chunks: Uint8Array[]): Uint8Array {
   let total = 0;
   for (const c of chunks) total += c.length;
@@ -101,9 +111,9 @@ export class FileOperations {
   /**
    * Upload a file to a FileStorage subgrove.
    *
-   * @param signing - When provided, the manifest transaction is properly signed.
-   *   Without signing options, the transaction is broadcast unsigned (requires
-   *   server-side signing or a permissive test environment).
+   * @param signing - Signs the manifest transaction. The chain refuses an
+   *   unsigned one, so without it this throws `SIGNING_REQUIRED` and sends
+   *   nothing.
    */
   async upload(
     subgroveId: string,
@@ -111,8 +121,9 @@ export class FileOperations {
     filename: string,
     data: Uint8Array,
     storageNodeEndpoint: string,
-    signing?: FileSigningOptions,
+    signing: FileSigningOptions,
   ): Promise<FileManifest> {
+    requireSigning(signing, 'A file manifest');
     const chunkSize = DEFAULT_CHUNK_SIZE;
     const chunks = chunkData(data, chunkSize);
     const chunkCount = chunks.length;
@@ -134,13 +145,14 @@ export class FileOperations {
       chunkCount,
       chunkSize,
       chunkMerkleRoot,
-      ownerDid: signing?.ownerDid ?? '',
-      publicKeyId: signing?.publicKeyId ?? '',
-      nonce: signing?.nonce ?? 0,
+      ownerDid: signing.ownerDid,
+      publicKeyId: signing.publicKeyId,
+      nonce: signing.nonce,
     };
-    manifest.signature = signing
-      ? signing.signFunction(storeFileManifestSignMessage(manifest), signing.privateKey)
-      : '';
+    manifest.signature = signing.signFunction(
+      storeFileManifestSignMessage(manifest),
+      signing.privateKey,
+    );
     const txResult = await this.submitTx(createTransactionWrapper('StoreFileManifest', manifest));
     if (!txResult.success) {
       throw new WillowError(
@@ -253,22 +265,27 @@ export class FileOperations {
 
   /**
    * Delete a file (submits DeleteFileManifestTx to consensus).
+   *
+   * @param signing - Signs the transaction. The chain refuses an unsigned
+   *   one, so without it this throws `SIGNING_REQUIRED` and sends nothing.
    */
   async delete(
     subgroveId: string,
     fileKey: string,
-    signing?: FileSigningOptions,
+    signing: FileSigningOptions,
   ): Promise<void> {
+    requireSigning(signing, 'A file delete');
     const deleteTx: DeleteFileManifestTx = {
       subgroveId,
       fileKey,
-      ownerDid: signing?.ownerDid ?? '',
-      publicKeyId: signing?.publicKeyId ?? '',
-      nonce: signing?.nonce ?? 0,
+      ownerDid: signing.ownerDid,
+      publicKeyId: signing.publicKeyId,
+      nonce: signing.nonce,
     };
-    deleteTx.signature = signing
-      ? signing.signFunction(deleteFileManifestSignMessage(deleteTx), signing.privateKey)
-      : '';
+    deleteTx.signature = signing.signFunction(
+      deleteFileManifestSignMessage(deleteTx),
+      signing.privateKey,
+    );
     const result = await this.submitTx(createTransactionWrapper('DeleteFileManifest', deleteTx));
     if (!result.success) {
       throw new WillowError(
@@ -282,20 +299,24 @@ export class FileOperations {
    * Unregister a storage node (submits UnregisterStorageNode to consensus),
    * signed over the node DID and the nonce
    * ({@link unregisterStorageNodeSignMessage}). The signing identity is the
-   * node's DID; `signing.ownerDid` is not used.
+   * node's DID; `signing.ownerDid` is not used. The chain refuses an
+   * unsigned removal, so without `signing` this throws `SIGNING_REQUIRED`
+   * and sends nothing.
    */
   async unregisterStorageNode(
     nodeDid: string,
-    signing?: FileSigningOptions,
+    signing: FileSigningOptions,
   ): Promise<void> {
+    requireSigning(signing, "A storage node's removal");
     const unregister: UnregisterStorageNodeTx = {
       nodeDid,
-      publicKeyId: signing?.publicKeyId ?? '',
-      nonce: signing?.nonce ?? 0,
+      publicKeyId: signing.publicKeyId,
+      nonce: signing.nonce,
     };
-    unregister.signature = signing
-      ? signing.signFunction(unregisterStorageNodeSignMessage(unregister), signing.privateKey)
-      : '';
+    unregister.signature = signing.signFunction(
+      unregisterStorageNodeSignMessage(unregister),
+      signing.privateKey,
+    );
     const tx = createTransactionWrapper('UnregisterStorageNode', unregister);
     const result = await this.submitTx(tx);
     if (!result.success) {

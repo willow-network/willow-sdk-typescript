@@ -147,7 +147,7 @@ await client.store('dataset-id', 'key', { field: 'value' });
 ```
 
 Each key is written by its own transaction, sent through `POST /tx/submit`;
-the API has no REST route for data writes. Up to 24 writes from one identity
+the API takes no data writes over REST (its data-write routes answer 501). Up to 24 writes from one identity
 can be in flight together, each under its own nonce (see [Nonces](#nonces)).
 Writes in flight may land in any order, so send a write that depends on
 another (one to a subgrove being registered, say) after the first has landed:
@@ -505,6 +505,11 @@ The client signs its transactions and signed requests with the identity's
 algorithm: `client.auth.transactionSigner()` gives the key, key id, and sign
 function (`signSecp256k1` or `signEd25519`) a transaction is signed with.
 `client.init()` reads the algorithm from the on-chain DID document's key type.
+Without either, the algorithm is guessed from the key's format, and an
+Ed25519 key can share the `0x`-prefixed form: the client signs requests with
+the guess but refuses to sign a transaction with a guessed secp256k1
+(`ALGORITHM_REQUIRED`). `registerDid` signs with the algorithm of the
+document's key, and refuses an identity given another (`ALGORITHM_MISMATCH`).
 
 `createDidFromWallet` and `createDidFromPublicKey` publish a secp256k1 key in its 33-byte compressed form. `signSecp256k1(message, privateKey)` and `verifySecp256k1(message, signature, publicKey)` sign and verify as the chain does: ECDSA over the Keccak-256 of the message, lower-S. `signSecp256k1` returns `0x`-prefixed hex. `verifySecp256k1` decodes a signature as the chain does, reading an unprefixed one as base64 first, so it refuses an unprefixed hex signature the chain would refuse.
 
@@ -646,7 +651,7 @@ The chain accepts a nonce in `base + 1 … base + 24` that it hasn't used, and i
 - When every nonce in the window is taken it throws `NONCE_WINDOW_FULL`; it never takes one above `base + 24`. More than 24 writes from one identity wait for earlier ones to land.
 - A write refused at CheckTx gives its nonce back, unless the refusal says the nonce is held by a pending transaction, already used, or spent. A write accepted at CheckTx holds its nonce, and one whose submission failed in transport keeps it, until it lands or 120 s pass; a nonce handed out 120 s ago that hasn't landed is free again.
 - Every client of one API URL in the process shares one allocator (`NonceAllocator.shared(apiUrl)`) unless given its own (`nonceAllocator` in `WillowConfig` or `ConsensusConfig`, or `PrivacyOperations`' last argument).
-- `files.upload`, `files.delete`, and `files.unregisterStorageNode` sign the nonce the caller passes. Take it with `client.consensus.nextNonce(did)` and report the outcome with `client.consensus.nonces.settle(did, nonce, result)`.
+- `files.upload`, `files.delete`, and `files.unregisterStorageNode` take signing options (the chain refuses an unsigned transaction, so without them they throw `SIGNING_REQUIRED`) and sign the nonce the caller passes. Take it with `client.consensus.nextNonce(did)` and report the outcome with `client.consensus.nonces.settle(did, nonce, result)`.
 
 ## Registration
 

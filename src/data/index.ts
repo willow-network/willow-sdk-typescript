@@ -45,7 +45,8 @@ import type {
  *
  * The request's `name`, `writers`, and `readers` become a `DataStorage` mode
  * (`readers` maps to the on-chain `free_readers`) unless `options.mode` is
- * given. Throws when the transaction is refused.
+ * given. Throws `IDENTITY_MISMATCH` when the request's `owner_did` is not the
+ * identity, and throws when the transaction is refused.
  */
 export async function registerSubgroveRequest(
   consensus: Pick<ConsensusClient, "registerSubgrove">,
@@ -54,6 +55,13 @@ export async function registerSubgroveRequest(
   options?: RegisterSubgroveOptions,
 ): Promise<BroadcastResult> {
   const signer = auth.transactionSigner();
+  if (request.owner_did && request.owner_did !== auth.getDid()) {
+    throw new WillowError(
+      `The request's owner (${request.owner_did}) is not the identity (${auth.getDid()}), ` +
+        "which owns the subgrove it registers; set the owner's identity first.",
+      "IDENTITY_MISMATCH",
+    );
+  }
   const mode: SubgroveMode =
     options?.mode ?? {
       DataStorage: {
@@ -78,13 +86,13 @@ export async function registerSubgroveRequest(
 }
 
 /**
- * The API serves no data writes: each is a transaction sent through
- * `POST /tx/submit`.
+ * The API takes no data writes over REST (its data-write routes answer 501):
+ * each is a transaction sent through `POST /tx/submit`.
  */
 function noDataWriteRoute(what: string, instead: string): WillowError {
   return new WillowError(
-    `The API serves no ${what} route; data is written by transactions sent through ` +
-      `POST /tx/submit. ${instead}`,
+    `The API does not take data writes over REST (its ${what} route answers 501); data is ` +
+      `written by transactions sent through POST /tx/submit. ${instead}`,
     "UNSUPPORTED_OPERATION",
   );
 }
@@ -286,7 +294,7 @@ export class WillowData {
   }
 
   /**
-   * The API serves no `POST /data/:subgrove`: data is written by a StoreData
+   * The API's `POST /data/:subgrove` answers 501: data is written by a StoreData
    * transaction per key. Use `WillowClient.store(subgroveId, key, value)` (or
    * `ConsensusClient.storeData`) for each key.
    *
@@ -417,7 +425,7 @@ export class WillowData {
   }
 
   /**
-   * The API serves no `PUT /data/:subgrove/:key`: an existing key is changed
+   * The API's `PUT /data/:subgrove/:key` answers 501: an existing key is changed
    * by an UpdateData transaction, which this SDK does not build.
    *
    * @deprecated Always throws `UNSUPPORTED_OPERATION`.
@@ -435,7 +443,7 @@ export class WillowData {
   }
 
   /**
-   * The API serves no `DELETE /data/:subgrove/:key`: a key is deleted by a
+   * The API's `DELETE /data/:subgrove/:key` answers 501: a key is deleted by a
    * DeleteData transaction, which this SDK does not build.
    *
    * @deprecated Always throws `UNSUPPORTED_OPERATION`.

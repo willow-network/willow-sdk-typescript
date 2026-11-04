@@ -85,6 +85,11 @@ export function algorithmFromKeyType(
   return undefined;
 }
 
+/** The SDK's sign function for an algorithm. */
+function signFunctionFor(algorithm: SignatureAlgorithm): SignFunction {
+  return algorithm === 'secp256k1' ? signSecp256k1 : signEd25519;
+}
+
 /**
  * Sign a message with Ed25519
  */
@@ -339,6 +344,8 @@ export class WillowAuth {
   private privateKey?: string;
   private publicKeyId?: string;
   private algorithm?: SignatureAlgorithm;
+  /** Whether `algorithm` was given, not guessed by {@link detectAlgorithm}. */
+  private algorithmGiven = false;
   private apiKey?: string;
 
   constructor(apiUrl: string, apiKey?: string) {
@@ -369,16 +376,18 @@ export class WillowAuth {
   }
 
   /**
-   * Set identity for per-request signing.
+   * Set the identity that signs requests and transactions.
    * Call this once; all subsequent requests will be signed automatically.
    *
-   * @param algorithm - Signature algorithm for per-request auth. Pass this
-   *   explicitly for secp256k1 (Ethereum/wallet) identities: self-certifying
-   *   Willow DIDs no longer encode the algorithm in the id, so it cannot be
-   *   parsed from `did`. When omitted, falls back to best-effort
-   *   {@link detectAlgorithm} (Ed25519 for a typical Willow DID), preserving
-   *   backward-compatible behavior. `WillowClient.init()` supplies this
-   *   automatically from the on-chain DID document's key type.
+   * @param algorithm - The identity's signature algorithm, for its requests
+   *   and its transactions. Pass it for a secp256k1 (Ethereum/wallet)
+   *   identity: self-certifying Willow DIDs don't encode the algorithm, and
+   *   a `0x`-prefixed 64-hex key may be either kind. When omitted, it is
+   *   guessed by {@link detectAlgorithm} (Ed25519 for a typical Willow DID);
+   *   requests are signed with the guess, but a transaction is not signed
+   *   with a guessed secp256k1 (`ALGORITHM_REQUIRED`).
+   *   `WillowClient.init()` supplies it from the on-chain DID document's key
+   *   type.
    */
   setIdentity(
     did: string,
@@ -390,6 +399,7 @@ export class WillowAuth {
     this.privateKey = privateKey;
     this.publicKeyId = publicKeyId;
     this.algorithm = algorithm ?? detectAlgorithm(did, privateKey);
+    this.algorithmGiven = algorithm !== undefined;
   }
 
   /**
@@ -428,20 +438,53 @@ export class WillowAuth {
   /**
    * The function that signs a transaction's message with the identity's key:
    * {@link signSecp256k1} for a secp256k1 identity, else {@link signEd25519}.
+   *
+   * @throws WillowError `ALGORITHM_REQUIRED` if the identity's algorithm is
+   *   a secp256k1 guessed from its key's format: pass the algorithm to
+   *   {@link setIdentity} (or call `WillowClient.init()`).
    */
   getSignFunction(): SignFunction {
-    return this.algorithm === 'secp256k1' ? signSecp256k1 : signEd25519;
+    return signFunctionFor(this.transactionAlgorithm());
   }
 
   /**
    * The identity as a transaction {@link Signer}: its key, its key id, and
    * the sign function of its algorithm.
    *
-   * @throws WillowError `NO_IDENTITY` if no identity is set.
+   * @param keyAlgorithm - The algorithm of the key the chain will verify the
+   *   signature with, when the caller knows it (the key of a DID document
+   *   being registered). An identity whose algorithm was guessed signs with
+   *   it; one whose algorithm was given must match it.
+   * @throws WillowError `NO_IDENTITY` if no identity is set,
+   *   `ALGORITHM_MISMATCH` if `keyAlgorithm` is not the algorithm given to
+   *   {@link setIdentity}, or `ALGORITHM_REQUIRED` (see
+   *   {@link getSignFunction}).
    */
-  transactionSigner(): Required<Signer> {
+  transactionSigner(keyAlgorithm?: SignatureAlgorithm): Required<Signer> {
     const { privateKey, publicKeyId } = this.requireIdentity();
+    if (keyAlgorithm !== undefined) {
+      if (this.algorithmGiven && this.algorithm !== keyAlgorithm) {
+        throw new WillowError(
+          `The identity signs with ${this.algorithm}, but its key ${publicKeyId} is ${keyAlgorithm}`,
+          'ALGORITHM_MISMATCH',
+        );
+      }
+      return { privateKey, publicKeyId, signFunction: signFunctionFor(keyAlgorithm) };
+    }
     return { privateKey, publicKeyId, signFunction: this.getSignFunction() };
+  }
+
+  /** The identity's algorithm for a transaction: never a guessed secp256k1. */
+  private transactionAlgorithm(): SignatureAlgorithm {
+    if (this.algorithm === 'secp256k1' && !this.algorithmGiven) {
+      throw new WillowError(
+        "The identity's algorithm was guessed from its key's format, which an Ed25519 key " +
+          "can share; pass 'secp256k1' or 'Ed25519' to setIdentity (or call " +
+          'WillowClient.init()) before signing a transaction',
+        'ALGORITHM_REQUIRED',
+      );
+    }
+    return this.algorithm ?? 'Ed25519';
   }
 
   /**
