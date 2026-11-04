@@ -76,8 +76,11 @@ package adheres to [Semantic Versioning](https://semver.org/).
   `FileNonceSource` and `FileSigningOptions` types.
 - `verifyQuerySelection(subgroveId, query, response, options?)`, which
   verifies a `POST /query/:subgrove` response as the query's whole result;
-  `QueryNotVerifiableError` (code `QUERY_NOT_VERIFIABLE`),
-  `DEFAULT_QUERY_LIMIT`, and the `QuerySelectionOptions` type.
+  `QueryNotVerifiableError` (code `QUERY_NOT_VERIFIABLE`) for a query whose
+  selection can't be reproduced, `QueryResultNotVerifiableError` (code
+  `QUERY_RESULT_NOT_VERIFIABLE`, with `rootHash`) for data whose selection
+  can't be reproduced, `DEFAULT_QUERY_LIMIT`, and the
+  `QuerySelectionOptions` type.
 - `grovedb.verifyCompleteLayer(proofBytes, path)`, which verifies a proof
   that reveals the whole subtree at a path and returns its every entry; the
   `CompleteEntry` and `CompleteLayer` types.
@@ -85,8 +88,11 @@ package adheres to [Semantic Versioning](https://semver.org/).
   a verified value with the root and block height it was verified against.
   `QueryResponse.verifiedHeight`.
 - `lightClient.maxProofLagBlocks` (`WillowLightClientOptions`), default 20,
-  and `LightClient.getLatestChainHeight()`.
-- `BroadcastResult.pending` and `ConsensusClient.isNonceUsed(did, nonce)`.
+  and `LightClient.getLatestChainHeight()`, the highest height a majority of
+  the endpoints that answer (and at least `minValidatorsForConsensus`) have
+  reached.
+- `BroadcastResult.pending`, `BroadcastResult.submission`, and
+  `ConsensusClient.isNonceUsed(did, nonce)`.
 - The `UNSUPPORTED` code of `VerifiableRpcError`.
 
 ### Changed
@@ -240,8 +246,15 @@ package adheres to [Semantic Versioning](https://semver.org/).
   already exists in cache") returns `{ success: false, pending: true }`,
   without a `txHash`, and its nonce stays held. CometBFT caches a
   transaction before CheckTx runs and drops it if CheckTx refuses it, so
-  the answer does not mean the transaction was accepted; confirm it with
-  `ConsensusClient.isNonceUsed`.
+  the answer does not mean the transaction was accepted.
+- A `ConsensusClient` write's result that is not `success` (pending, or
+  refused at CheckTx) carries `submission` (its `did`, `nonce`, and signed
+  body), and `client.store`, `client.registerDid`,
+  `client.registerSubgrove`, and `client.data.registerSubgrove` throw it as
+  a `TransactionSubmitError` (`TX_SUBMIT_FAILED`) with `result`, where they
+  threw an `Error` with the message alone. `isNonceUsed` says whether a
+  transaction with the nonce has been included in a block, not whether the
+  write applied: a refusal in the block spends the nonce too.
 - **`client.query` and `data.query` verify the query's whole result.** The
   proof must reveal every entry of the subgrove's data tree (no `Hash`,
   `KVHash`, or `KVDigest` node, and no subtree without its lower layer),
@@ -252,14 +265,18 @@ package adheres to [Semantic Versioning](https://semver.org/).
   order. They were only checked to be values the proof proves, so a proof
   revealing part of the tree, or a subset, duplicate, or filtered-out
   document, verified, and `total` and `offset` were not checked. A query
-  whose selection the SDK can't reproduce throws `QUERY_NOT_VERIFIABLE`,
-  before anything is sent when the query is the reason: a filter on more
-  than one field (the API applies one), a filter operator (it applies
-  none), `search`, a sort over values that are not all numbers or all
-  strings, or a document the API's JSON reader may read differently. The
-  verified result carries `documents`, `total`, `offset`, `limit`, `proof`,
-  `verifiedRootHash`, and `verifiedHeight`, and none of the API's other
-  fields.
+  whose selection the SDK can't reproduce throws `QUERY_NOT_VERIFIABLE`
+  before anything is sent: a filter on more than one field (the API applies
+  one), a filter operator (it applies none), or `search`. The proof's
+  completeness and its root are checked before the selection is run, and
+  data at the verified root whose selection can't be reproduced (a sort over
+  values that are not all numbers or all strings, or an object whose first
+  key is `serde_json`'s private number or raw-value token) throws
+  `QUERY_RESULT_NOT_VERIFIABLE`. The selection is the one in the body as
+  sent. A document holding a decimal of more than 15 significant digits
+  does not verify, in queries and in `get`. The verified result carries
+  `documents`, `total`, `offset`, `limit`, `proof`, `verifiedRootHash`, and
+  `verifiedHeight`, and none of the API's other fields.
 - **A verified read's proof height must be near the chain's.** `get`,
   `getData`, `getMultiple`, and `query` refuse a proof whose block height is
   more than `lightClient.maxProofLagBlocks` from the chain's latest height

@@ -125,7 +125,7 @@ const client = new WillowClient({
 - `get` returns a key's value only when the proof proves that value at the key in the subgrove's data.
 - `query` returns a result only when it is the query's whole result: the proof reveals the subgrove's entire data tree, and the documents and `total` are exactly what the API's query selects from it, in its order (see [Query Data](#query-data)).
 - The API chooses the block height it proves at, so a proof more than `lightClient.maxProofLagBlocks` blocks (default 20) from the chain's latest height is refused (`PROOF_HEIGHT_OUT_OF_RANGE`), as is a proof that names no height.
-- The light client reads roots and the latest height from its configured endpoints and trusts them (see [Light Client](#light-client-experimental)).
+- The light client reads roots and the latest height from its configured endpoints and trusts them; the latest height is the one a majority of the endpoints that answer have reached (see [Light Client](#light-client-experimental)).
 
 ```typescript
 // These operations automatically verify proofs:
@@ -207,17 +207,27 @@ field equals the given value (one field, matched exactly; a dotted name such
 as `meta.kind` reaches into objects), sorted by the `sort` field (stably,
 numbers by value and strings by code point), then `offset` and `limit`
 (default 100) applied; `total` counts the documents selected before `offset`
-and `limit`. `client.query` runs that selection over the proven data tree and
-returns the result only when the API's `documents` and `total` are exactly
-it. Numbers match as JSON text: `1` and `1.0` are different values.
+and `limit`. `client.query` checks that the proof reveals the whole data
+tree at the light client's root, then runs that selection over it and returns
+the result only when the API's `documents` and `total` are exactly it. The
+selection is the one in the body as sent, so changing the query object while
+the request is in flight does not change what its result is checked against.
+Numbers match as JSON text: `1` and `1.0` are different values. A document
+holding a number JavaScript can't carry exactly (an integer beyond
+2^53 − 1, or a decimal of more than 15 significant digits, which
+`JSON.parse` rounds) does not verify; store such values as strings.
 
-A query the API does not apply as asked, or whose selection the SDK can't
-reproduce, throws `QUERY_NOT_VERIFIABLE`, before anything is sent when the
-query itself is the reason: a filter on more than one field (the API applies
-only one), a filter operator such as `$gte` or `$in` (the API applies none),
-`search`, or a sort over values that are not all numbers or all strings (the
-API's order is then not determined). Read those with `queryUnverified`, or
-query on one exact field and filter the verified documents further yourself.
+A query the API does not apply as asked throws `QUERY_NOT_VERIFIABLE` before
+anything is sent: a filter on more than one field (the API applies only one),
+a filter operator such as `$gte` or `$in` (the API applies none), or
+`search`. Read those with `queryUnverified`, or query on one exact field and
+filter the verified documents further yourself. Data at the verified root
+whose selection the SDK can't reproduce throws `QUERY_RESULT_NOT_VERIFIABLE`
+(a `QueryResultNotVerifiableError` carrying `rootHash`): a sort over values
+that are not all numbers or all strings (the API's order is then not
+determined), or a document holding an object whose first key is
+`serde_json`'s private number or raw-value token, which the API reads as
+something other than an object.
 
 ### Update and Delete
 
@@ -317,8 +327,12 @@ What each function binds:
   `POST /query/:subgrove` result as the query's whole result (what
   `client.query` does): the proof must reveal the subgrove's entire data
   tree, and `response.documents` and `total` must be exactly what the API's
-  query selects from it, in order. It throws `QUERY_NOT_VERIFIABLE` for a
-  query or data whose selection it can't reproduce.
+  query selects from it, in order. The proof's completeness and its root
+  (`options.expectedRootHash`, when given) are checked before the selection
+  is run. It throws `QUERY_NOT_VERIFIABLE` for a query whose selection it
+  can't reproduce, and `QUERY_RESULT_NOT_VERIFIABLE` for data whose
+  selection it can't reproduce, with the root of that data as `rootHash`
+  (checked only against `expectedRootHash`).
 - `verifyQueryProof`, `verifyQueryResponse`, and `GroveDBProofVerifier`
   check membership only: every document you pass in must deep-equal a value
   the proof commits to, so a server cannot pair a valid proof with unrelated
@@ -527,7 +541,7 @@ await lightClient.syncToLatest();
 // commits the state after H (membership of proof.queryResult only)
 const result = await lightClient.verifyQueryProof(proof);
 
-// The chain's latest height, as enough of the endpoints report it
+// The chain's latest height, as a majority of the endpoints report it
 const latest = await lightClient.getLatestChainHeight();
 
 // Get verified headers
@@ -732,7 +746,8 @@ The chain accepts a nonce in `base + 1 … base + 24` that it hasn't used, and i
 - Every client of one API URL in the process shares one allocator (`NonceAllocator.shared(apiUrl)`) unless given its own (`nonceAllocator` in `WillowConfig` or `ConsensusConfig`, or `PrivacyOperations`' last argument).
 - `files.upload`, `files.delete`, and `files.unregisterStorageNode` take signing options (the chain refuses an unsigned transaction, so without them they throw `SIGNING_REQUIRED`). Leave `signing.nonce` out and the write takes its nonce from `client.consensus`, as every other write does; or pass one taken with `client.consensus.nextNonce(did)`. Either way the outcome is settled with the allocator: an accepted write holds its nonce, a refused one gives it back unless the refusal says it is held, used, or spent. A `FileOperations` made without a nonce source needs `signing.nonce` (`NONCE_REQUIRED`).
 - Each send attempt renews the nonce's hold, so no other write takes it while the write is in flight, however long its retries run.
-- A write that was sent and didn't go through throws a `TransactionSubmitError` (`TX_SUBMIT_FAILED`, or `BROADCAST_FAILED` from `PrivacyOperations`) carrying `did`, `nonce`, the signed body (`transaction`), and, for a refusal at CheckTx, the chain's answer (`result`). To retry a write that never landed under its own nonce, post the same signed body again with `client.consensus.resubmit(error)`: whichever attempt lands first spends the nonce. A repeat of a transaction the mempool already holds (CometBFT's "tx already exists in cache") returns `{ success: false, pending: true }` without a `txHash`: CometBFT caches a transaction before CheckTx runs and drops it if CheckTx refuses it, so the outcome is unknown. Its nonce stays held; confirm it with `client.consensus.isNonceUsed(did, nonce)`.
+- A write that was sent and didn't go through throws a `TransactionSubmitError` (`TX_SUBMIT_FAILED`, or `BROADCAST_FAILED` from `PrivacyOperations`) carrying `did`, `nonce`, the signed body (`transaction`), and, for a refusal at CheckTx, the chain's answer (`result`). To retry a write that never landed under its own nonce, post the same signed body again with `client.consensus.resubmit(error)`: whichever attempt lands first spends the nonce. A repeat of a transaction the mempool already holds (CometBFT's "tx already exists in cache") returns `{ success: false, pending: true }` without a `txHash`: CometBFT caches a transaction before CheckTx runs and drops it if CheckTx refuses it, so the outcome is unknown. Its nonce stays held.
+- A `ConsensusClient` result that is not `success` (pending, or refused at CheckTx) carries `submission`: its `did`, `nonce`, and signed body. `client.store`, `client.registerDid`, `client.registerSubgrove`, and `client.data.registerSubgrove` throw such a result as a `TransactionSubmitError` (`TX_SUBMIT_FAILED`) with the same fields and `result`. `client.consensus.isNonceUsed(did, nonce)` says whether a transaction with the nonce has been included in a block, not whether the write applied: a transaction refused in its block spends its nonce too, so read the state the write changes to confirm it. While the nonce is unused, `client.consensus.resubmit(error)` posts the same signed body again.
 
 ## Registration
 
@@ -859,7 +874,7 @@ try {
 | `getUnverified(datasetId, key)` | Get data without verification |
 | `update(datasetId, key, value)` | Throws `UNSUPPORTED_OPERATION` (see [Update and Delete](#update-and-delete)) |
 | `delete(datasetId, key)` | Throws `UNSUPPORTED_OPERATION` |
-| `query(datasetId, query)` | Query, verified as the query's whole result (`QUERY_NOT_VERIFIABLE` when it can't be) |
+| `query(datasetId, query)` | Query, verified as the query's whole result (`QUERY_NOT_VERIFIABLE` or `QUERY_RESULT_NOT_VERIFIABLE` when it can't be) |
 | `queryUnverified(datasetId, query)` | Query without verification |
 | `sqlQuery(subgroveId, sql, options?)` | SQL query routed to indexer or validator |
 | `graphqlQuery(subgroveId, query, options?)` | GraphQL query routed to indexer or validator |
