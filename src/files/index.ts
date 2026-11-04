@@ -52,7 +52,11 @@ export interface FileSigningOptions {
   privateKey: string;
   publicKeyId: string;
   signFunction: (message: string, privateKey: string) => string;
-  /** The nonce the transaction carries. The signature covers it. */
+  /**
+   * The nonce the transaction carries. The signature covers it. A write the
+   * chain refuses in its block after its signature and nonce verify still
+   * spends it; to retry, sign again under the next free nonce.
+   */
   nonce: number;
 }
 

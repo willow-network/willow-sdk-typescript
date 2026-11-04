@@ -535,7 +535,7 @@ const headers = client.auth.signRequestWithNonce('POST', '/query/my-subgrove', b
 
 ### Data and file write signing
 
-A data write (`client.store`, `consensus.storeData`), a file manifest (`files.upload`, `consensus.storeFileManifest`), and a file delete (`files.delete`, `consensus.deleteFileManifest`) are transactions signed over labelled lines that bind the nonce and every field the transaction writes. Lines are joined by `\n` with no trailing newline:
+A data write (`client.store`, `consensus.storeData`), a file manifest (`files.upload`, `consensus.storeFileManifest`), and a file delete (`files.delete`, `consensus.deleteFileManifest`) are transactions signed over labelled lines that bind the nonce and every field the transaction writes. The message is UTF-8, its lines joined by `\n` (the byte 0x0A) with no trailing newline:
 
 ```
 StoreData
@@ -570,10 +570,12 @@ Owner: <owner DID>
 Nonce: <nonce>
 ```
 
+- Text fields go in verbatim, with no escaping or normalization; non-ASCII text is its UTF-8 bytes.
 - The data bytes are the UTF-8 of the JSON text the transaction carries (`JSON.stringify(value)` for `storeData`).
-- Numbers are unsigned decimal. Hex is lowercase without `0x`.
-- The nonce is the one the transaction carries, so the message is built after the nonce is chosen.
-- The SDK refuses to sign when the subgrove id, key, owner DID, filename, or content type holds a line break.
+- Numbers are unsigned decimal. The chain's nonces and sizes are u64, and a JavaScript number is exact only up to 2^53 − 1 (`Number.MAX_SAFE_INTEGER`), so the SDK refuses a larger, negative, or fractional value rather than round it.
+- Hex is lowercase without `0x`.
+- The nonce is the one the transaction carries, so the message is built after the nonce is chosen. A write the chain refuses in its block after its signature and nonce verify (data not found, no permission, fee not collected, …) still spends the nonce; to retry, sign again under the next free nonce. A transaction refused for its signature or nonce spends nothing.
+- The SDK refuses to sign when the subgrove id, key, owner DID, filename, or content type holds a `\n` (0x0A). A CR or U+2028 holds no 0x0A and is signed as it is.
 
 `storeDataSignMessage(tx)`, `storeFileManifestSignMessage(tx)`, and `deleteFileManifestSignMessage(tx)` return the exact message for a transaction.
 

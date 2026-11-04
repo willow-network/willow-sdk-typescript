@@ -98,6 +98,7 @@ function deleteFileTx(i: Record<string, any>): DeleteFileManifestTx {
 /** The vectors for the kinds this SDK sends, with its builder for each. */
 const SENT: Record<string, (i: Record<string, any>) => string> = {
   StoreData: (i) => storeDataSignMessage(dataStoreTx(i)),
+  'StoreData (non-ASCII, large nonce)': (i) => storeDataSignMessage(dataStoreTx(i)),
   StoreFileManifest: (i) => storeFileManifestSignMessage(manifestTx(i)),
   DeleteFileManifest: (i) => deleteFileManifestSignMessage(deleteFileTx(i)),
 };
@@ -194,17 +195,31 @@ describe('signed data and file write messages: refusals', () => {
     },
   );
 
+  it('refuses the byte 0x0A only: CR, CRLF, and U+2028 are checked as the chain checks them', () => {
+    // CRLF holds 0x0A, so it is refused.
+    refusesLineBreak(() => storeDataSignMessage({ ...store, key: 'a\r\nb' }));
+    // A lone CR and U+2028 hold no 0x0A byte; the chain signs them verbatim.
+    expect(storeDataSignMessage({ ...store, key: 'a\rb' })).toContain('\nKey: a\rb\n');
+    expect(storeDataSignMessage({ ...store, key: 'a b' })).toContain('\nKey: a b\n');
+  });
+
   it('signs a line break inside the data, which is hashed', () => {
     const msg = storeDataSignMessage({ ...store, data: '"a\\nb\nc"' });
     expect(msg.split('\n')).toHaveLength(6);
   });
 
-  it('refuses a missing or non-integer nonce', () => {
-    for (const nonce of [undefined, -1, 1.5, Number.NaN, 2 ** 53]) {
+  it('refuses a missing, non-integer, or unsafe nonce rather than round it', () => {
+    for (const nonce of [undefined, -1, 1.5, Number.NaN, Infinity, 2 ** 53, 2 ** 53 + 2, 2 ** 64]) {
       expect(() => storeDataSignMessage({ ...store, nonce })).toThrow(WillowError);
       expect(() => storeFileManifestSignMessage({ ...manifest, nonce })).toThrow(WillowError);
       expect(() => deleteFileManifestSignMessage({ ...del, nonce })).toThrow(WillowError);
     }
+  });
+
+  it('writes the largest safe nonce exactly', () => {
+    expect(storeDataSignMessage({ ...store, nonce: Number.MAX_SAFE_INTEGER })).toMatch(
+      /\nNonce: 9007199254740991$/,
+    );
   });
 
   it('writes the 32-byte digests as lowercase hex, however they are given', () => {
@@ -228,8 +243,11 @@ describe('signed data and file write messages: refusals', () => {
     }
   });
 
-  it('refuses a size or chunk count that is not a non-negative integer', () => {
+  it('refuses a size or chunk count that is not a non-negative safe integer', () => {
     expect(() => storeFileManifestSignMessage({ ...manifest, totalSize: -1 })).toThrow(WillowError);
+    expect(() => storeFileManifestSignMessage({ ...manifest, totalSize: 2 ** 53 })).toThrow(
+      WillowError,
+    );
     expect(() => storeFileManifestSignMessage({ ...manifest, chunkCount: 1.5 })).toThrow(
       WillowError,
     );
@@ -375,6 +393,25 @@ describe('signed writes in flight', () => {
     expect(
       verifySecp256k1(wireMessage('StoreData', w), `0x${wireSignatureHex(w)}`, SECP_PUB),
     ).toBe(true);
+  });
+
+  it('storeData signs non-ASCII text verbatim at a nonce above 2^32 (the known answer)', async () => {
+    const v = vector('StoreData (non-ASCII, large nonce)');
+    const { submitted } = stubFetch(v.inputs.nonce - 1);
+    await client().storeData(
+      v.inputs.subgrove_id,
+      v.inputs.key,
+      JSON.parse(v.inputs.data_utf8),
+      v.inputs.owner_did,
+      ed,
+    );
+
+    const w = submitted[0].StoreData;
+    expect(w.nonce).toBe(4294967297);
+    expect(w.key).toBe('naïve-ключ');
+    expect(new TextDecoder().decode(Uint8Array.from(w.data))).toBe(v.inputs.data_utf8);
+    expect(wireMessage('StoreData', w)).toBe(v.message);
+    expect(wireSignatureHex(w)).toBe(v.ed25519_signature_hex);
   });
 
   it('storeData hashes non-ASCII data as the UTF-8 bytes it sends', async () => {

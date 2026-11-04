@@ -608,8 +608,10 @@ function schemaHash(schema: string): string {
 }
 
 /**
- * A `Label: value` line of a signed message. The chain refuses a text field
- * holding a line break, so the SDK refuses to sign one.
+ * A `Label: value` line of a signed message. The value goes in verbatim, with
+ * no escaping or normalization. The chain refuses a text field holding a line
+ * feed (the byte 0x0A), so the SDK refuses to sign one. In a JS string only
+ * U+000A encodes to that byte, so a CR or U+2028 is signed as it is.
  */
 function textLine(label: string, value: string): string {
   if (typeof value !== 'string') {
@@ -624,11 +626,15 @@ function textLine(label: string, value: string): string {
   return `${label}: ${value}`;
 }
 
-/** A `Label: n` line: unsigned decimal, no leading zeros. */
+/**
+ * A `Label: n` line: unsigned decimal, no leading zeros. The chain's numbers
+ * are u64 and a JS number is exact only up to 2^53 - 1, so a larger, negative,
+ * or fractional value is refused rather than rounded.
+ */
 function uintLine(label: string, value: number | undefined): string {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw new WillowError(
-      `${label} must be a non-negative integer, got ${String(value)}`,
+      `${label} must be a non-negative safe integer, got ${String(value)}`,
       'INVALID_SIGNED_FIELD',
     );
   }
@@ -651,10 +657,12 @@ function uintLine(label: string, value: number | undefined): string {
  * Lines are joined by `\n` with no trailing newline. The data bytes are
  * `tx.data` as UTF-8, exactly as {@link createTransactionWrapper} sends them.
  * Set the nonce before building the message: the chain checks the signature
- * against the nonce the transaction carries.
+ * against the nonce the transaction carries. A write the chain refuses in its
+ * block after its signature and nonce verify still spends that nonce; to
+ * retry, sign again under the next free nonce.
  *
- * @throws WillowError if `subgroveId`, `key`, or `ownerDid` holds a line
- *   break, or the nonce is not a non-negative integer.
+ * @throws WillowError if `subgroveId`, `key`, or `ownerDid` holds a `\n`, or
+ *   the nonce is not a non-negative safe integer.
  */
 export function storeDataSignMessage(tx: DataStoreTx): string {
   return [
@@ -691,8 +699,8 @@ export function storeDataSignMessage(tx: DataStoreTx): string {
  * `encryption`, so the line is `none`.
  *
  * @throws WillowError if `subgroveId`, `fileKey`, `ownerDid`, `filename`, or
- *   `contentType` holds a line break, a digest is not 32 bytes of hex, or a
- *   number is not a non-negative integer.
+ *   `contentType` holds a `\n`, a digest is not 32 bytes of hex, or a number
+ *   is not a non-negative safe integer.
  */
 export function storeFileManifestSignMessage(tx: StoreFileManifestTx): string {
   return [
@@ -725,8 +733,8 @@ export function storeFileManifestSignMessage(tx: StoreFileManifestTx): string {
  *
  * Lines are joined by `\n` with no trailing newline.
  *
- * @throws WillowError if `subgroveId`, `fileKey`, or `ownerDid` holds a line
- *   break, or the nonce is not a non-negative integer.
+ * @throws WillowError if `subgroveId`, `fileKey`, or `ownerDid` holds a `\n`,
+ *   or the nonce is not a non-negative safe integer.
  */
 export function deleteFileManifestSignMessage(tx: DeleteFileManifestTx): string {
   return [

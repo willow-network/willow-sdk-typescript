@@ -55,7 +55,11 @@ package adheres to [Semantic Versioning](https://semver.org/).
   every manifest field (StoreFileManifest), and the nonce. They were signed
   over `{subgrove}:{key}:{data}`, `store_file:…`, and `delete_file:…`. The
   SDK refuses to sign one whose subgrove id, key, owner DID, filename, or
-  content type holds a line break.
+  content type holds a `\n` (0x0A), or whose nonce, size, or count is not a
+  non-negative safe integer (it refuses such a number rather than round it).
+  A write the chain refuses in its block after its signature and nonce
+  verify still spends its nonce; a retry signs again under the next free
+  nonce.
 - A file manifest's `contentHash` and `chunkMerkleRoot` must be 32 bytes of
   hex; any other length throws `INVALID_DIGEST` before the transaction is
   sent.
