@@ -7,6 +7,7 @@
 import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, RegisterDidTx, RegisterSubgroveTx, RegisterSubgroveOptions, SubgroveMode, RetentionWindow, Signer, SignFunction, StoreFileManifestFields, TransferTx, DataStoreTx, StoreFileManifestTx, DeleteFileManifestTx, DeregisterSubgroveTx, SubmitAnchorTx, Transaction, createTransactionWrapper, createSignMessage } from './types';
 import { canonicalizeAnchorBody, computeAnchorMerkleRoot, sha256Hex } from './anchor-canonical';
 import { submitTxToApi } from '../internal/tx';
+import { NonceAllocator, AccountNonceState, NONCE_WINDOW, parseAccountNonceStateBase64 } from './nonces';
 import { signEd25519 } from '../auth';
 import { WillowLogger, silentLogger } from '../internal/logger';
 
@@ -42,8 +43,9 @@ function resolveSigner(
  */
 export class ConsensusClient {
   private config: ConsensusConfig;
-  private nonceCache: Map<string, number> = new Map();
   private logger: WillowLogger;
+  /** Hands out this client's transaction nonces, per DID. */
+  readonly nonces: NonceAllocator;
 
   constructor(config: ConsensusConfig) {
     this.config = {
@@ -53,6 +55,7 @@ export class ConsensusClient {
       retryDelaySecs: config.retryDelaySecs ?? 1,
     };
     this.logger = config.logger ?? silentLogger;
+    this.nonces = config.nonceAllocator ?? NonceAllocator.shared(config.apiUrl ?? '');
   }
 
   /**
@@ -87,7 +90,11 @@ export class ConsensusClient {
       nonce: 1,
     };
 
-    return this.signAndBroadcast('RegisterDid', tx, signer.privateKey, signer.signFunction);
+    const result = await this.signAndBroadcast('RegisterDid', tx, signer.privateKey, signer.signFunction);
+    // Nonce 1 is the new DID's while the registration is pending.
+    const did = typeof didDocument?.id === 'string' ? didDocument.id : undefined;
+    if (did && result.success) this.nonces.hold(did, 1);
+    return result;
   }
 
   /**
@@ -133,7 +140,7 @@ export class ConsensusClient {
       ? { mode, retentionWindow, initialFunding }
       : (publicKeyIdOrOptions as RegisterSubgroveOptions | undefined) ?? {};
 
-    const tx: RegisterSubgroveTx = {
+    return this.submitWithNonce(ownerDid, 'RegisterSubgrove', signer, (nonce): RegisterSubgroveTx => ({
       subgroveId,
       name: options.name,
       schema,
@@ -143,10 +150,8 @@ export class ConsensusClient {
       initialFunding: options.initialFunding,
       signature: '',
       publicKeyId: signer.publicKeyId,
-      nonce: await this.getNextNonce(ownerDid)
-    };
-
-    return this.signAndBroadcast('RegisterSubgrove', tx, signer.privateKey, signer.signFunction);
+      nonce,
+    }));
   }
 
   /**
@@ -186,17 +191,15 @@ export class ConsensusClient {
     );
     const txMemo = positional ? memo : publicKeyIdOrMemo;
 
-    const tx: TransferTx = {
+    return this.submitWithNonce(fromDid, 'Transfer', signer, (nonce): TransferTx => ({
       fromDid,
       toDid,
       amount,
       memo: txMemo,
       signature: '',
       publicKeyId: signer.publicKeyId,
-      nonce: await this.getNextNonce(fromDid)
-    };
-
-    return this.signAndBroadcast('Transfer', tx, signer.privateKey, signer.signFunction);
+      nonce,
+    }));
   }
 
   /**
@@ -229,17 +232,15 @@ export class ConsensusClient {
     signFunction?: SignFunction
   ): Promise<BroadcastResult> {
     const signer = resolveSigner(signerOrPrivateKey, publicKeyId, signFunction);
-    const tx: DataStoreTx = {
+    return this.submitWithNonce(ownerDid, 'DataStore', signer, (nonce): DataStoreTx => ({
       subgroveId,
       key,
       data: JSON.stringify(data),
       ownerDid,
       signature: '',
       publicKeyId: signer.publicKeyId,
-      nonce: await this.getNextNonce(ownerDid)
-    };
-
-    return this.signAndBroadcast('DataStore', tx, signer.privateKey, signer.signFunction);
+      nonce,
+    }));
   }
 
   /**
@@ -301,14 +302,12 @@ export class ConsensusClient {
       signer = resolveSigner(signerOrFileKey as Signer);
     }
 
-    const tx: StoreFileManifestTx = {
+    return this.submitWithNonce(fields.ownerDid, 'StoreFileManifest', signer, (nonce): StoreFileManifestTx => ({
       ...fields,
       signature: '',
       publicKeyId: signer.publicKeyId,
-      nonce: await this.getNextNonce(fields.ownerDid)
-    };
-
-    return this.signAndBroadcast('StoreFileManifest', tx, signer.privateKey, signer.signFunction);
+      nonce,
+    }));
   }
 
   /**
@@ -338,16 +337,14 @@ export class ConsensusClient {
     signFunction?: SignFunction
   ): Promise<BroadcastResult> {
     const signer = resolveSigner(signerOrPrivateKey, publicKeyId, signFunction);
-    const tx: DeleteFileManifestTx = {
+    return this.submitWithNonce(ownerDid, 'DeleteFileManifest', signer, (nonce): DeleteFileManifestTx => ({
       subgroveId,
       fileKey,
       ownerDid,
       signature: '',
       publicKeyId: signer.publicKeyId,
-      nonce: await this.getNextNonce(ownerDid)
-    };
-
-    return this.signAndBroadcast('DeleteFileManifest', tx, signer.privateKey, signer.signFunction);
+      nonce,
+    }));
   }
 
   /**
@@ -374,15 +371,13 @@ export class ConsensusClient {
     signFunction?: SignFunction
   ): Promise<BroadcastResult> {
     const signer = resolveSigner(signerOrPrivateKey, publicKeyId, signFunction);
-    const tx: DeregisterSubgroveTx = {
+    return this.submitWithNonce(ownerDid, 'DeregisterSubgrove', signer, (nonce): DeregisterSubgroveTx => ({
       subgroveId,
       ownerDid,
       signature: '',
       publicKeyId: signer.publicKeyId,
-      nonce: await this.getNextNonce(ownerDid)
-    };
-
-    return this.signAndBroadcast('DeregisterSubgrove', tx, signer.privateKey, signer.signFunction);
+      nonce,
+    }));
   }
 
   /**
@@ -454,7 +449,7 @@ export class ConsensusClient {
     });
     const anchorHash = sha256Hex(canonical);
 
-    const tx: SubmitAnchorTx = {
+    return this.submitWithNonce(fields.did, 'SubmitAnchor', signer, (nonce): SubmitAnchorTx => ({
       did: fields.did,
       anchorId: fields.anchorId,
       sequenceRange: fields.sequenceRange,
@@ -467,10 +462,8 @@ export class ConsensusClient {
       isGenesis: fields.isGenesis,
       signature: '',
       publicKeyId: signer.publicKeyId,
-      nonce: await this.getNextNonce(fields.did),
-    };
-
-    return this.signAndBroadcast('SubmitAnchor', tx, signer.privateKey, signer.signFunction);
+      nonce,
+    }));
   }
 
   /**
@@ -558,13 +551,43 @@ export class ConsensusClient {
   // Private methods
 
   /**
+   * Take a nonce for `did`, build the transaction under it, sign, and
+   * broadcast, then record the outcome with the nonce allocator: an accepted
+   * write holds its nonce; one refused at CheckTx gives it back unless the
+   * refusal says the nonce is held, used, or spent. A write that fails before
+   * it is sent gives its nonce back; one whose submission failed in transport
+   * keeps it until its hold runs out (it may yet land).
+   */
+  private async submitWithNonce(
+    did: string,
+    txType: string,
+    signer: Required<Signer>,
+    build: (nonce: number) => Transaction,
+  ): Promise<BroadcastResult> {
+    const nonce = await this.nextNonce(did);
+    let sent = false;
+    try {
+      const tx = build(nonce);
+      const result = await this.signAndBroadcast(txType, tx, signer.privateKey, signer.signFunction, () => {
+        sent = true;
+      });
+      this.nonces.settle(did, nonce, result);
+      return result;
+    } catch (error) {
+      if (!sent) this.nonces.release(did, nonce);
+      throw error;
+    }
+  }
+
+  /**
    * Sign a transaction and broadcast it
    */
   private async signAndBroadcast(
     txType: string,
     transaction: Transaction,
     privateKey: string,
-    signFunction: SignFunction
+    signFunction: SignFunction,
+    onSend?: () => void,
   ): Promise<BroadcastResult> {
     // Create canonical message for signing
     const signMessageText = createSignMessage(txType, transaction);
@@ -579,6 +602,7 @@ export class ConsensusClient {
     const txWrapper = createTransactionWrapper(txType, transaction);
 
     // Broadcast transaction
+    onSend?.();
     return this.broadcastTransaction(txWrapper);
   }
 
@@ -695,36 +719,86 @@ export class ConsensusClient {
   }
 
   /**
-   * Get the next nonce for a DID. Falls back to the in-memory cache only
-   * if a prior call populated it — if the API is unreachable on first use
-   * the error is propagated rather than fabricating nonce=1, which would
-   * silently submit txs with a stale nonce.
+   * Take the next nonce for a DID from the nonce allocator ({@link nonces}),
+   * against the account's nonce state as just read. If the read fails after
+   * the state was read before (a transient API failure), the newest state
+   * seen is used; on first use the error propagates rather than fabricating
+   * a nonce.
+   *
+   * This client's own writes call it. For a transaction it doesn't build (a
+   * file manifest from `FileOperations`), take the nonce here and report the
+   * submission's outcome with `nonces.settle(did, nonce, result)`; the nonce
+   * is held until it lands or 120 s pass.
    */
-  private async getNextNonce(did: string): Promise<number> {
+  async nextNonce(did: string): Promise<number> {
+    let chain: AccountNonceState;
     try {
-      const currentNonce = await this.getAccountNonce(did);
-      const nextNonce = currentNonce + 1;
-      this.nonceCache.set(did, nextNonce);
-      return nextNonce;
+      chain = await this.readNonceState(did);
     } catch (error) {
-      const cached = this.nonceCache.get(did);
-      if (cached === undefined) {
-        throw error;
-      }
-      this.logger.warn('Failed to fetch nonce from API, using cache:', error);
-      const nextNonce = cached + 1;
-      this.nonceCache.set(did, nextNonce);
-      return nextNonce;
+      if (!this.nonces.hasState(did)) throw error;
+      this.logger.warn('Failed to read the account nonce, using the last state seen:', error);
+      return this.nonces.take(did);
     }
+    return this.nonces.take(did, chain);
   }
 
   /**
-   * Get the current nonce for an account from the blockchain
+   * An account's nonce state: the base and, with a CometBFT RPC URL, which of
+   * the 24 nonces above it are used (ABCI query
+   * `/store/account_nonce_state/{did}`); else the base alone from the API's
+   * `/account/{did}/nonce`.
+   */
+  private async readNonceState(did: string): Promise<AccountNonceState> {
+    if (this.config.consensusRpcUrl) {
+      try {
+        return await this.queryNonceState(did);
+      } catch (error) {
+        if (!this.config.apiUrl) throw error;
+        this.logger.warn('Failed to read the nonce state over RPC, reading the base from the API:', error);
+      }
+    }
+    return { base: await this.getAccountNonce(did), used: 0 };
+  }
+
+  /** ABCI query `/store/account_nonce_state/{did}`, one attempt. */
+  private async queryNonceState(did: string): Promise<AccountNonceState> {
+    const response = await fetch(this.config.consensusRpcUrl!, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(this.config.apiKey ? { 'X-API-Key': this.config.apiKey } : {})
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'abci_query',
+        params: { path: `/store/account_nonce_state/${did}`, data: '', height: '0', prove: false },
+      }),
+      signal: AbortSignal.timeout(this.config.requestTimeoutSecs! * 1000)
+    });
+    if (!response.ok) {
+      throw new ConsensusError(`Failed to read the nonce state: HTTP ${response.status}`);
+    }
+    const body = await response.json() as { result?: { response?: { code?: number; value?: string | null; log?: string } } };
+    const answer = body.result?.response;
+    if (!answer || typeof answer !== 'object') {
+      throw new ConsensusError('Failed to read the nonce state: malformed response');
+    }
+    if ((answer.code ?? 0) !== 0) {
+      throw new ConsensusError(`Failed to read the nonce state: ${answer.log ?? `code ${answer.code}`}`);
+    }
+    return parseAccountNonceStateBase64(answer.value ?? '');
+  }
+
+  /**
+   * Get the current nonce (the base) for an account from the API
    */
   private async getAccountNonce(did: string): Promise<number> {
     if (!this.config.apiUrl) {
-      // No API URL configured, use cache
-      return this.nonceCache.get(did) || 0;
+      throw new ConsensusError(
+        'apiUrl is required to read the account nonce. Set it in the SDK config.',
+        'API_URL_REQUIRED'
+      );
     }
 
     const response = await fetch(
@@ -749,7 +823,11 @@ export class ConsensusClient {
       throw new ConsensusError(data.error || 'Failed to fetch nonce');
     }
 
-    return data.data.nonce;
+    const base = data.data.nonce;
+    if (!Number.isSafeInteger(base) || base < 0 || base > Number.MAX_SAFE_INTEGER - NONCE_WINDOW) {
+      throw new ConsensusError(`Failed to fetch nonce: ${String(base)} is not a nonce this SDK can send`);
+    }
+    return base;
   }
 
   /**

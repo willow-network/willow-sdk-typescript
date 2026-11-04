@@ -179,8 +179,15 @@ export {
   rotateSubgroveKeySignMessage,
   unregisterStorageNodeSignMessage,
   registerDidSignMessage,
+  NonceAllocator,
+  NONCE_WINDOW,
+  NONCE_HOLD_MS,
+  parseAccountNonceState,
+  refusalKeepsNonce,
 } from "./consensus";
 export type {
+  AccountNonceState,
+  NonceAllocatorOptions,
   ConsensusConfig,
   BroadcastResult,
   TransactionStatus,

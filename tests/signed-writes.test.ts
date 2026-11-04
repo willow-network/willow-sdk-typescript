@@ -12,6 +12,7 @@ import {
   verifySecp256k1,
 } from '../src/auth';
 import { ConsensusClient } from '../src/consensus/client';
+import { NonceAllocator } from '../src/consensus/nonces';
 import {
   createSignMessage,
   DataStoreTx,
@@ -351,7 +352,7 @@ describe('signed writes in flight', () => {
   });
 
   function client() {
-    return new ConsensusClient({ apiUrl: 'http://api.test', consensusRpcUrl: 'http://rpc.test' });
+    return new ConsensusClient({ apiUrl: 'http://api.test', consensusRpcUrl: 'http://rpc.test', nonceAllocator: new NonceAllocator() });
   }
 
   const ed = { privateKey: SEED, publicKeyId: KAT.public_key_id };

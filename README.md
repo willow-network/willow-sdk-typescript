@@ -147,16 +147,13 @@ await client.store('dataset-id', 'key', { field: 'value' });
 ```
 
 Each key is written by its own transaction, sent through `POST /tx/submit`;
-the API has no REST route for data writes. `store` reads the account's nonce
-from the chain, so send a write after the previous one has landed:
+the API has no REST route for data writes. Up to 24 writes from one identity
+can be in flight together, each under its own nonce (see [Nonces](#nonces)).
+Writes in flight may land in any order, so send a write that depends on
+another (one to a subgrove being registered, say) after the first has landed:
 
 ```typescript
-for (const { key, value } of records) {
-  const result = await client.consensus.storeData(
-    'dataset-id', key, value, client.auth.getDid()!, client.auth.transactionSigner(),
-  );
-  await client.consensus.waitForTransaction(result.txHash!);
-}
+await Promise.all(records.map(({ key, value }) => client.store('dataset-id', key, value)));
 ```
 
 ### Retrieve Data
@@ -640,6 +637,16 @@ Nonce: <nonce>
 - A DID registration (`client.registerDid`, `consensus.registerDid`) is signed over the JSON text of the DID document as the chain's `DidDocument` writes it (its fields in order, absent options as `null`), at nonce 1. `registerDidSignMessage(tx)` returns it.
 
 `registerSubgroveSignMessage(tx)`, `grantSubgroveKeySignMessage(tx)`, `rotateSubgroveKeySignMessage(tx)`, and `unregisterStorageNodeSignMessage(tx)` return the exact message for a transaction.
+
+### Nonces
+
+The chain accepts a nonce in `base + 1 … base + 24` that it hasn't used, and its base advances only over used nonces with no gap. Every write path that picks a nonce (`WillowClient`, `ConsensusClient`, `WillowData`, and `PrivacyOperations`) takes it from a `NonceAllocator`, which keeps, per DID, the nonces it has handed out that haven't landed and the newest nonce state the chain has reported:
+
+- It reads the account's base (`/account/{did}/nonce` on the API) or, with a CometBFT RPC URL, the base and which of the 24 nonces above it are used (ABCI query `/store/account_nonce_state/{did}`), and hands out the lowest nonce in the window that isn't used, seen to land, or handed out within the last 120 s. Writes in flight together get distinct nonces.
+- When every nonce in the window is taken it throws `NONCE_WINDOW_FULL`; it never takes one above `base + 24`. More than 24 writes from one identity wait for earlier ones to land.
+- A write refused at CheckTx gives its nonce back, unless the refusal says the nonce is held by a pending transaction, already used, or spent. A write accepted at CheckTx holds its nonce, and one whose submission failed in transport keeps it, until it lands or 120 s pass; a nonce handed out 120 s ago that hasn't landed is free again.
+- Every client of one API URL in the process shares one allocator (`NonceAllocator.shared(apiUrl)`) unless given its own (`nonceAllocator` in `WillowConfig` or `ConsensusConfig`, or `PrivacyOperations`' last argument).
+- `files.upload`, `files.delete`, and `files.unregisterStorageNode` sign the nonce the caller passes. Take it with `client.consensus.nextNonce(did)` and report the outcome with `client.consensus.nonces.settle(did, nonce, result)`.
 
 ## Registration
 

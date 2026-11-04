@@ -31,6 +31,7 @@ import {
 import { FileOperations } from '../src/files';
 import { toJson } from '../src/internal/json';
 import { PrivacyOperations } from '../src/privacy';
+import { NonceAllocator } from '../src/consensus/nonces';
 import { WillowError } from '../src/types';
 import { parseExactJson } from './helpers/exact-json';
 
@@ -474,7 +475,7 @@ describe('second set in flight', () => {
   const schema = JSON.stringify({ version: 1, fields: {}, indexes: [], required_fields: [] });
 
   function consensus() {
-    return new ConsensusClient({ apiUrl: 'http://api.test', consensusRpcUrl: 'http://rpc.test' });
+    return new ConsensusClient({ apiUrl: 'http://api.test', consensusRpcUrl: 'http://rpc.test', nonceAllocator: new NonceAllocator() });
   }
 
   it('consensus.registerSubgrove sends the known data registration, every field explicit', async () => {
@@ -553,7 +554,11 @@ describe('second set in flight', () => {
   it('client.registerSubgrove signs with a secp256k1 identity\'s own key (the known answer)', async () => {
     const v = vector('RegisterSubgrove (data, defaults)');
     const { submitted } = stubFetch(3);
-    const client = new WillowClient({ apiUrl: 'http://api.test', consensusRpcUrl: 'http://rpc.test' });
+    const client = new WillowClient({
+      apiUrl: 'http://api.test',
+      consensusRpcUrl: 'http://rpc.test',
+      nonceAllocator: new NonceAllocator(),
+    });
     client.auth.setIdentity(OWNER, SEED, KAT.public_key_id, 'secp256k1');
     await client.registerSubgrove({
       dataset_id: 'sg-1',
@@ -574,7 +579,11 @@ describe('second set in flight', () => {
   it('client.data.registerSubgrove sends a RegisterSubgrove transaction, not a REST call', async () => {
     const v = vector('RegisterSubgrove (data, defaults)');
     const { submitted, urls } = stubFetch(3);
-    const client = new WillowClient({ apiUrl: 'http://api.test', consensusRpcUrl: 'http://rpc.test' });
+    const client = new WillowClient({
+      apiUrl: 'http://api.test',
+      consensusRpcUrl: 'http://rpc.test',
+      nonceAllocator: new NonceAllocator(),
+    });
     client.auth.setIdentity(OWNER, SEED, KAT.public_key_id, 'Ed25519');
     await client.data.registerSubgrove({
       dataset_id: 'sg-1',
@@ -594,7 +603,7 @@ describe('second set in flight', () => {
   function privacy(algorithm: 'Ed25519' | 'secp256k1') {
     const auth = new WillowAuth('http://api.test');
     auth.setIdentity(OWNER, SEED, KAT.public_key_id, algorithm);
-    return new PrivacyOperations('http://api.test', auth, SEED, KAT.public_key_id);
+    return new PrivacyOperations('http://api.test', auth, SEED, KAT.public_key_id, undefined, new NonceAllocator());
   }
 
   it.each([

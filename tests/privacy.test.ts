@@ -2,6 +2,7 @@ import { PrivacyOperations, EncryptedKeyGrant, CommitmentFrequency } from '../sr
 import { WillowAuth, signEd25519 } from '../src/auth';
 import { WillowError } from '../src/types';
 import { hexToBytes } from '../src/internal/bytes';
+import { NonceAllocator } from '../src/consensus/nonces';
 
 /** The wire signature is the byte-array form of the hex signEd25519 output. */
 function sigArray(message: string): number[] {
@@ -40,7 +41,7 @@ function txRejected(log: string) {
 function makePrivacy(withIdentity = true) {
   const auth = new WillowAuth(API_URL);
   if (withIdentity) auth.setIdentity(DID, PRIVATE_KEY, KEY_ID);
-  return new PrivacyOperations(API_URL, auth, PRIVATE_KEY, KEY_ID);
+  return new PrivacyOperations(API_URL, auth, PRIVATE_KEY, KEY_ID, undefined, new NonceAllocator());
 }
 
 const grant: EncryptedKeyGrant = {

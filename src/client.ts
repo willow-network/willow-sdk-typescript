@@ -86,6 +86,7 @@ export class WillowClient {
       apiUrl: config.apiUrl,
       apiKey: config.apiKey,
       logger: config.logger,
+      nonceAllocator: config.nonceAllocator,
     });
 
     this.data = new WillowData(

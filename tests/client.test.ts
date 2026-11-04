@@ -200,7 +200,11 @@ describe('WillowClient', () => {
       };
 
       mockFetch
-        .mockResolvedValueOnce(jsonResponse({ success: true, data: { nonce: 4 } }))
+        // The devnet's CometBFT RPC answers the account's nonce state: base 4,
+        // none used above it.
+        .mockResolvedValueOnce(
+          jsonResponse({ result: { response: { code: 0, value: 'AAAAAAAAAAQAAAA=' } } }),
+        )
         .mockResolvedValueOnce(
           jsonResponse({ success: true, data: { tx_hash: 'CD34', code: 0, log: '' } }),
         );
@@ -208,6 +212,10 @@ describe('WillowClient', () => {
       const result = await client.data.registerDataset(datasetRequest);
       expect(result.success).toBe(true);
       expect(result.txHash).toBe('CD34');
+      const query = JSON.parse(mockFetch.mock.calls[0][1]!.body as string);
+      expect(mockFetch.mock.calls[0][0]).toBe('http://localhost:26657');
+      expect(query.method).toBe('abci_query');
+      expect(query.params.path).toBe(`/store/account_nonce_state/${testDid}`);
 
       // Sent as a RegisterSubgrove transaction; the API has no REST route.
       const { url, init } = lastRequest();

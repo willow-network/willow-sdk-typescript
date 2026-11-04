@@ -4,6 +4,7 @@ import { ProofVerificationOptions } from '../proof';
 import type { WillowLogger } from '../internal/logger';
 import type { TrustThreshold } from '../light-client/types';
 import type { WebSocketConstructor } from '../subscriptions';
+import type { NonceAllocator } from '../consensus/nonces';
 
 /**
  * Light-client settings used when the SDK auto-creates a light client for
@@ -92,6 +93,12 @@ export interface WillowConfig {
    * pass an implementation such as the `ws` package's `WebSocket` class.
    */
   webSocket?: WebSocketConstructor;
+  /**
+   * Hands out transaction nonces per DID, so writes in flight together get
+   * distinct ones. Defaults to `NonceAllocator.shared(apiUrl)`, which every
+   * client of that API URL in the process shares.
+   */
+  nonceAllocator?: NonceAllocator;
 }
 
 /**

@@ -46,6 +46,13 @@ package adheres to [Semantic Versioning](https://semver.org/).
   constructor.
 - `MerkExecutionResult.valueKeys`: the hex keys of every node in a merk
   proof that carries a value, whatever the limit.
+- `NonceAllocator` (with `NONCE_WINDOW`, `NONCE_HOLD_MS`,
+  `parseAccountNonceState`, `refusalKeepsNonce`, and the
+  `AccountNonceState` and `NonceAllocatorOptions` types), which hands out
+  an identity's transaction nonces; `ConsensusClient.nextNonce(did)` and
+  `ConsensusClient.nonces`; a `nonceAllocator` option in `WillowConfig` and
+  `ConsensusConfig`, and an optional last argument to the
+  `PrivacyOperations` constructor.
 
 ### Changed
 
@@ -117,6 +124,18 @@ package adheres to [Semantic Versioning](https://semver.org/).
 - A registration's retention window goes into its BlockchainIndexing mode,
   in the chain's form; one for another mode is refused. It was sent as a
   top-level field the chain does not read.
+- **Writes in flight together get distinct nonces.** Every write path that
+  picks a nonce (`WillowClient`, `ConsensusClient`, `WillowData`, and
+  `PrivacyOperations`) takes the lowest one in the chain's window
+  (`base + 1 … base + 24`) that isn't used, seen to land, or handed out
+  within the last 120 s; with a CometBFT RPC URL it reads which nonces in
+  the window are used. A nonce refused at CheckTx is given back unless the
+  refusal says it is held, used, or spent. A full window throws
+  `NONCE_WINDOW_FULL`. Each write read the base and signed `base + 1`, so
+  writes in flight together shared a nonce. Clients of one API URL in a
+  process share the allocator.
+- `ConsensusClient` without an `apiUrl` or an RPC URL refuses to pick a
+  nonce (`API_URL_REQUIRED`); it used nonce 1.
 
 ### Removed
 

@@ -4,6 +4,7 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { verifyEd25519, verifySecp256k1 } from '../src/auth';
 import { WillowClient } from '../src/client';
+import { NonceAllocator } from '../src/consensus/nonces';
 import { createDidFromPublicKey } from '../src/utils';
 
 /**
@@ -35,7 +36,7 @@ beforeEach(() => {
     if (url.includes('/nonce')) {
       return jsonResponse({ success: true, data: { nonce: STORE.inputs.nonce - 1 } });
     }
-    bodies.push(JSON.parse(init!.body as string));
+    if (url.endsWith('/tx/submit')) bodies.push(JSON.parse(init!.body as string));
     return jsonResponse({ success: true, data: { tx_hash: 'AB12', code: 0, log: '' } });
   }) as unknown as typeof fetch;
 });
@@ -44,7 +45,11 @@ afterAll(() => {
 });
 
 function client(algorithm: 'Ed25519' | 'secp256k1', did = STORE.inputs.owner_did) {
-  const c = new WillowClient({ apiUrl: 'http://api.test', consensusRpcUrl: 'http://rpc.test' });
+  const c = new WillowClient({
+    apiUrl: 'http://api.test',
+    consensusRpcUrl: 'http://rpc.test',
+    nonceAllocator: new NonceAllocator(),
+  });
   c.auth.setIdentity(did, SEED, `${did}#key-1`, algorithm);
   return c;
 }

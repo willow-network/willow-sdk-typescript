@@ -16,6 +16,7 @@ import {
 } from '../internal/bytes';
 import { toJson } from '../internal/json';
 import type { WillowLogger } from '../internal/logger';
+import type { NonceAllocator } from './nonces';
 import type { PrivacyConfig } from '../privacy';
 import { invalid, text, textLine } from './fields';
 import { chainDidDocument, keyGrantWire, registerSubgroveWire } from './wire';
@@ -53,6 +54,12 @@ export interface ConsensusConfig {
   maxRetries?: number;
   retryDelaySecs?: number;
   logger?: WillowLogger; // Diagnostics logger; defaults to silent
+  /**
+   * Hands out transaction nonces per DID. Defaults to
+   * `NonceAllocator.shared(apiUrl)`, which every client of that API URL in
+   * the process shares.
+   */
+  nonceAllocator?: NonceAllocator;
 }
 
 /** Signs a canonical message with a hex private key, returning a hex signature. */

@@ -55,9 +55,11 @@ export interface FileSigningOptions {
   publicKeyId: string;
   signFunction: (message: string, privateKey: string) => string;
   /**
-   * The nonce the transaction carries. The signature covers it. A write the
-   * chain refuses in its block after its signature and nonce verify still
-   * spends it; to retry, sign again under the next free nonce.
+   * The nonce the transaction carries. The signature covers it. Take it with
+   * `ConsensusClient.nextNonce(did)` (`client.consensus.nextNonce`), so writes
+   * in flight get distinct nonces. A write the chain refuses in its block
+   * after its signature and nonce verify still spends it; to retry, sign
+   * again under a fresh nonce.
    */
   nonce: number;
 }
