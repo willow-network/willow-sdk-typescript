@@ -21,6 +21,11 @@ package adheres to [Semantic Versioning](https://semver.org/).
   per-request signer run once the URL and body are final.
 - Types: `NonceSignedRequestHeaders`, `SignedRequestHeaders`,
   `SignRequestOptions`, `RequestSigner`, and `ResolvedRequest`.
+- `storeDataSignMessage`, `storeFileManifestSignMessage`, and
+  `deleteFileManifestSignMessage`, which return the message a data write, a
+  file manifest, or a file delete signs (see the README's "Data and file
+  write signing"), and the `StoreFileManifestTx` and `DeleteFileManifestTx`
+  types they take.
 
 ### Changed
 
@@ -42,6 +47,22 @@ package adheres to [Semantic Versioning](https://semver.org/).
   no `indexerUrl` is configured, instead of sending `/verifiable-rpc/*` to the
   API, which doesn't serve it.
 - `WillowClient.init()` reads the key id from the API's `public_keys`.
+- **Data and file writes sign their nonce and every field.** StoreData
+  (`storeData`, `client.store`), StoreFileManifest (`storeFileManifest`,
+  `files.upload`), and DeleteFileManifest (`deleteFileManifest`,
+  `files.delete`) are signed over labelled lines: the kind, then the
+  subgrove, key, owner, the SHA-256 of the data bytes sent (StoreData) or
+  every manifest field (StoreFileManifest), and the nonce. They were signed
+  over `{subgrove}:{key}:{data}`, `store_file:…`, and `delete_file:…`. The
+  SDK refuses to sign one whose subgrove id, key, owner DID, filename, or
+  content type holds a `\n` (0x0A), or whose nonce, size, or count is not a
+  non-negative safe integer (it refuses such a number rather than round it).
+  A write the chain refuses in its block after its signature and nonce
+  verify still spends its nonce; a retry signs again under the next free
+  nonce.
+- A file manifest's `contentHash` and `chunkMerkleRoot` must be 32 bytes of
+  hex; any other length throws `INVALID_DIGEST` before the transaction is
+  sent.
 
 ### Removed
 

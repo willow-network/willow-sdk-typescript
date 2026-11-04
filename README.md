@@ -533,6 +533,52 @@ const headers = client.auth.signRequestWithNonce('POST', '/query/my-subgrove', b
 
 `client.auth.signRequest(method, path)` makes the older `{METHOD}:{PATH}:{TIMESTAMP}` form, over the path without its query string. It proves the DID but carries none of its read rights, and it can be replayed with any body until the timestamp expires.
 
+### Data and file write signing
+
+A data write (`client.store`, `consensus.storeData`), a file manifest (`files.upload`, `consensus.storeFileManifest`), and a file delete (`files.delete`, `consensus.deleteFileManifest`) are transactions signed over labelled lines that bind the nonce and every field the transaction writes. The message is UTF-8, its lines joined by `\n` (the byte 0x0A) with no trailing newline:
+
+```
+StoreData
+Subgrove: <subgrove id>
+Key: <key>
+Owner: <owner DID>
+DataHash: <hex SHA-256 of the data bytes sent>
+Nonce: <nonce>
+```
+
+```
+StoreFileManifest
+Subgrove: <subgrove id>
+Key: <file key>
+Owner: <owner DID>
+Filename: <filename>
+ContentType: <content type>
+TotalSize: <total size>
+ContentHash: <hex of the 32-byte content hash>
+ChunkCount: <chunk count>
+ChunkSize: <chunk size>
+ChunkMerkleRoot: <hex of the 32-byte chunk Merkle root>
+Encryption: none
+Nonce: <nonce>
+```
+
+```
+DeleteFileManifest
+Subgrove: <subgrove id>
+Key: <file key>
+Owner: <owner DID>
+Nonce: <nonce>
+```
+
+- Text fields go in verbatim, with no escaping or normalization; non-ASCII text is its UTF-8 bytes.
+- The data bytes are the UTF-8 of the JSON text the transaction carries (`JSON.stringify(value)` for `storeData`).
+- Numbers are unsigned decimal. The chain's nonces and sizes are u64, and a JavaScript number is exact only up to 2^53 − 1 (`Number.MAX_SAFE_INTEGER`), so the SDK refuses a larger, negative, or fractional value rather than round it.
+- Hex is lowercase without `0x`.
+- The nonce is the one the transaction carries, so the message is built after the nonce is chosen. A write the chain refuses in its block after its signature and nonce verify (data not found, no permission, fee not collected, …) still spends the nonce; to retry, sign again under the next free nonce. A transaction refused for its signature or nonce spends nothing.
+- The SDK refuses to sign when the subgrove id, key, owner DID, filename, or content type holds a `\n` (0x0A). A CR or U+2028 holds no 0x0A and is signed as it is.
+
+`storeDataSignMessage(tx)`, `storeFileManifestSignMessage(tx)`, and `deleteFileManifestSignMessage(tx)` return the exact message for a transaction.
+
 ## Registration
 
 ### Register Subgrove
@@ -654,6 +700,9 @@ try {
 | `signedRequestMessage(did, keyId, method, pathAndQuery, timestamp, nonce, body?)` | The eight-line message a nonce-signed request signs |
 | `legacyRequestMessage(method, path, timestamp)` | The older-form message |
 | `newRequestNonce()` | A fresh request nonce |
+| `storeDataSignMessage(tx)` | The message a data write signs (see [Data and file write signing](#data-and-file-write-signing)) |
+| `storeFileManifestSignMessage(tx)` | The message a file manifest signs |
+| `deleteFileManifestSignMessage(tx)` | The message a file delete signs |
 | `isValidDid(did)` | Validate DID format |
 
 ## Security Model

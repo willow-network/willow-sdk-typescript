@@ -5,6 +5,7 @@
  */
 
 import { keccak_256 } from '@noble/hashes/sha3';
+import { sha256 } from '@noble/hashes/sha256';
 import { WillowError } from '../types';
 import {
   base64ToBytes,
@@ -369,6 +370,28 @@ function hexToByteArray(hex: string): number[] {
   return Array.from(hexToBytes(hex));
 }
 
+/** The `data` bytes a StoreData transaction carries: its JSON text as UTF-8. */
+function storeDataBytes(data: string): Uint8Array {
+  return utf8ToBytes(data);
+}
+
+/**
+ * Decode a hex digest a transaction carries as `[u8; 32]`, refusing any
+ * other length. `0x` and upper case are accepted; the wire carries the bytes.
+ */
+function digestBytes(label: string, hex: string): Uint8Array {
+  let bytes: Uint8Array;
+  try {
+    bytes = hexToBytes(hex);
+  } catch {
+    throw new WillowError(`${label} is not hex`, 'INVALID_DIGEST');
+  }
+  if (bytes.length !== 32) {
+    throw new WillowError(`${label} is ${bytes.length} bytes; it must be 32`, 'INVALID_DIGEST');
+  }
+  return bytes;
+}
+
 /**
  * Create transaction wrapper for consensus submission.
  *
@@ -417,7 +440,7 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
     }
     case 'DataStore': {
       const t = transaction as DataStoreTx;
-      const data = Array.from(new TextEncoder().encode(t.data));
+      const data = Array.from(storeDataBytes(t.data));
       return {
         StoreData: {
           subgrove_id: t.subgroveId,
@@ -496,10 +519,10 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
           filename: t.filename,
           content_type: t.contentType,
           total_size: t.totalSize,
-          content_hash: hexToByteArray(t.contentHash),
+          content_hash: Array.from(digestBytes('contentHash', t.contentHash)),
           chunk_count: t.chunkCount,
           chunk_size: t.chunkSize,
-          chunk_merkle_root: hexToByteArray(t.chunkMerkleRoot),
+          chunk_merkle_root: Array.from(digestBytes('chunkMerkleRoot', t.chunkMerkleRoot)),
           owner_did: t.ownerDid,
           signature: sig,
           public_key_id: publicKeyId,
@@ -585,6 +608,145 @@ function schemaHash(schema: string): string {
 }
 
 /**
+ * A `Label: value` line of a signed message. The value goes in verbatim, with
+ * no escaping or normalization. The chain refuses a text field holding a line
+ * feed (the byte 0x0A), so the SDK refuses to sign one. In a JS string only
+ * U+000A encodes to that byte, so a CR or U+2028 is signed as it is.
+ */
+function textLine(label: string, value: string): string {
+  if (typeof value !== 'string') {
+    throw new WillowError(`${label} must be a string`, 'INVALID_SIGNED_FIELD');
+  }
+  if (value.includes('\n')) {
+    throw new WillowError(
+      `${label} holds a line break, which a signed field can't`,
+      'LINE_BREAK_IN_SIGNED_FIELD',
+    );
+  }
+  return `${label}: ${value}`;
+}
+
+/**
+ * A `Label: n` line: unsigned decimal, no leading zeros. The chain's numbers
+ * are u64 and a JS number is exact only up to 2^53 - 1, so a larger, negative,
+ * or fractional value is refused rather than rounded.
+ */
+function uintLine(label: string, value: number | undefined): string {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new WillowError(
+      `${label} must be a non-negative safe integer, got ${String(value)}`,
+      'INVALID_SIGNED_FIELD',
+    );
+  }
+  return `${label}: ${value}`;
+}
+
+/**
+ * The message a StoreData transaction (`'DataStore'` in this SDK) is signed
+ * over:
+ *
+ * ```
+ * StoreData
+ * Subgrove: <subgroveId>
+ * Key: <key>
+ * Owner: <ownerDid>
+ * DataHash: <hex SHA-256 of the data bytes the transaction carries>
+ * Nonce: <nonce>
+ * ```
+ *
+ * Lines are joined by `\n` with no trailing newline. The data bytes are
+ * `tx.data` as UTF-8, exactly as {@link createTransactionWrapper} sends them.
+ * Set the nonce before building the message: the chain checks the signature
+ * against the nonce the transaction carries. A write the chain refuses in its
+ * block after its signature and nonce verify still spends that nonce; to
+ * retry, sign again under the next free nonce.
+ *
+ * @throws WillowError if `subgroveId`, `key`, or `ownerDid` holds a `\n`, or
+ *   the nonce is not a non-negative safe integer.
+ */
+export function storeDataSignMessage(tx: DataStoreTx): string {
+  return [
+    'StoreData',
+    textLine('Subgrove', tx.subgroveId),
+    textLine('Key', tx.key),
+    textLine('Owner', tx.ownerDid),
+    `DataHash: ${bytesToHex(sha256(storeDataBytes(tx.data)))}`,
+    uintLine('Nonce', tx.nonce),
+  ].join('\n');
+}
+
+/**
+ * The message a StoreFileManifest transaction is signed over, binding every
+ * manifest field:
+ *
+ * ```
+ * StoreFileManifest
+ * Subgrove: <subgroveId>
+ * Key: <fileKey>
+ * Owner: <ownerDid>
+ * Filename: <filename>
+ * ContentType: <contentType>
+ * TotalSize: <totalSize>
+ * ContentHash: <lowercase hex of the 32-byte contentHash>
+ * ChunkCount: <chunkCount>
+ * ChunkSize: <chunkSize>
+ * ChunkMerkleRoot: <lowercase hex of the 32-byte chunkMerkleRoot>
+ * Encryption: none
+ * Nonce: <nonce>
+ * ```
+ *
+ * Lines are joined by `\n` with no trailing newline. The SDK sends no
+ * `encryption`, so the line is `none`.
+ *
+ * @throws WillowError if `subgroveId`, `fileKey`, `ownerDid`, `filename`, or
+ *   `contentType` holds a `\n`, a digest is not 32 bytes of hex, or a number
+ *   is not a non-negative safe integer.
+ */
+export function storeFileManifestSignMessage(tx: StoreFileManifestTx): string {
+  return [
+    'StoreFileManifest',
+    textLine('Subgrove', tx.subgroveId),
+    textLine('Key', tx.fileKey),
+    textLine('Owner', tx.ownerDid),
+    textLine('Filename', tx.filename),
+    textLine('ContentType', tx.contentType),
+    uintLine('TotalSize', tx.totalSize),
+    `ContentHash: ${bytesToHex(digestBytes('contentHash', tx.contentHash))}`,
+    uintLine('ChunkCount', tx.chunkCount),
+    uintLine('ChunkSize', tx.chunkSize),
+    `ChunkMerkleRoot: ${bytesToHex(digestBytes('chunkMerkleRoot', tx.chunkMerkleRoot))}`,
+    'Encryption: none',
+    uintLine('Nonce', tx.nonce),
+  ].join('\n');
+}
+
+/**
+ * The message a DeleteFileManifest transaction is signed over:
+ *
+ * ```
+ * DeleteFileManifest
+ * Subgrove: <subgroveId>
+ * Key: <fileKey>
+ * Owner: <ownerDid>
+ * Nonce: <nonce>
+ * ```
+ *
+ * Lines are joined by `\n` with no trailing newline.
+ *
+ * @throws WillowError if `subgroveId`, `fileKey`, or `ownerDid` holds a `\n`,
+ *   or the nonce is not a non-negative safe integer.
+ */
+export function deleteFileManifestSignMessage(tx: DeleteFileManifestTx): string {
+  return [
+    'DeleteFileManifest',
+    textLine('Subgrove', tx.subgroveId),
+    textLine('Key', tx.fileKey),
+    textLine('Owner', tx.ownerDid),
+    uintLine('Nonce', tx.nonce),
+  ].join('\n');
+}
+
+/**
  * Create the canonical message a transaction is signed over.
  *
  * The byte sequence here must match the format the chain's signature
@@ -627,20 +789,14 @@ export function createSignMessage(txType: string, transaction: Transaction): str
       return `Transfer\nFrom: ${tx.fromDid}\nTo: ${tx.toDid}\nAmount: ${tx.amount}\nMemo: ${tx.memo || ''}\nNonce: ${tx.nonce || 0}`;
     }
 
-    case 'DataStore': {
-      const tx = transaction as DataStoreTx;
-      return `${tx.subgroveId}:${tx.key}:${tx.data}`;
-    }
+    case 'DataStore':
+      return storeDataSignMessage(transaction as DataStoreTx);
 
-    case 'StoreFileManifest': {
-      const tx = transaction as StoreFileManifestTx;
-      return `store_file:${tx.subgroveId}:${tx.fileKey}:${tx.contentHash}:${tx.totalSize}`;
-    }
+    case 'StoreFileManifest':
+      return storeFileManifestSignMessage(transaction as StoreFileManifestTx);
 
-    case 'DeleteFileManifest': {
-      const tx = transaction as DeleteFileManifestTx;
-      return `delete_file:${tx.subgroveId}:${tx.fileKey}`;
-    }
+    case 'DeleteFileManifest':
+      return deleteFileManifestSignMessage(transaction as DeleteFileManifestTx);
 
     case 'DeregisterSubgrove': {
       const tx = transaction as DeregisterSubgroveTx;
