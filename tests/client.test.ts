@@ -21,7 +21,8 @@ describe('WillowClient', () => {
 
   // Test keys
   const { privateKey: testPrivateKey, publicKey: testPublicKey } = generateEd25519KeyPair();
-  const testDid = 'did:willow:test:123';
+  // A Willow DID as the chain takes one (no ':' after the method).
+  const testDid = 'did:willow:test-123';
   const testPublicKeyId = `${testDid}#key-1`;
 
   function lastRequest(): { url: string; init: RequestInit } {

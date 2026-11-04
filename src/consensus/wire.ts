@@ -17,6 +17,7 @@ import {
   texts,
   uint,
   variant,
+  willowDid,
   wireInt,
   wireUint,
 } from './fields';
@@ -295,23 +296,27 @@ function initialFundingWire(value: unknown): string | null {
   return uint('initialFunding', value, 128).toString();
 }
 
-/**
- * The `RegisterSubgrove` body the SDK sends: every field of the chain's
- * `RegisterSubgroveTx`, in its order, with the values the API would fill in
- * for an omitted field written out.
- */
 /** A data or file subgrove id: 1–64 ASCII letters, digits, `-`, or `_`, starting with a letter or digit. */
 const STORAGE_SUBGROVE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 /**
- * The chain's rules for a DataStorage or FileStorage registration, checked
- * before signing: its subgrove id is 1–64 ASCII letters, digits, `-`, or `_`,
- * starting with a letter or digit, and its schema is JSON the chain parses as
- * a schema that declares no indexes (writes to an indexed subgrove are
- * refused); see {@link checkStorageSchema}. The chain refuses a registration
- * that breaks either.
+ * The chain's rules for a DataStorage or FileStorage registration (`w`, its
+ * wire form), checked before signing:
+ *
+ * - its subgrove id is 1–64 ASCII letters, digits, `-`, or `_`, starting
+ *   with a letter or digit (`INVALID_SUBGROVE_ID`);
+ * - its `admins`, `writers`, and `free_readers` are Willow DIDs
+ *   (`INVALID_DID`; see {@link willowDid});
+ * - its schema is JSON the chain parses as a schema that declares no indexes
+ *   (writes to an indexed subgrove are refused); see {@link checkStorageSchema};
+ * - a private DataStorage registration's `initial_owner_key_grant`, when it
+ *   has one, is the owner's: key epoch 0, granted to the owner, a Willow DID
+ *   (`INVALID_KEY_GRANT`, or `INVALID_DID` for a grantee that isn't one).
+ *
+ * The chain refuses a registration that breaks any of them.
  */
-export function checkStorageRegistration(subgroveId: string, schema: string): void {
+export function checkStorageRegistration(w: Record<string, unknown>): void {
+  const subgroveId = w.subgrove_id as string;
   if (!STORAGE_SUBGROVE_ID.test(subgroveId)) {
     throw new WillowError(
       `Invalid subgrove id ${JSON.stringify(subgroveId)}: a data or file subgrove's id is 1–64 ` +
@@ -319,9 +324,40 @@ export function checkStorageRegistration(subgroveId: string, schema: string): vo
       'INVALID_SUBGROVE_ID',
     );
   }
-  checkStorageSchema(schema);
+  (w.admins as string[]).forEach((did, i) => willowDid(`admins[${i}]`, did));
+  const mode = w.mode as Record<string, Record<string, unknown>>;
+  const [kind, m] = Object.entries(mode)[0];
+  (m.writers as string[]).forEach((did, i) => willowDid(`mode.${kind}.writers[${i}]`, did));
+  (m.free_readers as string[]).forEach((did, i) =>
+    willowDid(`mode.${kind}.free_readers[${i}]`, did),
+  );
+  checkStorageSchema(w.schema as string);
+
+  const grant = w.initial_owner_key_grant as Record<string, unknown> | null;
+  if (kind === 'DataStorage' && w.privacy !== null && grant !== null) {
+    if (grant.key_epoch !== 0) {
+      throw new WillowError(
+        `initialOwnerKeyGrant.key_epoch must be 0 (the subgrove's first key), got ${String(grant.key_epoch)}`,
+        'INVALID_KEY_GRANT',
+      );
+    }
+    if (grant.grantee_did !== w.owner_did) {
+      throw new WillowError(
+        `initialOwnerKeyGrant must grant the owner (${String(w.owner_did)}), not ${String(grant.grantee_did)}`,
+        'INVALID_KEY_GRANT',
+      );
+    }
+    willowDid('initialOwnerKeyGrant.grantee_did', grant.grantee_did);
+  }
 }
 
+/**
+ * The `RegisterSubgrove` body the SDK sends: every field of the chain's
+ * `RegisterSubgroveTx`, in its order, with the values the API would fill in
+ * for an omitted field written out. A DataStorage or FileStorage
+ * registration is checked against the chain's rules for one
+ * ({@link checkStorageRegistration}).
+ */
 export function registerSubgroveWire(
   tx: RegisterSubgroveTx,
   signature: number[],
@@ -329,10 +365,7 @@ export function registerSubgroveWire(
   const name = tx.name ?? tx.subgroveId;
   const checkpoint = tx.checkpointVerification ?? { required_tee: null };
   const mode = modeWire(tx, name) as Record<string, unknown>;
-  if ('DataStorage' in mode || 'FileStorage' in mode) {
-    checkStorageRegistration(text('subgroveId', tx.subgroveId), text('schema', tx.schema));
-  }
-  return {
+  const w = {
     subgrove_id: text('subgroveId', tx.subgroveId),
     name: text('name', name),
     description: text('description', tx.description ?? ''),
@@ -360,6 +393,8 @@ export function registerSubgroveWire(
       tx.cryptographicCompleteness ?? false,
     ),
   };
+  if ('DataStorage' in mode || 'FileStorage' in mode) checkStorageRegistration(w);
+  return w;
 }
 
 /** A public key's hex for the chain's document: `publicKeyHex`, or `publicKeyBase64` as hex. */

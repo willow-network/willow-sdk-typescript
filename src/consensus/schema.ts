@@ -8,7 +8,7 @@
  * { "version": 1, "fields": { "title": "string" }, "indexes": [], "required_fields": ["title"] }
  * ```
  *
- * - `version`: a u32 (default 1).
+ * - `version`: a u32 (default 1), written as an integer (`1`, not `1.0`).
  * - `fields`: field name to field type (default `{}`, any JSON object). A
  *   field type is one of `string`, `number`, `boolean`, `array`, `object`,
  *   `bytes`, written as that lowercase string.
@@ -16,9 +16,10 @@
  *   file subgrove's schema can't declare one: writes to it are refused.
  * - `required_fields`: field names (default `[]`).
  *
- * The chain ignores any other key and refuses a `null` for any of these. It
- * refuses a registration whose schema it can't parse in its block, which
- * spends the nonce.
+ * The chain ignores any other key and refuses a `null` for any of these, a
+ * key written twice, or a string holding a lone UTF-16 surrogate. It refuses
+ * a registration whose schema it can't parse in its block, which spends the
+ * nonce.
  */
 
 import type { SchemaDefinition, SchemaFieldType } from '../types';
@@ -175,67 +176,245 @@ export function serializeSchema(schema: SchemaDefinition): string {
   );
 }
 
+/** The keys the chain's schema reads, in the order its positional form takes them. */
+const SCHEMA_KEYS = ['version', 'fields', 'indexes', 'required_fields'] as const;
+type SchemaKey = (typeof SCHEMA_KEYS)[number];
+
+const U32_MAX = 4294967295n;
+
 /**
- * Whether `value` is a field type as the chain parses one: its lowercase
- * name, or that name as the one key of an object whose value is `null`
- * (the other form a unit enum variant takes in the chain's JSON).
+ * A reader over JSON text that sees what `JSON.parse` hides: each number's
+ * own token, every key of an object (repeats included), and each string as
+ * written. `JSON.parse` has already accepted the text, so it is well-formed.
  */
-function isChainFieldType(value: unknown): boolean {
-  if (isFieldType(value)) return true;
-  if (!isObject(value)) return false;
-  const entries = Object.entries(value);
-  return entries.length === 1 && isFieldType(entries[0][0]) && entries[0][1] === null;
+class JsonText {
+  private i = 0;
+
+  constructor(private readonly s: string) {}
+
+  ws(): void {
+    while (this.i < this.s.length && ' \t\n\r'.includes(this.s[this.i])) this.i++;
+  }
+
+  /** The next character after whitespace, not consumed. */
+  peek(): string {
+    this.ws();
+    return this.s[this.i] ?? '';
+  }
+
+  /** Consume `token` if it comes next. */
+  eat(token: string): boolean {
+    this.ws();
+    if (this.s.startsWith(token, this.i)) {
+      this.i += token.length;
+      return true;
+    }
+    return false;
+  }
+
+  /** The raw text of the string token that comes next. */
+  private stringToken(): string {
+    this.ws();
+    const start = this.i;
+    let j = start + 1;
+    while (j < this.s.length && this.s[j] !== '"') j += this.s[j] === '\\' ? 2 : 1;
+    this.i = j + 1;
+    return this.s.slice(start, this.i);
+  }
+
+  /** The string that comes next, decoded (a `\u` escape may decode to a lone surrogate). */
+  string(): string {
+    return JSON.parse(this.stringToken()) as string;
+  }
+
+  /** The number token that comes next, as written. */
+  number(): string {
+    this.ws();
+    const m = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/.exec(this.s.slice(this.i));
+    const token = m ? m[0] : '';
+    this.i += token.length;
+    return token;
+  }
+
+  /** Skip the value that comes next, however deeply nested. */
+  skip(): void {
+    let depth = 0;
+    do {
+      const c = this.peek();
+      if (c === '') throw invalidSchema('The schema is not JSON');
+      if (c === '"') this.stringToken();
+      else if (c === '{' || c === '[') {
+        depth++;
+        this.i++;
+      } else if (c === '}' || c === ']') {
+        depth--;
+        this.i++;
+      } else if (c === ',' || c === ':') this.i++;
+      else {
+        while (this.i < this.s.length && !' \t\n\r,:]}'.includes(this.s[this.i])) this.i++;
+      }
+    } while (depth > 0);
+  }
+
+  /**
+   * Read the object that comes next, calling `entry` with each key (repeats
+   * included, in order) to read its value. False when no object comes next.
+   */
+  object(entry: (key: string) => void): boolean {
+    if (!this.eat('{')) return false;
+    if (this.eat('}')) return true;
+    do {
+      const key = this.string();
+      this.eat(':');
+      entry(key);
+    } while (this.eat(','));
+    this.eat('}');
+    return true;
+  }
+
+  /** Read the array that comes next, calling `item` with each index. False when no array comes next. */
+  array(item: (index: number) => void): boolean {
+    if (!this.eat('[')) return false;
+    if (this.eat(']')) return true;
+    let index = 0;
+    do {
+      item(index++);
+    } while (this.eat(','));
+    this.eat(']');
+    return true;
+  }
+}
+
+/** Refuse a string the chain's parser refuses: one holding a lone surrogate (from a `\u` escape). */
+function wellFormed(label: string, value: string): string {
+  if (!isWellFormed(value)) throw invalidSchema(`${label} holds a lone UTF-16 surrogate`);
+  return value;
+}
+
+function readVersion(json: JsonText): void {
+  const c = json.peek();
+  const token = c === '-' || (c >= '0' && c <= '9') ? json.number() : null;
+  // The chain reads a u32 from an integer token only: `1.0`, `1e0`, and `-0`
+  // are floats to it, and a negative number is outside u32.
+  if (token === null || !/^(?:0|[1-9][0-9]*)$/.test(token) || BigInt(token) > U32_MAX) {
+    throw invalidSchema(
+      `schema.version must be an integer in u32 written as one (no sign, fraction, or exponent), ` +
+        `got ${token ?? 'a value that is not a number'}`,
+    );
+  }
+}
+
+/**
+ * A field's type, as the chain parses one: its lowercase name, or that name
+ * as the one key of an object whose value is `null` (the other form a unit
+ * enum variant takes in the chain's JSON).
+ */
+function readFieldType(json: JsonText, label: string): void {
+  const c = json.peek();
+  if (c === '"') {
+    const name = json.string();
+    if (!isFieldType(name)) throw fieldTypeError(label, name);
+    return;
+  }
+  let entries = 0;
+  const isObject = json.object((variant) => {
+    entries++;
+    if (!isFieldType(variant) || !json.eat('null')) {
+      throw invalidSchema(
+        `${label} must be a field type (one of ${SCHEMA_FIELD_TYPES.join(', ')}), ` +
+          'or one such name as an object\'s one key valued null',
+      );
+    }
+  });
+  if (!isObject || entries !== 1) {
+    throw invalidSchema(
+      `${label} must be a field type (one of ${SCHEMA_FIELD_TYPES.join(', ')}), ` +
+        "or one such name as an object's one key valued null",
+    );
+  }
+}
+
+function readSchemaPart(json: JsonText, key: SchemaKey): void {
+  switch (key) {
+    case 'version':
+      readVersion(json);
+      return;
+    case 'fields':
+      if (
+        !json.object((field) => {
+          const label = `schema.fields[${JSON.stringify(fieldName(field))}]`;
+          readFieldType(json, label);
+        })
+      ) {
+        throw invalidSchema('schema.fields must be an object');
+      }
+      return;
+    case 'indexes':
+      if (json.peek() !== '[') throw invalidSchema('schema.indexes must be an array');
+      if (!json.eat('[') || !json.eat(']')) throw indexesUnsupported();
+      return;
+    case 'required_fields':
+      if (
+        !json.array((i) => {
+          if (json.peek() !== '"') throw invalidSchema(`schema.required_fields[${i}] must be a string`);
+          wellFormed(`schema.required_fields[${i}]`, json.string());
+        })
+      ) {
+        throw invalidSchema('schema.required_fields must be an array of strings');
+      }
+      return;
+  }
 }
 
 /**
  * Refuse schema JSON text the chain would not parse as a DataStorage or
- * FileStorage schema, or one that declares indexes. The text is checked as
- * `JSON.parse` reads it: an object (or the chain's positional array form,
- * `[version, fields, indexes, required_fields]`) whose `version` is an
- * integer in u32, `fields` an object of field types, `indexes` an empty
- * array, and `required_fields` an array of strings; each may be left out,
- * and any other key is ignored, as the chain does.
+ * FileStorage schema, or one that declares indexes. The text is read as the
+ * chain's `serde_json` parse of its `SchemaDefinition` reads it: an object
+ * (or the positional array form, `[version, fields, indexes,
+ * required_fields]`, at most 4 elements) in which
+ *
+ * - `version` is an integer token in u32 (`1`, not `1.0`, `1e0`, `-0`, or
+ *   `"1"`);
+ * - `fields` is an object of field types; `indexes` an empty array;
+ *   `required_fields` an array of strings;
+ * - none of these keys appears twice;
+ * - no key, field name, field type, or required field holds a lone UTF-16
+ *   surrogate (a `\u` escape of one).
+ *
+ * Each of the four may be left out, and any other key is ignored (its value
+ * is not read), as the chain does. A field named twice in `fields` is read
+ * both times, the later one kept.
  *
  * @throws WillowError `INVALID_SCHEMA` or `SCHEMA_INDEXES_UNSUPPORTED`.
  */
 export function checkStorageSchema(schema: string): void {
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(schema);
+    JSON.parse(schema);
   } catch {
     throw invalidSchema('The schema is not JSON');
   }
-  let parts: Record<string, unknown>;
-  if (Array.isArray(parsed)) {
-    if (parsed.length > 4) {
-      throw invalidSchema('A schema written as an array has at most 4 elements');
-    }
-    const keys = ['version', 'fields', 'indexes', 'required_fields'];
-    parts = Object.fromEntries(parsed.map((v, i) => [keys[i], v]));
-  } else if (isObject(parsed)) {
-    parts = parsed;
+  const json = new JsonText(schema);
+  const c = json.peek();
+  if (c === '{') {
+    const seen = new Set<string>();
+    json.object((key) => {
+      wellFormed('A schema key', key);
+      if (!(SCHEMA_KEYS as readonly string[]).includes(key)) {
+        json.skip();
+        return;
+      }
+      if (seen.has(key)) throw invalidSchema(`The schema has the key ${JSON.stringify(key)} twice`);
+      seen.add(key);
+      readSchemaPart(json, key as SchemaKey);
+    });
+  } else if (c === '[') {
+    json.array((i) => {
+      if (i >= SCHEMA_KEYS.length) {
+        throw invalidSchema('A schema written as an array has at most 4 elements');
+      }
+      readSchemaPart(json, SCHEMA_KEYS[i]);
+    });
   } else {
     throw invalidSchema('The schema must be a JSON object');
   }
-  const has = (key: string) => Object.prototype.hasOwnProperty.call(parts, key);
-
-  if (has('version')) {
-    const v = parts.version;
-    if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 0xffff_ffff) {
-      throw invalidSchema(`schema.version must be an integer in u32, got ${JSON.stringify(v)}`);
-    }
-  }
-  if (has('indexes')) {
-    if (!Array.isArray(parts.indexes)) throw invalidSchema('schema.indexes must be an array');
-    if (parts.indexes.length > 0) throw indexesUnsupported();
-  }
-  if (has('fields')) {
-    const fields = parts.fields;
-    if (!isObject(fields)) throw invalidSchema('schema.fields must be an object');
-    for (const [field, value] of Object.entries(fields)) {
-      const label = `schema.fields[${JSON.stringify(fieldName(field))}]`;
-      if (!isChainFieldType(value)) throw fieldTypeError(label, value);
-    }
-  }
-  if (has('required_fields')) names('schema.required_fields', parts.required_fields);
 }
