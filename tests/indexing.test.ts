@@ -211,7 +211,9 @@ describeIntegration('Willow Tests', () => {
       expect(results.documents.every(doc => doc.author === 'alice')).toBe(true);
     });
 
-    it('should perform range queries', async () => {
+    // The API applies no filter operator and no search, so a verified query
+    // refuses them; they can be read unverified.
+    it('refuses a range filter, which the API does not apply', async () => {
       const query: QueryRequest = {
         filters: {
           timestamp: {
@@ -221,14 +223,12 @@ describeIntegration('Willow Tests', () => {
         },
       };
 
-      const results = await client2.data.query('blog_posts', query);
-      expect(results.documents).toHaveLength(2);
-      expect(results.documents.every(doc =>
-        doc.timestamp >= 1000 && doc.timestamp <= 1500
-      )).toBe(true);
+      await expect(client2.data.query('blog_posts', query)).rejects.toMatchObject({
+        code: 'QUERY_NOT_VERIFIABLE',
+      });
     });
 
-    it('should perform fulltext search', async () => {
+    it('refuses a fulltext search, which the API does not apply', async () => {
       const query: QueryRequest = {
         search: {
           field: 'content',
@@ -236,11 +236,9 @@ describeIntegration('Willow Tests', () => {
         },
       };
 
-      const results = await client2.data.query('blog_posts', query);
-      expect(results.documents.length).toBeGreaterThanOrEqual(2);
-      expect(results.documents.some(doc =>
-        doc.content.toLowerCase().includes('indexing')
-      )).toBe(true);
+      await expect(client2.data.query('blog_posts', query)).rejects.toMatchObject({
+        code: 'QUERY_NOT_VERIFIABLE',
+      });
     });
 
     it('should support sorting', async () => {
@@ -287,7 +285,7 @@ describeIntegration('Willow Tests', () => {
       expect(page2.offset).toBe(2);
     });
 
-    it('should support compound queries', async () => {
+    it('refuses a filter on two fields, of which the API applies one', async () => {
       const query: QueryRequest = {
         filters: {
           author: 'alice',
@@ -299,10 +297,9 @@ describeIntegration('Willow Tests', () => {
         },
       };
 
-      const results = await client2.data.query('blog_posts', query);
-      expect(results.documents).toHaveLength(1);
-      expect(results.documents[0].author).toBe('alice');
-      expect(results.documents[0].views).toBeGreaterThanOrEqual(200);
+      await expect(client2.data.query('blog_posts', query)).rejects.toMatchObject({
+        code: 'QUERY_NOT_VERIFIABLE',
+      });
     });
   });
 
@@ -398,9 +395,9 @@ describeIntegration('Performance Tests', () => {
     console.log(`Category query returned ${categoryResults.documents.length} results in ${categoryQueryTime}ms`);
     expect(categoryQueryTime).toBeLessThan(1000); // Should complete within 1 second
 
-    // Range query performance
+    // Range query performance (unverified: the API applies no range filter)
     const rangeStartTime = Date.now();
-    const rangeResults = await client.data.query('perf_test', {
+    const rangeResults = await client.data.queryUnverified('perf_test', {
       filters: {
         value: { $gte: 200, $lte: 500 },
       },

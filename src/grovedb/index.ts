@@ -10,10 +10,17 @@ export {
   verifyGroveDBProof,
   verifyProofAgainstRoot,
   verifyKeyAbsence,
+  verifyCompleteLayer,
   quickVerify,
   checkEnvelope,
 } from './verifier';
-export type { GroveDBVerificationResult, ProvenEntry, VerifyOptions } from './verifier';
+export type {
+  GroveDBVerificationResult,
+  ProvenEntry,
+  VerifyOptions,
+  CompleteEntry,
+  CompleteLayer,
+} from './verifier';
 
 // Types
 export { GroveDBVerificationError, HASH_LENGTH, NULL_HASH } from './types';

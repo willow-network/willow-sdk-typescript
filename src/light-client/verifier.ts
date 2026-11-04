@@ -287,8 +287,10 @@ export class ProofVerifier {
    * Verify a GroveDB query proof against a trusted app hash. The proof must
    * verify to `trustedAppHash`, and each entry of `queryResult` (or of
    * `proof.queryResult` when none is given) must be the bytes of an Item the
-   * proof proves. It does not tie those values to a path: to check one key
-   * at a known path, use {@link verifyInclusionProof}.
+   * proof proves. It does not tie those values to a path, nor show that
+   * they are a query's whole result (membership only): to check one key at
+   * a known path, use {@link verifyInclusionProof}; to verify a query's
+   * result, `verifyQuerySelection`.
    */
   async verifyQueryProof(
     proof: GroveDBQueryProof,

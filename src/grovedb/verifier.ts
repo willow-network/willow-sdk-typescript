@@ -54,7 +54,12 @@ export interface ProvenEntry {
 export interface GroveDBVerificationResult {
   /** Root hash of the entire GroveDB tree */
   rootHash: CryptoHash;
-  /** Proven entries with their paths */
+  /**
+   * The entries the proof reveals, with their paths. A proof can leave any
+   * other entry out (as a `Hash` or `KVHash` node), so these are not every
+   * entry under a path: {@link verifyCompleteLayer} checks that a proof
+   * reveals a whole subtree.
+   */
   results: ProvenEntry[];
 }
 
@@ -146,7 +151,9 @@ function noLowerLayer(expectedPath: Uint8Array[], i: number): GroveDBVerificatio
 }
 
 /**
- * Verify a GroveDB proof and return the root hash and proven values
+ * Verify a GroveDB proof and return the root hash and the entries it reveals.
+ * It shows that each revealed entry is in the state with that root; it does
+ * not show that no other entry is (see {@link verifyCompleteLayer}).
  *
  * @param proofBytes - The bincode-encoded GroveDBProof
  * @param options - Verification options
@@ -400,6 +407,84 @@ export function verifyKeyAbsence(
     );
   }
   return rootHash;
+}
+
+/** One node of a subtree a proof reveals whole: its key and what it holds. */
+export interface CompleteEntry {
+  key: Uint8Array;
+  /**
+   * The element bytes, bound to the proof. For a reference, the referenced
+   * element's bytes (the reference itself is not revealed).
+   */
+  value: Uint8Array;
+  /** The element `value` decodes to, or `null` when it does not decode. */
+  element: Element | null;
+  /** The node is a reference (a `KVRefValueHash` node). */
+  reference: boolean;
+}
+
+/** The proof of a whole subtree: its root hash and every node in it. */
+export interface CompleteLayer {
+  rootHash: CryptoHash;
+  /** Every node of the subtree at the path, in key order. */
+  entries: CompleteEntry[];
+}
+
+/**
+ * Verify a proof that reveals the whole subtree at `path`, and return every
+ * node in it in key order with the bytes the proof binds to it.
+ *
+ * The proof must descend to `path` as {@link checkEnvelope} requires (or end
+ * at a subtree on the path that it proves empty: then the subtree has no
+ * nodes). At `path`, every node of the merk proof must carry its value: a
+ * `Hash` node (a pruned subtree), a `KVHash` node (a hidden key and value),
+ * or a `KVDigest` node (a hidden value) could hide entries, so each is
+ * refused, as is a non-empty subtree without its lower layer, whose bytes the
+ * proof does not bind. With none of them, the nodes are the subtree's every
+ * entry. A `range_full` query's proof at the path is of this form.
+ *
+ * @throws GroveDBVerificationError when the proof is invalid or does not
+ *   reveal the whole subtree.
+ */
+export function verifyCompleteLayer(proofBytes: Uint8Array, path: Uint8Array[]): CompleteLayer {
+  const proof = decodeGroveDBProof(proofBytes);
+  const { rootHash, depth } = verifyProof(proof, { expectedPath: path });
+  if (depth !== null && depth < path.length) return { rootHash, entries: [] };
+
+  let layer: LayerProof = proof.proof.rootLayer;
+  for (const segment of path) layer = layer.lowerLayers.get(bytesToHex(segment))!;
+  const tree = executeMerkProof(layer.merkProof, false);
+
+  const entries: CompleteEntry[] = [];
+  let lastKey: Uint8Array | null = null;
+  for (const node of tree.inOrder()) {
+    const n = node.node;
+    if (n.type === 'Hash' || n.type === 'KVHash' || n.type === 'KVDigest') {
+      throw new GroveDBVerificationError(
+        `The proof does not reveal the whole subtree at ${pathToString(path)}: ` +
+          `it has a ${n.type} node, which can hide entries`
+      );
+    }
+    if (lastKey && compareBytes(n.key, lastKey) <= 0) {
+      throw new GroveDBVerificationError(`Keys out of order at ${pathToString(path)}`);
+    }
+    lastKey = n.key;
+    const element = tryDeserializeElement(n.value);
+    if (n.type === 'KVValueHash' || n.type === 'KVValueHashFeatureType') {
+      const binding = bindLeafValue(
+        { key: n.key, value: n.value, proof: n.valueHash, nodeType: n.type },
+        element
+      );
+      if (binding === 'unboundTree') {
+        throw new GroveDBVerificationError(
+          `The proof does not reveal the whole subtree at ${pathToString(path)}: ` +
+            `${pathToString([...path, n.key])} is a subtree without its lower layer, whose bytes it does not bind`
+        );
+      }
+    }
+    entries.push({ key: n.key, value: n.value, element, reference: n.type === 'KVRefValueHash' });
+  }
+  return { rootHash, entries };
 }
 
 /**

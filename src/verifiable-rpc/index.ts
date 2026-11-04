@@ -1,19 +1,20 @@
 /**
- * Verifiable RPC: fetch a query result from an indexer and verify the attached
- * proofs locally — no consensus round-trip, no trusted RPC.
+ * Verifiable RPC: fetch a query result from an indexer with proofs attached.
  *
- * Two legs verify today:
- *  - inclusion: the GroveDB Merkle proof roots at the response's `state_root`,
- *    so `answer` is bound to that committed root.
- *  - transformation: each GKR proof verifies (via the `@willow-network/gkr-verify-wasm`
- *    companion package), the chunks chain (`starting_state_root[i+1] === output_root[i]`),
- *    and the final `output_root` equals `state_root` — so `state_root` is the proven
- *    output of applying the subgrove transformation to the committed events.
+ * What `verify` checks, and what it does not:
+ *  - inclusion: the GroveDB proof verifies and its root equals the
+ *    response's own `state_root`. It does NOT bind `answer`, `answerExists`,
+ *    or `key` to the proof (the proof is not checked to hold `answer` at
+ *    `key`), and `state_root` is the indexer's own claim, not anchored to a
+ *    light client. So `answer` is unverified: an indexer can pair any answer
+ *    with any valid proof.
+ *  - transformation (strict mode): each GKR proof verifies (via the
+ *    `@willow-network/gkr-verify-wasm` companion package), the chunks chain
+ *    (`starting_state_root[i+1] === output_root[i]`), and the final
+ *    `output_root` equals `state_root`, so `state_root` is the proven output
+ *    of applying the subgrove transformation to the committed events.
  *
- * Together they bind `answer` to a GKR-proven transformation output. Two anchors
- * are follow-ups (documented inline): cross-checking `state_root` continuity
- * against a light client, and the completeness leg (lands with the
- * binius-verify-wasm repoint).
+ * The result reports `stateRootAnchored: false` and `completeness: false`.
  */
 
 import { sha256 } from "@noble/hashes/sha256";
@@ -196,9 +197,15 @@ export class VerifiableRpcOperations {
   }
 
   /**
-   * Fetch and verify. In `strict` mode (default) the inclusion proof must root
-   * at `state_root` AND every attached GKR proof must verify and chain to it;
-   * any failure throws. In `inclusion` mode only the GroveDB proof is checked.
+   * Fetch and check the attached proofs. In `strict` mode (default) the
+   * GroveDB proof must root at `state_root` AND every attached GKR proof
+   * must verify and chain to it; any failure throws. In `inclusion` mode only
+   * the GroveDB proof is checked.
+   *
+   * The returned `answer` is not verified: the GroveDB proof is not checked
+   * to hold `answer` at the key, and `state_root` is the indexer's own claim
+   * (see the module notes). `verified.inclusion` means only that the proof
+   * verifies to `state_root`.
    */
   async verify(
     subgroveId: string,
@@ -206,6 +213,12 @@ export class VerifiableRpcOperations {
     opts: VerifyOptions = {},
   ): Promise<VerifiedResult> {
     const mode = opts.mode ?? "strict";
+    if (opts.anchorStateRoot) {
+      throw new VerifiableRpcError(
+        "anchorStateRoot is not implemented: verify does not check state_root against a light client",
+        "UNSUPPORTED",
+      );
+    }
     const resp = await this.get(subgroveId, queryKey);
 
     if (opts.maxAgeSecs !== undefined) {
@@ -221,7 +234,8 @@ export class VerifiableRpcOperations {
     const stateRoot = toBytes(resp.state_root);
     const stateRootHex = bytesToHex(stateRoot);
 
-    // Inclusion: the GroveDB proof must verify and root at state_root.
+    // The GroveDB proof must verify and root at state_root. This binds
+    // neither `answer` nor the key to it.
     const proofHex = bytesToHex(base64ToBytes(resp.grovedb_proof));
     let inclusion = false;
     try {

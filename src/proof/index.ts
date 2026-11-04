@@ -2,12 +2,23 @@
  * Proof verification for Willow query results.
  *
  * Delegates to the pure-TypeScript GroveDB verifier in src/grovedb/. Every
- * exported function performs full cryptographic verification — no heuristics —
- * and *binds the returned data to the proof*: documents that the proof does
- * not commit to are rejected, so a server cannot pair a valid proof with
- * unrelated data. The returned root hash must still be compared against a
- * trusted source (e.g. a light client's verified block header) to establish
- * that the proven state is the canonical one.
+ * exported function performs full cryptographic verification — no heuristics.
+ * What each binds differs:
+ *
+ * - {@link verifyQuerySelection} verifies a whole `POST /query/:subgrove`
+ *   result: the proof reveals the subgrove's entire data tree, and the
+ *   returned documents and `total` are exactly what the API's query selects
+ *   from it, in order. `client.query` uses it.
+ * - {@link verifyQueryProof} and {@link verifyQueryResponse} check
+ *   membership only: each returned document is a value the proof proves (at
+ *   `options.path`, when given). They do not show that the documents are the
+ *   complete result, or the query's result at all: a subset, a duplicate, or
+ *   a document the query's filter excludes passes.
+ * - {@link verifyItemProof} binds one key's value at a path.
+ *
+ * Each returns the proof's root hash, which must still be compared against a
+ * trusted source (e.g. a light client's root for the proof's block height)
+ * to establish that the proven state is the canonical one.
  *
  * Binding guarantee: the proven Item bytes are authoritative. A returned
  * document binds only if it is structurally equal to the JSON those bytes
@@ -22,11 +33,26 @@ import { QueryResponse, DataRecord } from '../types';
 import {
   verifyGroveDBProof,
   quickVerify,
-  hexToBytes,
   hashToHex,
   isTreeElement,
   GroveDBVerificationResult,
 } from '../grovedb';
+import {
+  PathSegment,
+  decodeProofBytes,
+  encodePath,
+  enforceExpectedRoot,
+  jsonDeepEqual,
+} from './shared';
+
+export { subgroveDataPath } from './shared';
+export type { PathSegment } from './shared';
+export {
+  verifyQuerySelection,
+  QueryNotVerifiableError,
+  DEFAULT_QUERY_LIMIT,
+} from './query-selection';
+export type { QuerySelectionOptions } from './query-selection';
 
 export interface ProofVerificationOptions {
   /**
@@ -51,17 +77,6 @@ export interface ProofVerificationOptions {
   path?: PathSegment[];
 }
 
-/** A GroveDB path segment: a string (its UTF-8 bytes) or the bytes. */
-export type PathSegment = string | Uint8Array;
-
-/**
- * The GroveDB path of a subgrove's data, `["subgroves", subgroveId, "data"]`:
- * the path `POST /query/:subgrove` and `GET /proof/:subgrove/:key` prove at.
- */
-export function subgroveDataPath(subgroveId: string): string[] {
-  return ['subgroves', subgroveId, 'data'];
-}
-
 export interface ProofVerificationResult {
   valid: boolean;
   rootHash?: string;
@@ -70,10 +85,6 @@ export interface ProofVerificationResult {
 
 function textEncode(s: string): Uint8Array {
   return new TextEncoder().encode(s);
-}
-
-function encodePath(path: PathSegment[]): Uint8Array[] {
-  return path.map((segment) => (typeof segment === 'string' ? textEncode(segment) : segment));
 }
 
 function pathLabel(path: PathSegment[]): string {
@@ -94,66 +105,6 @@ function pathEqual(a: Uint8Array[], b: Uint8Array[]): boolean {
   return true;
 }
 
-function decodeProofBytes(proofHex: string): Uint8Array {
-  if (!proofHex) throw new Error('Empty proof provided');
-  const bytes = hexToBytes(proofHex);
-  if (bytes.length === 0) throw new Error('Empty proof provided');
-  return bytes;
-}
-
-function normalizeRoot(hex: string): string {
-  return hex.toLowerCase().replace(/^0x/, '');
-}
-
-function enforceExpectedRoot(computed: string, expected?: string): void {
-  if (!expected) return;
-  if (normalizeRoot(computed) !== normalizeRoot(expected)) {
-    throw new Error(`Root hash mismatch: computed=${computed}, expected=${expected}`);
-  }
-}
-
-/**
- * A number is fidelity-safe when two distinct JSON source tokens cannot parse
- * to it: exact safe integers, and finite non-integers below the 2^53 boundary.
- * `NaN`, `±Infinity`, `-0`, and any integer past `MAX_SAFE_INTEGER` (which
- * `JSON.parse` silently rounds — e.g. 2^53+1 → 2^53) are NOT fidelity-safe.
- */
-function isFidelitySafeNumber(n: number): boolean {
-  if (Number.isInteger(n)) return Number.isSafeInteger(n) && !Object.is(n, -0);
-  return Number.isFinite(n) && Math.abs(n) < 2 ** 53;
-}
-
-/**
- * Structural (deep) equality over JSON values, used to bind returned documents
- * to the proven bytes. Whitespace and object key order are normalized away by
- * comparing parsed trees; numbers are compared with `Object.is` (so `-0 !== 0`
- * and `NaN` never matches) and only when both are {@link isFidelitySafeNumber}
- * — a precision-unsafe number on either side is a non-match, so two distinct
- * committed byte sequences can never bind to the same JS value.
- */
-function jsonDeepEqual(a: unknown, b: unknown): boolean {
-  if (typeof a !== typeof b) return false;
-  if (typeof a === 'number') {
-    return Object.is(a, b) && isFidelitySafeNumber(a);
-  }
-  if (a === b) return true;
-  if (a === null || b === null) return false;
-  if (Array.isArray(a) || Array.isArray(b)) {
-    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-    return a.every((v, i) => jsonDeepEqual(v, b[i]));
-  }
-  if (typeof a === 'object') {
-    const ka = Object.keys(a as object);
-    const kb = Object.keys(b as object);
-    if (ka.length !== kb.length) return false;
-    return ka.every((k) =>
-      Object.prototype.hasOwnProperty.call(b as object, k) &&
-      jsonDeepEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]),
-    );
-  }
-  return false;
-}
-
 /**
  * A value the proof commits to: the raw proven Item bytes, decoded as JSON
  * when they parse, otherwise kept as opaque bytes so a non-JSON stored Item
@@ -163,9 +114,15 @@ type ProvenValue =
   | { kind: 'json'; value: unknown }
   | { kind: 'raw'; bytes: Uint8Array };
 
+/**
+ * Bytes that are not UTF-8, or that start with a byte-order mark, are not
+ * JSON text to the node, so they stay raw: a decoder that replaced bad bytes
+ * or dropped the mark would read other bytes as the same JSON.
+ */
 function decodeProvenValue(raw: Uint8Array): ProvenValue {
   try {
-    return { kind: 'json', value: JSON.parse(new TextDecoder().decode(raw)) };
+    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(raw);
+    return { kind: 'json', value: JSON.parse(text) };
   } catch {
     return { kind: 'raw', bytes: raw };
   }
@@ -232,14 +189,21 @@ function bindDocumentsToProof(
 }
 
 /**
- * Verify a query/range proof and return the computed root hash (hex).
+ * Verify a query/range proof, check that each document is a value it proves,
+ * and return the computed root hash (hex).
  *
- * Every entry in `documents` must deep-equal a value the proof commits to;
- * a valid proof paired with unrelated documents is rejected. Pass the path
- * the query was made at (`options.path`, e.g. {@link subgroveDataPath}) to
- * bind them to values proven there: without it, a value proven at any path
- * binds. The caller must compare the returned root to a trusted root hash to
- * establish that the proven state is canonical.
+ * This checks membership only. Every entry in `documents` must deep-equal a
+ * value the proof commits to, so a valid proof paired with unrelated
+ * documents is rejected; but the proof may leave entries out, and nothing
+ * ties the documents to a query, so a subset, a duplicate, or a document a
+ * query's filter excludes passes. To verify a `POST /query/:subgrove` result
+ * as the query's whole result, use {@link verifyQuerySelection}.
+ *
+ * Pass the path the query was made at (`options.path`, e.g.
+ * {@link subgroveDataPath}) to bind the documents to values proven there:
+ * without it, a value proven at any path binds. The caller must compare the
+ * returned root to a trusted root hash to establish that the proven state is
+ * canonical.
  */
 export async function verifyQueryProof(
   proofHex: string,
@@ -325,10 +289,12 @@ export async function computeProofRootHash(proofHex: string): Promise<string> {
 export const extractRootHashFromProof = computeProofRootHash;
 
 /**
- * Verify the proof attached to a `QueryResponse`, binding its documents. Pass
- * the queried path in `options.path` (for `POST /query/:subgrove`,
- * {@link subgroveDataPath}`(subgrove)`) to bind them to that subgrove's data;
- * see {@link verifyQueryProof}.
+ * Verify the proof attached to a `QueryResponse` and check that each document
+ * is a value it proves (membership only, as {@link verifyQueryProof}: not
+ * that the documents are the query's whole result, which
+ * {@link verifyQuerySelection} checks). Pass the queried path in
+ * `options.path` (for `POST /query/:subgrove`,
+ * {@link subgroveDataPath}`(subgrove)`) to bind them to that subgrove's data.
  */
 export async function verifyQueryResponse(
   response: QueryResponse,
@@ -352,7 +318,9 @@ export class GroveDBProofVerifier {
   constructor(public readonly options: ProofVerificationOptions = {}) {}
 
   /**
-   * Verify a query/range proof, binding `documents` to it.
+   * Verify a query/range proof and check that each document is a value it
+   * proves (membership only; see the module function
+   * {@link verifyQueryProof}).
    */
   async verifyQueryProof(
     proofHex: string,

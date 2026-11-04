@@ -53,7 +53,7 @@ export interface VerifiableRpcResponse {
   state_root: Bytes32;
   /** Inclusive (start, end) block range covered by the checkpoint. */
   block_range: [number, number];
-  /** base64 — GroveDB Merkle proof binding `answer` to `state_root`. */
+  /** base64 — the GroveDB proof the indexer attaches (the SDK does not check it holds `answer`). */
   grovedb_proof: string;
   /** Transformation proofs, one per chunk; empty if none generated yet. */
   gkr_proofs: GkrProofData[];
@@ -100,8 +100,9 @@ export interface VerifyOptions {
    */
   gkrVerifier?: GkrVerifier;
   /**
-   * When true, cross-check `state_root` against a light-client-verified app
-   * hash at the response's block height before trusting the inclusion proof.
+   * Cross-checking `state_root` against a light client is not implemented:
+   * `verify` throws `UNSUPPORTED` when this is true, rather than return a
+   * result whose `state_root` is unanchored.
    */
   anchorStateRoot?: boolean;
   /** Reject responses older than this many seconds (freshness bound). */
@@ -110,6 +111,11 @@ export interface VerifyOptions {
 
 /** Which legs were verified, for transparency. */
 export interface VerifiedLegs {
+  /**
+   * The GroveDB proof verifies and its root is the response's `state_root`.
+   * It does not mean `answer` is in the proof: the answer and key are not
+   * bound to it.
+   */
   inclusion: boolean;
   /** null = no transformation proofs attached; true/false = verified result. */
   transformation: boolean | null;
@@ -119,7 +125,10 @@ export interface VerifiedLegs {
 }
 
 export interface VerifiedResult {
-  /** Decoded answer bytes (empty when the key is absent). */
+  /**
+   * Decoded answer bytes (empty when the key is absent), as the indexer
+   * sent them: not bound to the proof.
+   */
   answer: Uint8Array;
   answerExists: boolean;
   stateRoot: Uint8Array;
@@ -139,7 +148,8 @@ export class VerifiableRpcError extends Error {
       | "CIRCUIT_PIN_FAILED"
       | "CHAIN_BROKEN"
       | "STALE"
-      | "ROOT_MISMATCH",
+      | "ROOT_MISMATCH"
+      | "UNSUPPORTED",
   ) {
     super(message);
     this.name = "VerifiableRpcError";

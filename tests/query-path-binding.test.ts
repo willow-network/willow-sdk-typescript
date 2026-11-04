@@ -184,7 +184,7 @@ describe('WillowData binds query results to the queried subgrove', () => {
     const d = new WillowData('http://api.test', new WillowAuth('http://api.test'), new WillowIndexers('http://api.test'));
     // A light client that trusts the honest root.
     (d as any).lightClient = {
-      getVerifiedRootHash: async () => ROOT,
+      getLatestChainHeight: async () => 7,
       getVerifiedRootHashAtHeight: async () => ROOT,
     };
     return d;
@@ -211,30 +211,13 @@ describe('WillowData binds query results to the queried subgrove', () => {
     await expect(data().query('sg-a', {})).rejects.toMatchObject({ code: 'PROOF_VERIFICATION_FAILED' });
   });
 
-  function serveHistorical(proof: Uint8Array, documents: unknown[]) {
-    global.fetch = jest.fn(async (url: string) => {
-      if (url.includes('/checkpoints/')) {
-        return reply({ success: true, data: { checkpoint_id: 'cp', subgrove_id: 'sg-a', state_root: ROOT, block_range: [1, 2] } });
-      }
-      return reply({ success: true, state_root: ROOT, block_range: [1, 2], data: documents, proof: hex(proof) });
-    }) as unknown as typeof fetch;
-  }
-
-  const historicalQuery = { path: PATH_A.map((s) => Array.from(enc(s))), query_type: 'get_path' };
-
-  it('queryHistoricalVerified binds the documents at the query path', async () => {
-    serveHistorical(honest(PATH_A, ['a1', 'a2']), [DOC_A1, DOC_A2]);
-    await expect(data().queryHistoricalVerified('sg-a', 'cp', historicalQuery)).resolves.toMatchObject({ state_root: ROOT });
-    serveHistorical(BOTH, [DOC_B1]);
-    await expect(data().queryHistoricalVerified('sg-a', 'cp', historicalQuery)).rejects.toThrow(/off the query path/);
-  });
-
-  it('queryHistoricalVerified refuses a path that is not bytes before sending anything', async () => {
+  it('queryHistoricalVerified is unsupported, and sends nothing', async () => {
     const fetchMock = jest.fn();
     global.fetch = fetchMock as unknown as typeof fetch;
-    await expect(
-      data().queryHistoricalVerified('sg-a', 'cp', { path: [[300]] as number[][] }),
-    ).rejects.toMatchObject({ code: 'INVALID_QUERY' });
+    const historicalQuery = { path: PATH_A.map((s) => Array.from(enc(s))), query_type: 'get_path' };
+    await expect(data().queryHistoricalVerified('sg-a', 'cp', historicalQuery)).rejects.toMatchObject({
+      code: 'UNSUPPORTED_OPERATION',
+    });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

@@ -320,13 +320,14 @@ export class WillowClient {
   }
 
   /**
-   * Get the verified root hash from the blockchain consensus
+   * The root hash the API reports at `GET /state/root-hash/verified`.
    *
-   * This method retrieves the root hash that has been committed to the blockchain
-   * and verified by the consensus mechanism. This is the most secure way to get
-   * the root hash as it ensures the state has been agreed upon by the network.
+   * The SDK does not verify it: it is the API's answer, as trustworthy as the
+   * API. The verified reads (`get`, `query`) don't use it; they check each
+   * proof's root against the light client's root for the proof's block
+   * height.
    *
-   * @returns The verified root hash from the blockchain
+   * @returns The root hash the API reports
    * @throws Error if the root hash cannot be retrieved
    */
   async getRootHash(): Promise<string> {
@@ -379,7 +380,10 @@ export class WillowClient {
   }
 
   /**
-   * Query indexed data with automatic proof verification (secure by default)
+   * Query indexed data with automatic proof verification (secure by
+   * default): the result is verified as the query's whole result, and a
+   * query whose result the SDK can't verify throws `QUERY_NOT_VERIFIABLE`
+   * (see `WillowData.query`).
    */
   async query(
     datasetId: string,

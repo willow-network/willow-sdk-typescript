@@ -36,6 +36,13 @@ export interface WillowLightClientOptions {
   maxClockDriftSecs?: number;
   /** Per-request timeout in seconds. Default: 30. */
   requestTimeoutSecs?: number;
+  /**
+   * How many blocks a verified read's proof may be from the chain's latest
+   * height (as the endpoints report it): the API chooses the height it
+   * proves at, so a proof further from the latest is refused
+   * (`PROOF_HEIGHT_OUT_OF_RANGE`). Default: 20.
+   */
+  maxProofLagBlocks?: number;
 }
 
 export interface WillowConfig {
@@ -285,7 +292,22 @@ export interface QueryResponse {
   offset?: number;
   limit?: number;
   proof?: string;
-  verifiedRootHash?: string; // Added when proof is successfully verified
+  /** The root the result was verified against (`client.query` sets it). */
+  verifiedRootHash?: string;
+  /**
+   * The block height whose state the result was verified against: the state
+   * after that block (`client.query` sets it).
+   */
+  verifiedHeight?: number;
+}
+
+/** A key's value, with the root and block height it was verified against. */
+export interface VerifiedData {
+  data: DataRecord;
+  /** The root the value's proof was verified against (hex). */
+  rootHash: string;
+  /** The block height whose state the proof is of: the state after that block. */
+  height: number;
 }
 
 // Token Types

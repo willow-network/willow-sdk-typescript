@@ -186,3 +186,38 @@ export function pathProof(merk: Merk, path: string[], reveal: string[]): LayerPr
 }
 
 export const hex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
+
+/**
+ * A proof down `path`, each layer above the last proving its one subtree
+ * entry as grovedb does, and the last layer `leafOps` (a merk proof whose
+ * tree has root hash `leafRoot` and root key `leafRootKey`): for last layers
+ * the Merk class can't build. Returns the proof and the state's root hash.
+ */
+export function chainProof(
+  path: string[],
+  leafOps: Uint8Array,
+  leafRoot: Uint8Array,
+  leafRootKey: Uint8Array,
+): { proof: Uint8Array; root: Uint8Array } {
+  let childRoot = leafRoot;
+  let childRootKey = leafRootKey;
+  let layer: LayerProof = { merk: leafOps };
+  for (let i = path.length - 1; i >= 0; i--) {
+    const key = enc(path[i]);
+    const element = treeElement(childRootKey);
+    const vh = combineHash(valueHash(element), childRoot);
+    layer = { merk: Uint8Array.from(op.kvValueHash(key, element, vh)), lower: [[path[i], layer]] };
+    childRoot = nodeHash(kvDigestToKvHash(key, vh), NULL_HASH, NULL_HASH);
+    childRootKey = key;
+  }
+  return { proof: groveProof(layer), root: childRoot };
+}
+
+/** A last layer of one item, `key` holding `payload` (any bytes), and its root hash. */
+export function oneItemLayer(key: string, payload: Uint8Array): { ops: Uint8Array; root: Uint8Array } {
+  const element = itemElement(payload);
+  return {
+    ops: Uint8Array.from(op.kv(enc(key), element)),
+    root: nodeHash(kvHash(enc(key), element), NULL_HASH, NULL_HASH),
+  };
+}
