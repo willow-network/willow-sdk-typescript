@@ -71,7 +71,8 @@ export function executeOps(
   }
 
   // Pop two nodes and attach one as a child of the other. The four tree ops
-  // differ only in pop order and which side the child lands on.
+  // differ only in pop order and which side the child lands on. `attach`
+  // refuses a Hash parent: its hash would not cover the child.
   function attachChild(parentFirst: boolean, left: boolean): void {
     const first = pop();
     const second = pop();

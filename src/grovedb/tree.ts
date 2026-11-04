@@ -85,9 +85,17 @@ export class Tree {
   }
 
   /**
-   * Attach a child to this node
+   * Attach a child to this node.
+   *
+   * A Hash node stands for a whole pruned subtree: its hash is final and does
+   * not cover anything attached to it, so it can't be a parent. Every other
+   * node kind (KVHash and KVDigest included) hashes its children into its own
+   * hash, as merk's `Tree::hash` does.
    */
   attach(left: boolean, child: Tree): void {
+    if (this.node.type === 'Hash') {
+      throw new GroveDBVerificationError("A hash node can't have children");
+    }
     if (left && this.left !== null) {
       throw new GroveDBVerificationError('Left child already attached');
     }
