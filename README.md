@@ -236,6 +236,9 @@ const verified = await client.data.queryHistoricalVerified(
 // Throws if proof verification fails
 ```
 
+`queryHistoricalVerified` binds the returned data to values the proof proves
+at the query's own `path`; a value proven at any other path does not count.
+
 **Error Handling for Unavailable Data:**
 
 ```typescript
@@ -296,6 +299,16 @@ so a server cannot pair a valid proof with unrelated data. The computed root
 hash must still be compared against a trusted source to establish that the
 proven state is canonical.
 
+A proof of one subgrove's data can carry another subgrove's data at the same
+root, so give the path the query was made at: `client.get`, `client.query`,
+and `queryHistoricalVerified` do, and the functions below take it as
+`options.path` (`subgroveDataPath(id)` is `["subgroves", id, "data"]`, where
+`POST /query/:subgrove` and `GET /proof/:subgrove/:key` prove). With a path,
+the proof must descend to it with no layer off it (or prove a subtree on it
+empty, which is an empty result), and a document binds only to a value proven
+at exactly that path. Without one, a document binds to a value proven
+anywhere in the proof.
+
 ### Verification Options
 
 There is no global configuration — options are passed explicitly, either
@@ -326,18 +339,22 @@ import {
   verifyItemProof,
   verifyQueryResponse,
   computeProofRootHash,
+  subgroveDataPath,
   GroveDBProofVerifier,
 } from '@willow-network/sdk';
 
-// Verify a query proof; every document must be committed to by the proof
-const rootHash = await verifyQueryProof(proofHex, documents);
+// Verify a query proof; every document must be committed to by the proof,
+// at the subgrove's data path
+const rootHash = await verifyQueryProof(proofHex, documents, {
+  path: subgroveDataPath('my-subgrove'),
+});
 
 // Verify a single item proof: enforces that the proof contains `key` at the
 // given path AND that the proven payload deep-equals `value`
 const rootHash = await verifyItemProof(proofHex, 'key', value, ['path', 'to', 'item']);
 
-// Verify a QueryResponse object (binds response.documents)
-const rootHash = await verifyQueryResponse(response);
+// Verify a QueryResponse object (binds response.documents at the path)
+const rootHash = await verifyQueryResponse(response, { path: subgroveDataPath('my-subgrove') });
 
 // Fully verify a proof and return just the root hash (no document binding).
 // Same cryptographic checks as verifyQueryProof.
@@ -393,8 +410,11 @@ re-exported from the package root as the `grovedb` namespace):
 import * as grovedb from '@willow-network/sdk/grovedb';
 
 // Full proof verification
-const result = grovedb.verifyGroveDBProof(proofBytes);
-// result: { rootHash: Uint8Array, results: Array<{ path, key, value, element }> }
+const result = grovedb.verifyGroveDBProof(proofBytes, { expectedPath });
+// result: { rootHash: Uint8Array, results: Array<{ path, key, value, element, tree }> }
+
+// A proof that `key` is absent at `path` (throws unless it proves that)
+const root = grovedb.verifyKeyAbsence(proofBytes, path, key);
 
 // Verify against expected root (throws on mismatch)
 const result = grovedb.verifyProofAgainstRoot(proofBytes, expectedRootHash);
@@ -414,6 +434,24 @@ const hex = grovedb.bytesToHex(bytes);
 const bytes = grovedb.hexToBytes(hex);
 const equal = grovedb.hashEquals(hash1, hash2);
 ```
+
+Each result's `value` is the element bytes the proof binds to its key. An
+entry with `tree: true` is a subtree, not a value: an empty one comes with its
+bytes, which the proof binds; a non-empty one proven without its lower layer
+has a value hash its bytes alone can't re-derive, so it comes with `value` and
+`element` `null` and proves only that its key is present. An element must
+decode with no trailing bytes.
+
+With `expectedPath`, the proof must carry a layer for each segment and no
+layer off the path, or stop at a subtree on the path that it proves empty.
+`verifyKeyAbsence` requires that, and that the merk proof at `path` shows
+where `key` would be with nothing unrevealed there.
+
+The light client's `ProofVerifier` checks a key at its path against a trusted
+root: `verifyInclusionProof(key, value, proofBytes, trustedRoot, path)` is
+true only when the proof proves the Item `value` at `key` under `path`, and
+`verifyAbsenceProof(key, proofBytes, trustedRoot, path)` only when it proves
+`key` absent there. Both require the path.
 
 ## Light Client (Experimental)
 
@@ -653,7 +691,9 @@ The chain accepts a nonce in `base + 1 … base + 24` that it hasn't used, and i
 - When every nonce in the window is taken it throws `NONCE_WINDOW_FULL`; it never takes one above `base + 24`. A batch of more than 24 writes from one identity sends the rest once earlier ones land.
 - A write refused at CheckTx gives its nonce back, unless the refusal says the nonce is held by a pending transaction, already used, or spent. A write accepted at CheckTx holds its nonce, and one whose submission failed in transport keeps it, until it lands or 120 s pass; a nonce handed out 120 s ago that hasn't landed is free again.
 - Every client of one API URL in the process shares one allocator (`NonceAllocator.shared(apiUrl)`) unless given its own (`nonceAllocator` in `WillowConfig` or `ConsensusConfig`, or `PrivacyOperations`' last argument).
-- `files.upload`, `files.delete`, and `files.unregisterStorageNode` take signing options (the chain refuses an unsigned transaction, so without them they throw `SIGNING_REQUIRED`) and sign the nonce the caller passes. Take it with `client.consensus.nextNonce(did)` and report the outcome with `client.consensus.nonces.settle(did, nonce, result)`.
+- `files.upload`, `files.delete`, and `files.unregisterStorageNode` take signing options (the chain refuses an unsigned transaction, so without them they throw `SIGNING_REQUIRED`). Leave `signing.nonce` out and the write takes its nonce from `client.consensus`, as every other write does; or pass one taken with `client.consensus.nextNonce(did)`. Either way the outcome is settled with the allocator: an accepted write holds its nonce, a refused one gives it back unless the refusal says it is held, used, or spent. A `FileOperations` made without a nonce source needs `signing.nonce` (`NONCE_REQUIRED`).
+- Each send attempt renews the nonce's hold, so no other write takes it while the write is in flight, however long its retries run.
+- A write that was sent and didn't go through throws a `TransactionSubmitError` (`TX_SUBMIT_FAILED`, or `BROADCAST_FAILED` from `PrivacyOperations`) carrying `did`, `nonce`, the signed body (`transaction`), and, for a refusal at CheckTx, the chain's answer (`result`). To retry a write that never landed under its own nonce, post the same signed body again with `client.consensus.resubmit(error)`: whichever attempt lands first spends the nonce. A repeat of a transaction the mempool already holds (CometBFT's "tx already exists in cache") counts as accepted, without a `txHash`.
 
 ## Registration
 
@@ -703,15 +743,24 @@ sent as its `type`, and `required: true` adds the field to
 `required_fields`. A type the chain has none of is refused with
 `INVALID_SCHEMA`, as is schema text given to `consensus.registerSubgrove`
 that the chain would not parse (the chain refuses such a registration in its
-block, which spends the nonce).
+block, which spends the nonce). The text is read as the chain's parser reads
+it, which is stricter than `JSON.parse`: `version` must be written as an
+integer (`1`, not `1.0`, `1e0`, or `-0`), none of `version`, `fields`,
+`indexes`, and `required_fields` may appear twice, and no key, field name,
+field type, or required field may hold a lone UTF-16 surrogate (a `\u`
+escape of one). Any other key, and its value, is ignored.
 
 The chain also refuses a DataStorage or FileStorage registration whose
 subgrove id is not 1–64 ASCII letters, digits, `-`, or `_` starting with a
-letter or digit, or whose schema declares indexes. The SDK refuses both,
-with `INVALID_SUBGROVE_ID` or `SCHEMA_INDEXES_UNSUPPORTED`; leave `indexes`
-out or empty. The chain's schema has no per-field index, so a field marked
+letter or digit, whose admins, writers, or free readers are not Willow DIDs
+(`did:willow:` followed by one or more ASCII letters, digits, `_`, or `-`, at
+most 128 bytes), or whose schema declares indexes; and a private DataStorage
+registration whose initial key grant is not key epoch 0 granted to the owner.
+The SDK refuses each, with `INVALID_SUBGROVE_ID`, `INVALID_DID`,
+`SCHEMA_INDEXES_UNSUPPORTED`, or `INVALID_KEY_GRANT`; leave `indexes` out or
+empty. The chain's schema has no per-field index, so a field marked
 `indexed: true` is refused as well. Each of these refusals comes before the
-registration is signed, and it takes no nonce.
+registration is signed or its nonce is read.
 
 ## Error Handling
 
@@ -735,6 +784,22 @@ try {
       default:
         console.error(`Error: ${error.message} (${error.code})`);
     }
+  }
+}
+```
+
+A write whose submission failed after it was sent throws a
+`TransactionSubmitError` with the DID, nonce, and signed body it used. It may
+yet land, so retry it under the same nonce by posting the same body:
+
+```typescript
+import { TransactionSubmitError } from '@willow-network/sdk';
+
+try {
+  await client.store('dataset-id', 'key', { a: 1 });
+} catch (error) {
+  if (error instanceof TransactionSubmitError && !error.result) {
+    await client.consensus.resubmit(error);
   }
 }
 ```
@@ -780,9 +845,10 @@ try {
 
 | Function | Description |
 |----------|-------------|
-| `verifyQueryProof(proofHex, documents, options?)` | Verify query proof and bind documents to it, returns root hash |
+| `verifyQueryProof(proofHex, documents, options?)` | Verify query proof and bind documents to it (at `options.path`), returns root hash |
 | `verifyItemProof(proofHex, key, value, path, options?)` | Verify item proof and bind key/value/path to it, returns root hash |
-| `verifyQueryResponse(response)` | Verify QueryResponse object, binding its documents |
+| `verifyQueryResponse(response, options?)` | Verify QueryResponse object, binding its documents (at `options.path`) |
+| `subgroveDataPath(subgroveId)` | The path a subgrove's data is proven at, `["subgroves", subgroveId, "data"]` |
 | `computeProofRootHash(proofHex)` | Fully verify proof and return root hash (no document binding) |
 | `new GroveDBProofVerifier(options?)` | Stateful verifier returning `{ valid, rootHash?, error? }` instead of throwing |
 | `extractRootHashFromProof(proofHex)` | **Deprecated** alias of `computeProofRootHash` |

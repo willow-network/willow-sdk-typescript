@@ -59,6 +59,21 @@ package adheres to [Semantic Versioning](https://semver.org/).
   chain's own type (`name: 'string'`) as well as a `FieldType`.
 - `revokeSubgroveKeySignMessage`, which returns the message a
   RevokeSubgroveKey signs; `privacy.revokeSubgroveKey` uses it.
+- `subgroveDataPath(subgroveId)`, the path a subgrove's data is proven at;
+  the `PathSegment` type. `ProofVerificationOptions.path` takes segments as
+  bytes too. An optional `options` argument to `verifyQueryResponse` and
+  `subgroveId` argument to `extendQueryResponse`.
+- `grovedb.verifyKeyAbsence(proofBytes, path, key)`, which verifies a proof
+  that a key is absent at a path; the `ProvenEntry` type, and its `tree`
+  flag.
+- `TransactionSubmitError` (with the `SignedSubmission` type): a signed write
+  that was sent and didn't go through, carrying its `did`, `nonce`, signed
+  body (`transaction`), and, for a refusal at CheckTx, `result`.
+  `ConsensusClient.resubmit(submission)` posts that body again under its
+  nonce.
+- An optional nonce source as the third argument to the `FileOperations`
+  constructor (`WillowClient` passes its `ConsensusClient`), and the
+  `FileNonceSource` and `FileSigningOptions` types.
 
 ### Changed
 
@@ -180,6 +195,36 @@ package adheres to [Semantic Versioning](https://semver.org/).
   a Willow DID, and a revoke whose revokee or sender is not one
   (`INVALID_DID`) are refused before they are signed, and by
   `PrivacyOperations` before a nonce is taken. The chain refuses each.
+- A data or file registration whose admins, writers, or free readers are
+  not Willow DIDs (`INVALID_DID`), and a private DataStorage registration
+  whose initial key grant is not key epoch 0 granted to the owner
+  (`INVALID_KEY_GRANT`), are refused before they are signed. The chain
+  refuses each.
+- Schema text is read as the chain's parser reads it: a `version` written as
+  a float (`1.0`, `1e0`, `-0`), a schema key written twice, or a lone UTF-16
+  surrogate escaped in a key, field name, field type, or required field is
+  refused (`INVALID_SCHEMA`). `JSON.parse` takes each.
+- `ConsensusClient` checks a write's fields before it reads or takes a
+  nonce.
+- **`ProofVerifier.verifyInclusionProof` and `verifyAbsenceProof` take the
+  key's path (required)** and bind the key, the path, and the value (or the
+  absence) to the proof. They returned true for any valid proof at the
+  trusted root, and `verifyAbsenceProof` even when the key was present.
+  `ProofVerifier.verifyQueryProof` binds each `queryResult` entry to an Item
+  the proof proves; it ignored them.
+- `FileSigningOptions.nonce` is optional: without it, `files.upload`,
+  `files.delete`, and `files.unregisterStorageNode` take the lowest free
+  nonce from their nonce source (`WillowClient.files` from
+  `client.consensus`), and every file write settles its nonce with that
+  allocator. A refused file write throws a `TransactionSubmitError`
+  (`TX_SUBMIT_FAILED`), so its nonce is no longer lost with its result.
+  Without a nonce or a nonce source a file write throws `NONCE_REQUIRED`.
+- `TX_SUBMIT_FAILED` from `ConsensusClient` and `FileOperations`, and
+  `BROADCAST_FAILED` from `PrivacyOperations`, are `TransactionSubmitError`s
+  carrying the DID, nonce, and signed body.
+- A repeat of a transaction the mempool already holds (CometBFT's "tx
+  already exists in cache") counts as accepted, without a `txHash`.
+- `grovedb.deserializeElement` refuses trailing bytes.
 
 ### Removed
 
@@ -205,6 +250,23 @@ package adheres to [Semantic Versioning](https://semver.org/).
   key its layer does not prove is refused.
 - `verifyGroveDBProof` with `deserializeElements: false` verifies proofs
   with lower layers; it refused every one.
+- **Query results are tied to the queried path.** `client.query` and
+  `data.query` bind the documents to values proven at the subgrove's data
+  path, and `queryHistoricalVerified` at the query's `path`; with a path,
+  a proof with a lower layer off it is refused. A proof could carry another
+  subgrove's data, or a value at a prefix of the path, beside the queried
+  data at the same root, and the documents bound to it. A proof that stops
+  at a subtree on the path verifies as an empty result when it proves that
+  subtree empty.
+- A subtree proven without its lower layer is bound or not given: an empty
+  one's value hash is re-derived from its bytes and checked; a non-empty
+  one's result has `value` and `element` `null` (its bytes are not bound)
+  and `tree: true`. An element must decode with no trailing bytes, so other
+  bytes on an item's value hash no longer pass as a subtree.
+- A nonce state read that advances the base keeps the used bits seen above
+  it, so a base-only read can't hand out a nonce known to be used.
+- Each send attempt renews a write's nonce hold, so another write can't take
+  the nonce while the first is still being retried.
 
 ## [0.1.0] - 2026-06-11
 
