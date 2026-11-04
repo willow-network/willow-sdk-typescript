@@ -143,38 +143,40 @@ async function main() {
     console.log('No proof included in response');
   }
 
-  // 2. Range index
-  console.log('\n2. Products between $500-$1000:');
-  const priceResults = await client.data.query('products', {
-    filters: { price: { $gte: 500, $lte: 1000 } },
-  } as QueryRequest);
-  priceResults.documents.forEach((doc) => {
-    console.log(`- ${doc.name}: $${doc.price}`);
-  });
+  // The API applies one exact-match filter and a sort, and no filter
+  // operator or search, so a verified query asks only for those (one asking
+  // for more throws QUERY_NOT_VERIFIABLE). Narrow the verified result further
+  // yourself.
 
-  // 3. Fulltext search
-  console.log('\n3. Search for "laptop":');
-  const searchResults = await client.data.query('products', {
-    search: { field: 'description', query: 'laptop' },
-  } as QueryRequest);
-  searchResults.documents.forEach((doc) => {
-    console.log(`- ${doc.name}: ${doc.description.substring(0, 50)}...`);
-  });
+  // 2. A price range, within the verified electronics result
+  console.log('\n2. Electronics between $500-$1000:');
+  electronicsResults.documents
+    .filter((doc) => doc.price >= 500 && doc.price <= 1000)
+    .forEach((doc) => {
+      console.log(`- ${doc.name}: $${doc.price}`);
+    });
 
-  // 4. Compound query with sorting
-  console.log('\n4. Electronics under $1500, sorted by price:');
-  const compoundResults = await client.data.query('products', {
-    filters: { category: 'electronics', price: { $lt: 1500 } },
+  // 3. Text match, within the verified electronics result
+  console.log('\n3. Electronics whose description mentions "laptop":');
+  electronicsResults.documents
+    .filter((doc) => String(doc.description).toLowerCase().includes('laptop'))
+    .forEach((doc) => {
+      console.log(`- ${doc.name}: ${doc.description.substring(0, 50)}...`);
+    });
+
+  // 4. Sorted by the API, verified in its order
+  console.log('\n4. Electronics sorted by price:');
+  const sortedResults = await client.data.query('products', {
+    filters: { category: 'electronics' },
     sort: { field: 'price', order: 'asc' },
   } as QueryRequest);
-  compoundResults.documents.forEach((doc) => {
+  sortedResults.documents.forEach((doc) => {
     console.log(`- ${doc.name}: $${doc.price}`);
   });
 
   // 5. Top-rated with pagination
   console.log('\n5. Top-rated products (page 1):');
   const topRatedResults = await client.data.query('products', {
-    filters: { rating: { $gte: 4.0 } },
     sort: { field: 'rating', order: 'desc' },
     limit: 2,
     offset: 0,

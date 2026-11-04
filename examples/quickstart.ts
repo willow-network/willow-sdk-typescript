@@ -118,11 +118,11 @@ async function main() {
     console.log(`   Note: ${error}\n`);
   }
 
-  // 9. Get root hash
+  // 9. Get the root hash the API reports (the SDK does not verify it)
   console.log('9. Getting root hash...');
   try {
     const rootHash = await client.getRootHash();
-    console.log(`   Verified root hash: ${rootHash.substring(0, 32)}...\n`);
+    console.log(`   Root hash the API reports: ${rootHash.substring(0, 32)}...\n`);
   } catch (error) {
     console.log(`   Note: ${error}\n`);
   }

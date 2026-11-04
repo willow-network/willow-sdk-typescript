@@ -156,31 +156,33 @@ async function main() {
     console.log(`       Note: ${error}`);
   }
 
-  console.log('\n   6b. Products between $50-$500:');
+  // The API applies one exact-match filter and a sort, and no filter
+  // operator or search: a verified query asking for one throws
+  // QUERY_NOT_VERIFIABLE. Narrow the verified result yourself.
+  console.log('\n   6b. Electronics between $50-$500, sorted by price:');
   try {
-    const priceQuery: QueryRequest = {
-      filters: { price: { $gte: 50, $lte: 500 } },
+    const sortedQuery: QueryRequest = {
+      filters: { category: 'electronics' },
       sort: { field: 'price', order: 'asc' },
-      limit: 10,
     };
-    const results = await products.query(priceQuery);
-    console.log(`       Found ${results.documents.length} products in price range`);
-    results.documents.forEach((doc: any) => {
+    const results = await products.query(sortedQuery);
+    const inRange = results.documents.filter((doc: any) => doc.price >= 50 && doc.price <= 500);
+    console.log(`       Found ${inRange.length} products in price range`);
+    inRange.forEach((doc: any) => {
       console.log(`       - ${doc.name}: $${doc.price}`);
     });
   } catch (error) {
     console.log(`       Note: ${error}`);
   }
 
-  console.log('\n   6c. Search for "keyboard":');
+  console.log('\n   6c. Electronics whose name mentions "keyboard":');
   try {
-    const searchQuery: QueryRequest = {
-      search: { field: 'name', query: 'keyboard' },
-      limit: 10,
-    };
-    const results = await products.query(searchQuery);
-    console.log(`       Found ${results.documents.length} matching products`);
-    results.documents.forEach((doc: any) => {
+    const results = await products.query({ filters: { category: 'electronics' } });
+    const matching = results.documents.filter((doc: any) =>
+      String(doc.name).toLowerCase().includes('keyboard'),
+    );
+    console.log(`       Found ${matching.length} matching products`);
+    matching.forEach((doc: any) => {
       console.log(`       - ${doc.name}`);
     });
   } catch (error) {
@@ -226,13 +228,12 @@ async function main() {
   console.log('  - store(key, value): create a key (one transaction)');
   console.log('  - get(key): retrieve with proof verification (secure)');
   console.log('  - getUnverified(key): retrieve without verification (fast)');
-  console.log('  - getMultiple(keys): batch retrieve\n');
+  console.log('  - getMultiple(keys): batch retrieve (an absent key must be proven absent)\n');
 
-  console.log('Query:');
-  console.log('  - query({ filters }): filter by field values');
-  console.log('  - query({ filters: { field: { $gte, $lte } } }): range');
-  console.log('  - query({ search: { field, query } }): text search');
-  console.log('  - query({ sort, limit, offset }): pagination\n');
+  console.log('Query (verified as the whole result):');
+  console.log('  - query({ filters: { field: value } }): one exact-match field');
+  console.log('  - query({ sort, limit, offset }): sort and pagination');
+  console.log('  - ranges and text matches: filter the verified documents yourself\n');
 
   console.log('Data operations example complete!');
 }

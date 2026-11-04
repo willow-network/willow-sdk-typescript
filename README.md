@@ -102,7 +102,7 @@ DID document.
 | `apiKey` | Managed-tier API key (`wk_…`), sent as `X-API-Key` on every request |
 | `proofVerificationOptions` | Per-client proof verification options, e.g. `{ expectedRootHash }` (see [Proof Verification API](#proof-verification-api)) |
 | `logger` | SDK diagnostics sink. Defaults to `silentLogger` (no console output); pass `consoleLogger` or your own `WillowLogger` |
-| `lightClient` | Overrides for the auto-created light client (`chainId`, `validatorEndpoints`, `minValidatorsForConsensus`, …). The fallbacks are single-node devnet defaults |
+| `lightClient` | Overrides for the auto-created light client (`chainId`, `validatorEndpoints`, `minValidatorsForConsensus`, `maxProofLagBlocks`, …). The fallbacks are single-node devnet defaults |
 | `webSocket` | WebSocket constructor for GraphQL subscriptions. Defaults to `globalThis.WebSocket` (browsers, Node >= 22); on older Node pass the `ws` package's `WebSocket` class |
 
 ```typescript
@@ -120,17 +120,20 @@ const client = new WillowClient({
 
 ## Secure by Default: Automatic Proof Verification
 
-All data operations automatically verify cryptographic proofs against the consensus-verified root hash, and the documents returned to you are bound to the proof — a response pairing a valid proof with data the proof does not commit to is rejected:
+`client.get` and `client.query` verify a proof of what they return and check the proof's root against the light client's root for the proof's block height:
+
+- `get` returns a key's value only when the proof proves that value at the key in the subgrove's data.
+- `query` returns a result only when it is the query's whole result: the proof reveals the subgrove's entire data tree, and the documents and `total` are exactly what the API's query selects from it, in its order (see [Query Data](#query-data)).
+- The API chooses the block height it proves at, so a proof more than `lightClient.maxProofLagBlocks` blocks (default 20) from the chain's latest height is refused (`PROOF_HEIGHT_OUT_OF_RANGE`), as is a proof that names no height.
+- The light client reads roots and the latest height from its configured endpoints and trusts them (see [Light Client](#light-client-experimental)).
 
 ```typescript
 // These operations automatically verify proofs:
 const data = await client.get('dataset', 'key');
 const results = await client.query('dataset', { filters: { status: 'active' } });
 
-// Query results include the verified root hash
-if (results.verifiedRootHash) {
-  console.log('Data verified against root:', results.verifiedRootHash);
-}
+// Query results carry the root and block height they were verified against
+console.log('Verified against root', results.verifiedRootHash, 'at height', results.verifiedHeight);
 
 // For performance-critical scenarios, skip verification:
 const unverifiedData = await client.getUnverified('dataset', 'key');
@@ -166,30 +169,55 @@ const data = await client.get('dataset-id', 'key');
 // Without verification (performance mode)
 const data = await client.getUnverified('dataset-id', 'key');
 
+// The value with the root and block height it was verified against
+const { data, rootHash, height } = await client.data.getVerifiedData('dataset-id', 'key');
+
 // Get multiple with verification
 const collection = client.collection('dataset-id');
 const multiple = await collection.getMultiple(['key1', 'key2', 'key3']);
 ```
+
+`getMultiple` leaves out a key the API reports absent only when the API's
+proof for the key proves it absent; otherwise it throws.
 
 ### Query Data
 
 ```typescript
 // Query with automatic proof verification
 const results = await client.query('dataset-id', {
-  filters: { status: 'active', score: { $gte: 100 } },
+  filters: { status: 'active' },
+  sort: { field: 'score', order: 'desc' },
   limit: 10,
   offset: 0,
 });
 
 console.log('Documents:', results.documents);
 console.log('Total:', results.total);
-console.log('Verified root:', results.verifiedRootHash);
+console.log('Verified root:', results.verifiedRootHash, 'at height', results.verifiedHeight);
 
 // Query without verification
 const results = await client.queryUnverified('dataset-id', {
   filters: { status: 'active' },
 });
 ```
+
+With a proof, the API proves the subgrove's whole data tree and selects from
+every item in it: each item that parses as JSON, kept when its `filters`
+field equals the given value (one field, matched exactly; a dotted name such
+as `meta.kind` reaches into objects), sorted by the `sort` field (stably,
+numbers by value and strings by code point), then `offset` and `limit`
+(default 100) applied; `total` counts the documents selected before `offset`
+and `limit`. `client.query` runs that selection over the proven data tree and
+returns the result only when the API's `documents` and `total` are exactly
+it. Numbers match as JSON text: `1` and `1.0` are different values.
+
+A query the API does not apply as asked, or whose selection the SDK can't
+reproduce, throws `QUERY_NOT_VERIFIABLE`, before anything is sent when the
+query itself is the reason: a filter on more than one field (the API applies
+only one), a filter operator such as `$gte` or `$in` (the API applies none),
+`search`, or a sort over values that are not all numbers or all strings (the
+API's order is then not determined). Read those with `queryUnverified`, or
+query on one exact field and filter the verified documents further yourself.
 
 ### Update and Delete
 
@@ -201,10 +229,10 @@ do `data.storeData` and `batchStore`, which have no per-key transaction.
 
 ### Historical Data Queries
 
-Query data from verified checkpoints. Historical queries are routed to indexers who have declared availability for the checkpoint:
+Query data at a checkpoint. The API routes a historical query to indexers who have declared availability for the checkpoint. The result is unverified: the checkpoint's state root and the data both come from the API, and the response carries no proof the SDK can check.
 
 ```typescript
-// Get checkpoint state root for verification
+// The state root the API reports for a checkpoint (not verified)
 const checkpoint = await client.data.getCheckpointStateRoot(
   'uniswap-v3',
   'a1b2c3d4...'
@@ -212,32 +240,23 @@ const checkpoint = await client.data.getCheckpointStateRoot(
 console.log('State root:', checkpoint.state_root);
 console.log('Block range:', checkpoint.block_range);
 
-// Query historical data (routed through consensus to indexer)
+// Query historical data (unverified)
 const result = await client.data.queryHistorical(
   'uniswap-v3',
   'a1b2c3d4...',
   {
     path: [[97, 112, 112, 115], [117, 115, 101, 114, 115]],
     key: [117, 115, 101, 114, 49, 50, 51],
-    include_proof: true,
   }
 );
 
 console.log('Provider:', result.provider_did);
 console.log('Data:', result.data);
-console.log('State root:', result.state_root);
-
-// Query with automatic proof verification against checkpoint state root
-const verified = await client.data.queryHistoricalVerified(
-  'uniswap-v3',
-  'a1b2c3d4...',
-  { path: [...], key: [...] }
-);
-// Throws if proof verification fails
 ```
 
-`queryHistoricalVerified` binds the returned data to values the proof proves
-at the query's own `path`; a value proven at any other path does not count.
+`queryHistoricalVerified` throws `UNSUPPORTED_OPERATION` without sending
+anything: a proof checked against a state root from the same API that serves
+the result shows nothing.
 
 **Error Handling for Unavailable Data:**
 
@@ -265,8 +284,10 @@ await users.store('alice', { name: 'Alice', score: 100 });
 const alice = await users.get('alice');
 
 // Query within collection
-const highScorers = await users.query({
-  filters: { score: { $gte: 100 } },
+const topScorers = await users.query({
+  filters: { team: 'red' },
+  sort: { field: 'score', order: 'desc' },
+  limit: 10,
 });
 
 // Unverified variants available
@@ -274,35 +295,45 @@ const fast = await users.getUnverified('alice');
 const fastQuery = await users.queryUnverified({ /* ... */ });
 ```
 
-## Root Hash Verification
+## Root Hashes the API Reports
 
 ```typescript
-// Get consensus-verified root hash (recommended for security)
-const verifiedRoot = await client.getRootHash();
+// The root the API reports at /state/root-hash/verified (not verified by the SDK)
+const reportedRoot = await client.getRootHash();
 
-// Get local node's root hash (for debugging)
+// The API node's local root (for debugging)
 const localRoot = await client.getRootHashLocal();
-
-// Compare to check sync status
-if (verifiedRoot === localRoot) {
-  console.log('Node is in sync with blockchain');
-} else {
-  console.log('Node has pending changes');
-}
 ```
+
+Both are the API's answers, as trustworthy as the API. The verified reads
+don't use them: `get` and `query` check each proof's root against the light
+client's root for the proof's block height.
 
 ## Proof Verification API
 
-All verification functions *bind the returned data to the proof*: every
-document you pass in must deep-equal a value the proof actually commits to,
-so a server cannot pair a valid proof with unrelated data. The computed root
-hash must still be compared against a trusted source to establish that the
-proven state is canonical.
+What each function binds:
+
+- `verifyQuerySelection(subgroveId, query, response)` verifies a
+  `POST /query/:subgrove` result as the query's whole result (what
+  `client.query` does): the proof must reveal the subgrove's entire data
+  tree, and `response.documents` and `total` must be exactly what the API's
+  query selects from it, in order. It throws `QUERY_NOT_VERIFIABLE` for a
+  query or data whose selection it can't reproduce.
+- `verifyQueryProof`, `verifyQueryResponse`, and `GroveDBProofVerifier`
+  check membership only: every document you pass in must deep-equal a value
+  the proof commits to, so a server cannot pair a valid proof with unrelated
+  data. They do not show that the documents are a query's whole result, or
+  its result at all: a proof may leave entries out, and a subset, a
+  duplicate, or a document a filter excludes passes.
+- `verifyItemProof` binds one key's value at a path.
+
+The computed root hash must still be compared against a trusted source to
+establish that the proven state is canonical.
 
 A proof of one subgrove's data can carry another subgrove's data at the same
-root, so give the path the query was made at: `client.get`, `client.query`,
-and `queryHistoricalVerified` do, and the functions below take it as
-`options.path` (`subgroveDataPath(id)` is `["subgroves", id, "data"]`, where
+root, so give the path the query was made at: `client.get` and `client.query`
+do, and the functions below take it as `options.path`
+(`subgroveDataPath(id)` is `["subgroves", id, "data"]`, where
 `POST /query/:subgrove` and `GET /proof/:subgrove/:key` prove). With a path,
 the proof must descend to it with no layer off it (or prove a subtree on it
 empty, which is an empty result), and a document binds only to a value proven
@@ -335,6 +366,7 @@ source rather than hardcoding it.
 
 ```typescript
 import {
+  verifyQuerySelection,
   verifyQueryProof,
   verifyItemProof,
   verifyQueryResponse,
@@ -343,8 +375,11 @@ import {
   GroveDBProofVerifier,
 } from '@willow-network/sdk';
 
-// Verify a query proof; every document must be committed to by the proof,
-// at the subgrove's data path
+// Verify a POST /query/:subgrove response as the query's whole result
+const rootHash = await verifyQuerySelection('my-subgrove', query, response);
+
+// Membership only: every document must be committed to by the proof, at the
+// subgrove's data path
 const rootHash = await verifyQueryProof(proofHex, documents, {
   path: subgroveDataPath('my-subgrove'),
 });
@@ -353,7 +388,7 @@ const rootHash = await verifyQueryProof(proofHex, documents, {
 // given path AND that the proven payload deep-equals `value`
 const rootHash = await verifyItemProof(proofHex, 'key', value, ['path', 'to', 'item']);
 
-// Verify a QueryResponse object (binds response.documents at the path)
+// Verify a QueryResponse object (membership of response.documents at the path)
 const rootHash = await verifyQueryResponse(response, { path: subgroveDataPath('my-subgrove') });
 
 // Fully verify a proof and return just the root hash (no document binding).
@@ -488,8 +523,12 @@ await lightClient.start();
 // Sync to latest
 await lightClient.syncToLatest();
 
-// Verify a query proof against the light client's root hash
+// Verify a query proof made at height H against the header of H+1, which
+// commits the state after H (membership of proof.queryResult only)
 const result = await lightClient.verifyQueryProof(proof);
+
+// The chain's latest height, as enough of the endpoints report it
+const latest = await lightClient.getLatestChainHeight();
 
 // Get verified headers
 const latestHeader = await lightClient.getLatestHeader();
@@ -693,7 +732,7 @@ The chain accepts a nonce in `base + 1 … base + 24` that it hasn't used, and i
 - Every client of one API URL in the process shares one allocator (`NonceAllocator.shared(apiUrl)`) unless given its own (`nonceAllocator` in `WillowConfig` or `ConsensusConfig`, or `PrivacyOperations`' last argument).
 - `files.upload`, `files.delete`, and `files.unregisterStorageNode` take signing options (the chain refuses an unsigned transaction, so without them they throw `SIGNING_REQUIRED`). Leave `signing.nonce` out and the write takes its nonce from `client.consensus`, as every other write does; or pass one taken with `client.consensus.nextNonce(did)`. Either way the outcome is settled with the allocator: an accepted write holds its nonce, a refused one gives it back unless the refusal says it is held, used, or spent. A `FileOperations` made without a nonce source needs `signing.nonce` (`NONCE_REQUIRED`).
 - Each send attempt renews the nonce's hold, so no other write takes it while the write is in flight, however long its retries run.
-- A write that was sent and didn't go through throws a `TransactionSubmitError` (`TX_SUBMIT_FAILED`, or `BROADCAST_FAILED` from `PrivacyOperations`) carrying `did`, `nonce`, the signed body (`transaction`), and, for a refusal at CheckTx, the chain's answer (`result`). To retry a write that never landed under its own nonce, post the same signed body again with `client.consensus.resubmit(error)`: whichever attempt lands first spends the nonce. A repeat of a transaction the mempool already holds (CometBFT's "tx already exists in cache") counts as accepted, without a `txHash`.
+- A write that was sent and didn't go through throws a `TransactionSubmitError` (`TX_SUBMIT_FAILED`, or `BROADCAST_FAILED` from `PrivacyOperations`) carrying `did`, `nonce`, the signed body (`transaction`), and, for a refusal at CheckTx, the chain's answer (`result`). To retry a write that never landed under its own nonce, post the same signed body again with `client.consensus.resubmit(error)`: whichever attempt lands first spends the nonce. A repeat of a transaction the mempool already holds (CometBFT's "tx already exists in cache") returns `{ success: false, pending: true }` without a `txHash`: CometBFT caches a transaction before CheckTx runs and drops it if CheckTx refuses it, so the outcome is unknown. Its nonce stays held; confirm it with `client.consensus.isNonceUsed(did, nonce)`.
 
 ## Registration
 
@@ -816,16 +855,17 @@ try {
 | `deregisterSubgrove(subgroveId)` | Deregister a subgrove; remaining funding refunds to the owner |
 | `store(datasetId, key, value)` | Store a new key by a StoreData transaction |
 | `get(datasetId, key)` | Get data with proof verification |
+| `data.getVerifiedData(datasetId, key)` | Get data with proof verification, with the root and block height it was verified against |
 | `getUnverified(datasetId, key)` | Get data without verification |
 | `update(datasetId, key, value)` | Throws `UNSUPPORTED_OPERATION` (see [Update and Delete](#update-and-delete)) |
 | `delete(datasetId, key)` | Throws `UNSUPPORTED_OPERATION` |
-| `query(datasetId, query)` | Query with proof verification |
+| `query(datasetId, query)` | Query, verified as the query's whole result (`QUERY_NOT_VERIFIABLE` when it can't be) |
 | `queryUnverified(datasetId, query)` | Query without verification |
 | `sqlQuery(subgroveId, sql, options?)` | SQL query routed to indexer or validator |
 | `graphqlQuery(subgroveId, query, options?)` | GraphQL query routed to indexer or validator |
 | `getProof(datasetId, key)` | Get raw Merkle proof |
-| `getRootHash()` | Get consensus-verified root hash |
-| `getRootHashLocal()` | Get local node's root hash |
+| `getRootHash()` | The root the API reports at `/state/root-hash/verified` (not verified by the SDK) |
+| `getRootHashLocal()` | The API node's local root hash |
 | `collection(datasetId)` | Create collection helper |
 | `auth.setIdentity(did, privateKey, publicKeyId, algorithm?)` | Set the identity that signs transactions and requests |
 | `auth.transactionSigner()` | The identity as a transaction signer, with its algorithm's sign function |
@@ -837,17 +877,18 @@ try {
 
 | Method | Description |
 |--------|-------------|
-| `data.getCheckpointStateRoot(subgroveId, checkpointId)` | Get checkpoint state root for verification |
-| `data.queryHistorical(subgroveId, checkpointId, query)` | Query historical checkpoint data |
-| `data.queryHistoricalVerified(subgroveId, checkpointId, query)` | Query with automatic proof verification |
+| `data.getCheckpointStateRoot(subgroveId, checkpointId)` | The state root the API reports for a checkpoint (not verified) |
+| `data.queryHistorical(subgroveId, checkpointId, query)` | Query historical checkpoint data (unverified) |
+| `data.queryHistoricalVerified(subgroveId, checkpointId, query)` | **Deprecated**: throws `UNSUPPORTED_OPERATION` |
 
 ### Proof Verification Functions
 
 | Function | Description |
 |----------|-------------|
-| `verifyQueryProof(proofHex, documents, options?)` | Verify query proof and bind documents to it (at `options.path`), returns root hash |
+| `verifyQuerySelection(subgroveId, query, response, options?)` | Verify a query response as the query's whole result, returns root hash |
+| `verifyQueryProof(proofHex, documents, options?)` | Verify query proof and check each document is a value it proves (at `options.path`; membership only), returns root hash |
 | `verifyItemProof(proofHex, key, value, path, options?)` | Verify item proof and bind key/value/path to it, returns root hash |
-| `verifyQueryResponse(response, options?)` | Verify QueryResponse object, binding its documents (at `options.path`) |
+| `verifyQueryResponse(response, options?)` | Verify QueryResponse object, checking membership of its documents (at `options.path`) |
 | `subgroveDataPath(subgroveId)` | The path a subgrove's data is proven at, `["subgroves", subgroveId, "data"]` |
 | `computeProofRootHash(proofHex)` | Fully verify proof and return root hash (no document binding) |
 | `new GroveDBProofVerifier(options?)` | Stateful verifier returning `{ valid, rootHash?, error? }` instead of throwing |
@@ -888,10 +929,12 @@ The SDK provides two levels of security:
 1. **Full Local Verification** (default)
    - Pure TypeScript GroveDB proof verification
    - BLAKE3 hashing, Merk proof execution
-   - Binds returned documents to the proof
-   - Compares against the consensus root hash, which is currently fetched
-     from the configured RPC endpoint (see [Light Client](#light-client-experimental)
-     for the exact trust assumption)
+   - Binds a key's value to the proof; verifies a query's result as its
+     whole result
+   - Compares against the root for the proof's block height, which must be
+     near the chain's latest, both read from the configured RPC endpoints
+     (see [Light Client](#light-client-experimental) for the exact trust
+     assumption)
 
 2. **Unverified** (opt-in via `*Unverified` methods)
    - Trusts the node completely

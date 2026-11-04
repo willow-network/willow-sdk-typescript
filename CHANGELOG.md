@@ -74,6 +74,20 @@ package adheres to [Semantic Versioning](https://semver.org/).
 - An optional nonce source as the third argument to the `FileOperations`
   constructor (`WillowClient` passes its `ConsensusClient`), and the
   `FileNonceSource` and `FileSigningOptions` types.
+- `verifyQuerySelection(subgroveId, query, response, options?)`, which
+  verifies a `POST /query/:subgrove` response as the query's whole result;
+  `QueryNotVerifiableError` (code `QUERY_NOT_VERIFIABLE`),
+  `DEFAULT_QUERY_LIMIT`, and the `QuerySelectionOptions` type.
+- `grovedb.verifyCompleteLayer(proofBytes, path)`, which verifies a proof
+  that reveals the whole subtree at a path and returns its every entry; the
+  `CompleteEntry` and `CompleteLayer` types.
+- `WillowData.getVerifiedData(subgrove, key)` and the `VerifiedData` type:
+  a verified value with the root and block height it was verified against.
+  `QueryResponse.verifiedHeight`.
+- `lightClient.maxProofLagBlocks` (`WillowLightClientOptions`), default 20,
+  and `LightClient.getLatestChainHeight()`.
+- `BroadcastResult.pending` and `ConsensusClient.isNonceUsed(did, nonce)`.
+- The `UNSUPPORTED` code of `VerifiableRpcError`.
 
 ### Changed
 
@@ -223,7 +237,53 @@ package adheres to [Semantic Versioning](https://semver.org/).
   `BROADCAST_FAILED` from `PrivacyOperations`, are `TransactionSubmitError`s
   carrying the DID, nonce, and signed body.
 - A repeat of a transaction the mempool already holds (CometBFT's "tx
-  already exists in cache") counts as accepted, without a `txHash`.
+  already exists in cache") returns `{ success: false, pending: true }`,
+  without a `txHash`, and its nonce stays held. CometBFT caches a
+  transaction before CheckTx runs and drops it if CheckTx refuses it, so
+  the answer does not mean the transaction was accepted; confirm it with
+  `ConsensusClient.isNonceUsed`.
+- **`client.query` and `data.query` verify the query's whole result.** The
+  proof must reveal every entry of the subgrove's data tree (no `Hash`,
+  `KVHash`, or `KVDigest` node, and no subtree without its lower layer),
+  and the SDK runs the API's selection over those entries (each item that
+  parses as JSON, the one exact-match filter, the sort, `offset`, and
+  `limit`, default 100, with numbers compared as their JSON text) and
+  requires the response's `documents` and `total` to be exactly it, in
+  order. They were only checked to be values the proof proves, so a proof
+  revealing part of the tree, or a subset, duplicate, or filtered-out
+  document, verified, and `total` and `offset` were not checked. A query
+  whose selection the SDK can't reproduce throws `QUERY_NOT_VERIFIABLE`,
+  before anything is sent when the query is the reason: a filter on more
+  than one field (the API applies one), a filter operator (it applies
+  none), `search`, a sort over values that are not all numbers or all
+  strings, or a document the API's JSON reader may read differently. The
+  verified result carries `documents`, `total`, `offset`, `limit`, `proof`,
+  `verifiedRootHash`, and `verifiedHeight`, and none of the API's other
+  fields.
+- **A verified read's proof height must be near the chain's.** `get`,
+  `getData`, `getMultiple`, and `query` refuse a proof whose block height is
+  more than `lightClient.maxProofLagBlocks` from the chain's latest height
+  as the light client's endpoints report it (`PROOF_HEIGHT_OUT_OF_RANGE`),
+  and one that names no height. The API chose the height with no bound.
+- `getMultiple` leaves out a key the API reports absent only when the API's
+  proof for it proves it absent at a verified root; otherwise it throws. It
+  dropped such keys unchecked.
+- **`queryHistoricalVerified` throws `UNSUPPORTED_OPERATION`** without
+  sending anything, and is deprecated. It checked the proof against a state
+  root from the same API that served the result, not from consensus, and
+  the API returns no proof for a historical query. `queryHistorical` and
+  `getCheckpointStateRoot` are documented as unverified.
+- `LightClient.verifyQueryProof` checks a proof made at height H against the
+  header of block H+1, which commits the state after H; it used header H.
+- Proven Item bytes are read as UTF-8 strictly (a bad byte is not replaced,
+  a byte-order mark is not dropped) before they are read as JSON, so other
+  bytes can't bind as the same value.
+- `VerifiableRpcOperations.verify` is documented as it is: `inclusion`
+  means the GroveDB proof verifies to the response's own `state_root`, and
+  neither `answer` nor the key is bound to the proof. `anchorStateRoot`,
+  which it never implemented, throws `UNSUPPORTED`.
+- `WillowClient.getRootHash()` is documented as the root the API reports,
+  which the SDK does not verify.
 - `grovedb.deserializeElement` refuses trailing bytes.
 
 ### Removed
@@ -252,8 +312,7 @@ package adheres to [Semantic Versioning](https://semver.org/).
   with lower layers; it refused every one.
 - **Query results are tied to the queried path.** `client.query` and
   `data.query` bind the documents to values proven at the subgrove's data
-  path, and `queryHistoricalVerified` at the query's `path`; with a path,
-  a proof with a lower layer off it is refused. A proof could carry another
+  path; with a path, a proof with a lower layer off it is refused. A proof could carry another
   subgrove's data, or a value at a prefix of the path, beside the queried
   data at the same root, and the documents bound to it. A proof that stops
   at a subtree on the path verifies as an empty result when it proves that
