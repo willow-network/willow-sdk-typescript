@@ -56,7 +56,13 @@ export class ConsensusClient {
   }
 
   /**
-   * Register a DID on the blockchain
+   * Register a DID on the blockchain by a RegisterDid transaction.
+   *
+   * `didDocument` is the SDK's `DidDocument` (from `createDidFromPublicKey`
+   * or `createDidFromWallet`) or the chain's own shape. It is sent as the
+   * chain's `DidDocument`, and signed over that document's JSON text (see
+   * `registerDidSignMessage`). The signer is a key in the document. A DID's
+   * registration is its first transaction, so its nonce is 1.
    */
   async registerDid(didDocument: any, signer: Signer): Promise<BroadcastResult>;
   /** @deprecated Pass a {@link Signer} options object instead of positional key material. */
@@ -77,7 +83,8 @@ export class ConsensusClient {
       didDocument,
       signature: '', // Will be filled by signing
       publicKeyId: signer.publicKeyId,
-      nonce: await this.getNextNonce(didDocument.id || '')
+      // The chain accepts a DID registration only at nonce 1.
+      nonce: 1,
     };
 
     return this.signAndBroadcast('RegisterDid', tx, signer.privateKey, signer.signFunction);

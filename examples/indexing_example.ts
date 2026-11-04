@@ -115,10 +115,19 @@ async function main() {
     },
   ];
 
+  // Each key is its own StoreData transaction; wait for each to land, since
+  // the next nonce is read from the chain.
   console.log('Storing products...');
-  await client.data.batchStore('products', products);
-
-  await new Promise((resolve) => setTimeout(resolve, 3000));
+  for (const { key, value } of products) {
+    const result = await client.consensus.storeData(
+      'products',
+      key,
+      value,
+      fundedDID,
+      client.auth.transactionSigner(),
+    );
+    await client.consensus.waitForTransaction(result.txHash!);
+  }
 
   // 1. Hash-index lookup
   console.log('\n1. Products in electronics category:');

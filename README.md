@@ -52,17 +52,19 @@ import { WillowClient, generateWallet, createDidFromWallet } from '@willow-netwo
 const wallet = generateWallet();
 const didDocument = createDidFromWallet(wallet);
 
-// 2. Initialize the client (pre-seed config.did + privateKey so client.init()
-//    can fetch the key id from the DID document).
-const client = new WillowClient({
-  apiUrl: 'http://localhost:3031',
-  did: didDocument.id,
-  privateKey: wallet.privateKey,
-});
+// 2. Initialize the client and set the identity. Transactions and signed
+//    requests are signed with this key, by its algorithm.
+const client = new WillowClient({ apiUrl: 'http://localhost:3031' });
+client.auth.setIdentity(
+  didDocument.id,
+  wallet.privateKey,
+  didDocument.publicKeys[0].id,
+  'secp256k1',
+);
 
-// 3. Register and bootstrap the identity for per-request signing
+// 3. Register the DID by a RegisterDid transaction, signed by its own key.
+//    The DID must already hold the registration fee (see below).
 await client.registerDid(didDocument);
-await client.init();
 
 // 4. Store data (requires the 'users' subgrove to exist — see below)
 await client.store('users', 'alice', {
@@ -81,8 +83,11 @@ console.log(data);
 > for registering one, or use a devnet with pre-registered subgroves.
 > Registration itself costs tokens, so the signing DID needs a funded balance.
 
-For ad-hoc identity (no `config.did` baked in) just call
-`client.auth.setIdentity(did, privateKey, publicKeyId)` directly.
+A DID's id is derived from its key, so it can be funded before it is
+registered: transfer at least the registration fee to `didDocument.id`, then
+register it. For a DID already on chain, set `did` and `privateKey` in the
+config and call `client.init()`, which reads the key id and algorithm from the
+DID document.
 
 ## Configuration
 
@@ -137,15 +142,21 @@ const unverifiedResults = await client.queryUnverified('dataset', { /* query */ 
 ### Store Data
 
 ```typescript
-// Store single item
+// Store a new key: one StoreData transaction
 await client.store('dataset-id', 'key', { field: 'value' });
+```
 
-// Batch store using collection helper
-const collection = client.collection('dataset-id');
-await collection.batchStore([
-  { key: 'key1', value: { name: 'Item 1' } },
-  { key: 'key2', value: { name: 'Item 2' } },
-]);
+Each key is written by its own transaction, sent through `POST /tx/submit`;
+the API has no REST route for data writes. `store` reads the account's nonce
+from the chain, so send a write after the previous one has landed:
+
+```typescript
+for (const { key, value } of records) {
+  const result = await client.consensus.storeData(
+    'dataset-id', key, value, client.auth.getDid()!, client.auth.transactionSigner(),
+  );
+  await client.consensus.waitForTransaction(result.txHash!);
+}
 ```
 
 ### Retrieve Data
@@ -184,10 +195,11 @@ const results = await client.queryUnverified('dataset-id', {
 
 ### Update and Delete
 
-```typescript
-await client.update('dataset-id', 'key', { field: 'new value' });
-await client.delete('dataset-id', 'key');
-```
+Changing an existing key takes an UpdateData transaction, and deleting one a
+DeleteData transaction. This SDK builds neither: a StoreData of an existing
+key is refused, and `client.update`, `client.delete`, `data.updateData`, and
+`data.deleteData` throw `UNSUPPORTED_OPERATION` without sending anything, as
+do `data.storeData` and `batchStore`, which have no per-key transaction.
 
 ### Historical Data Queries
 
@@ -250,14 +262,6 @@ const users = client.collection('users');
 // All operations scoped to this collection
 await users.store('alice', { name: 'Alice', score: 100 });
 const alice = await users.get('alice');
-await users.update('alice', { ...alice, score: 150 });
-await users.delete('alice');
-
-// Batch operations
-await users.batchStore([
-  { key: 'bob', value: { name: 'Bob' } },
-  { key: 'charlie', value: { name: 'Charlie' } },
-]);
 
 // Query within collection
 const highScorers = await users.query({
@@ -490,13 +494,20 @@ import { generateWallet, createDidFromWallet } from '@willow-network/sdk';
 const wallet = generateWallet();
 const didDocument = createDidFromWallet(wallet);
 
-// Use with client
-const client = new WillowClient({
-  apiUrl: 'http://localhost:3031',
-  did: didDocument.id,
-  privateKey: wallet.privateKey, // 0x-prefixed Ethereum private key
-});
+// Use with client: the algorithm is not in the DID, so name it
+const client = new WillowClient({ apiUrl: 'http://localhost:3031' });
+client.auth.setIdentity(
+  didDocument.id,
+  wallet.privateKey, // 0x-prefixed Ethereum private key
+  didDocument.publicKeys[0].id,
+  'secp256k1',
+);
 ```
+
+The client signs its transactions and signed requests with the identity's
+algorithm: `client.auth.transactionSigner()` gives the key, key id, and sign
+function (`signSecp256k1` or `signEd25519`) a transaction is signed with.
+`client.init()` reads the algorithm from the on-chain DID document's key type.
 
 `createDidFromWallet` and `createDidFromPublicKey` publish a secp256k1 key in its 33-byte compressed form. `signSecp256k1(message, privateKey)` and `verifySecp256k1(message, signature, publicKey)` sign and verify as the chain does: ECDSA over the Keccak-256 of the message, lower-S. `signSecp256k1` returns `0x`-prefixed hex. `verifySecp256k1` decodes a signature as the chain does, reading an unprefixed one as base64 first, so it refuses an unprefixed hex signature the chain would refuse.
 
@@ -523,7 +534,7 @@ willow-request-v2
 - Ed25519 signatures are sent as hex. secp256k1 signatures are over the Keccak-256 of the message and are sent as `0x`-prefixed hex.
 - Requests sent to an indexer are not signed this way.
 
-The client's other signed requests (writes, key-grant reads, transaction submission) use the older form described below.
+The client's other signed requests (key-grant reads and transaction submission) use the older form described below.
 
 To sign a read you send yourself:
 
@@ -572,12 +583,63 @@ Nonce: <nonce>
 
 - Text fields go in verbatim, with no escaping or normalization; non-ASCII text is its UTF-8 bytes.
 - The data bytes are the UTF-8 of the JSON text the transaction carries (`JSON.stringify(value)` for `storeData`).
-- Numbers are unsigned decimal. The chain's nonces and sizes are u64, and a JavaScript number is exact only up to 2^53 − 1 (`Number.MAX_SAFE_INTEGER`), so the SDK refuses a larger, negative, or fractional value rather than round it.
+- Numbers are unsigned decimal. The chain's nonces and sizes are u64 and its chunk count and chunk size u32, and a JavaScript number is exact only up to 2^53 − 1 (`Number.MAX_SAFE_INTEGER`), so the SDK refuses a value outside its type, or a negative or fractional one, rather than round it.
 - Hex is lowercase without `0x`.
 - The nonce is the one the transaction carries, so the message is built after the nonce is chosen. A write the chain refuses in its block after its signature and nonce verify (data not found, no permission, fee not collected, …) still spends the nonce; to retry, sign again under the next free nonce. A transaction refused for its signature or nonce spends nothing.
 - The SDK refuses to sign when the subgrove id, key, owner DID, filename, or content type holds a `\n` (0x0A). A CR or U+2028 holds no 0x0A and is signed as it is.
 
 `storeDataSignMessage(tx)`, `storeFileManifestSignMessage(tx)`, and `deleteFileManifestSignMessage(tx)` return the exact message for a transaction.
+
+### Registration, key grant, and storage-node signing
+
+A subgrove registration (`client.registerSubgrove`, `consensus.registerSubgrove`), a key grant or rotation (`privacy.grantSubgroveKey`, `privacy.rotateSubgroveKey`), and a storage node's removal (`files.unregisterStorageNode`) are signed the same way, over labelled lines that bind the nonce and every field:
+
+```
+RegisterSubgrove
+Subgrove: <subgrove id>
+Owner: <owner DID>
+Config: <hex SHA-256 of the transaction's bincode with an empty signature>
+Nonce: <nonce>
+```
+
+```
+GrantSubgroveKey
+Subgrove: <subgrove id>
+Sender: <sender DID>
+Grantee: <grantee DID>
+GranteeKey: <grantee public key id>
+KeyEpoch: <key epoch>
+EphemeralKey: <hex of the ephemeral public key>
+EncryptedKey: <hex of the encrypted key>
+GrantedBy: <granting DID>
+GrantedAt: <Unix seconds>
+Nonce: <nonce>
+```
+
+```
+RotateSubgroveKey
+Subgrove: <subgrove id>
+Sender: <sender DID>
+NewEpoch: <new epoch>
+Grants: <number of grants>
+<for each grant, in order, its seven lines from Grantee to GrantedAt>
+Nonce: <nonce>
+```
+
+```
+UnregisterStorageNode
+Node: <node DID>
+Nonce: <nonce>
+```
+
+- `Config` hashes the registration's bincode (bincode 1.x: fixed-width little-endian integers, u64 lengths, a one-byte option tag, a u32 enum variant index) with an empty signature, so every field is signed, in every mode. The SDK sends every field of the chain's `RegisterSubgroveTx` explicitly, the chain's default for one the caller left out written out, and hashes exactly the values the chain decodes from that JSON. `registerSubgroveUnsignedBincode(tx)` returns those bytes.
+- u64 and u128 values (funding, read prices, indexer stakes and rewards) are never rounded: pass a value above 2^53 − 1 as a `bigint` or a decimal string. The SDK sends it as its exact digits.
+- A retention window belongs to a BlockchainIndexing mode; the SDK refuses one for another mode.
+- The SDK refuses to sign when a subgrove id, owner, sender, grantee, key id, granting DID, or node DID holds a `\n` (0x0A), when a text field holds a lone UTF-16 surrogate (it has no UTF-8 form), or when a number is outside its type.
+- RevokeSubgroveKey is signed over `RevokeSubgroveKey:<subgrove id>:<revokee DID>:<sender DID>:<nonce>`, which binds every field.
+- A DID registration (`client.registerDid`, `consensus.registerDid`) is signed over the JSON text of the DID document as the chain's `DidDocument` writes it (its fields in order, absent options as `null`), at nonce 1. `registerDidSignMessage(tx)` returns it.
+
+`registerSubgroveSignMessage(tx)`, `grantSubgroveKeySignMessage(tx)`, `rotateSubgroveKeySignMessage(tx)`, and `unregisterStorageNodeSignMessage(tx)` return the exact message for a transaction.
 
 ## Registration
 
@@ -586,8 +648,10 @@ Nonce: <nonce>
 A *subgrove* is Willow's on-chain unit of storage — a named subtree with a
 schema and access lists. Data operations target a subgrove by id, and writes
 fail until the subgrove is registered (and its registration fee paid by a
-funded DID). `registerDataset` is a deprecated alias of `registerSubgrove`;
-"subgrove" is the on-chain term.
+funded DID). A subgrove is registered by a RegisterSubgrove transaction
+signed by its owner, the client's identity; `client.registerSubgrove` and
+`client.data.registerSubgrove` both send one. `registerDataset` is a
+deprecated alias of `registerSubgrove`; "subgrove" is the on-chain term.
 
 ```typescript
 // Returns the consensus BroadcastResult (txHash, height, rawLog)
@@ -645,14 +709,14 @@ try {
 | Method | Description |
 |--------|-------------|
 | `init()` | Initialize with authentication |
-| `registerDid(didDocument)` | Register a new DID |
+| `registerDid(didDocument)` | Register the identity's DID by a RegisterDid transaction (returns the consensus `BroadcastResult`) |
 | `registerSubgrove(request)` | Register a subgrove (returns the consensus `BroadcastResult`) |
 | `deregisterSubgrove(subgroveId)` | Deregister a subgrove; remaining funding refunds to the owner |
-| `store(datasetId, key, value)` | Store data |
+| `store(datasetId, key, value)` | Store a new key by a StoreData transaction |
 | `get(datasetId, key)` | Get data with proof verification |
 | `getUnverified(datasetId, key)` | Get data without verification |
-| `update(datasetId, key, value)` | Update data |
-| `delete(datasetId, key)` | Delete data |
+| `update(datasetId, key, value)` | Throws `UNSUPPORTED_OPERATION` (see [Update and Delete](#update-and-delete)) |
+| `delete(datasetId, key)` | Throws `UNSUPPORTED_OPERATION` |
 | `query(datasetId, query)` | Query with proof verification |
 | `queryUnverified(datasetId, query)` | Query without verification |
 | `sqlQuery(subgroveId, sql, options?)` | SQL query routed to indexer or validator |
@@ -661,7 +725,8 @@ try {
 | `getRootHash()` | Get consensus-verified root hash |
 | `getRootHashLocal()` | Get local node's root hash |
 | `collection(datasetId)` | Create collection helper |
-| `auth.setIdentity(did, privateKey, publicKeyId)` | Set identity for per-request signing |
+| `auth.setIdentity(did, privateKey, publicKeyId, algorithm?)` | Set the identity that signs transactions and requests |
+| `auth.transactionSigner()` | The identity as a transaction signer, with its algorithm's sign function |
 | `auth.hasIdentity()` | Check whether an identity is set |
 | `auth.signRequestWithNonce(method, pathAndQuery, body?)` | Nonce-form signature headers for a request (see [Request signing](#request-signing)) |
 | `auth.signRequest(method, path)` | Older-form signature headers |
@@ -703,6 +768,12 @@ try {
 | `storeDataSignMessage(tx)` | The message a data write signs (see [Data and file write signing](#data-and-file-write-signing)) |
 | `storeFileManifestSignMessage(tx)` | The message a file manifest signs |
 | `deleteFileManifestSignMessage(tx)` | The message a file delete signs |
+| `registerSubgroveSignMessage(tx)` | The message a subgrove registration signs (see [Registration, key grant, and storage-node signing](#registration-key-grant-and-storage-node-signing)) |
+| `registerSubgroveUnsignedBincode(tx)` | The bincode a registration's `Config` hashes |
+| `grantSubgroveKeySignMessage(tx)` | The message a key grant signs |
+| `rotateSubgroveKeySignMessage(tx)` | The message a key rotation signs |
+| `unregisterStorageNodeSignMessage(tx)` | The message a storage node's removal signs |
+| `registerDidSignMessage(tx)` | The message a DID registration signs |
 | `isValidDid(did)` | Validate DID format |
 
 ## Security Model

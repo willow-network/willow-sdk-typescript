@@ -56,22 +56,25 @@ async function main() {
   const publicKeyId = didDocument.publicKeys[0].id;
   console.log(`   DID: ${did}\n`);
 
-  // 4. Register the DID. Because the id is derived from the key, the DID must
-  //    already hold a balance: someone transfers at least the registration fee
-  //    to `did` first, then the holder registers and the fee is paid from that
-  //    balance. On a funded devnet this "just works"; otherwise fund it first.
-  console.log('4. Registering DID (must be pre-funded)...');
+  // 4. Set the identity (synchronous — no server session). Every transaction
+  //    and signed request is signed with this key, the DID's registration
+  //    among them.
+  console.log('4. Setting identity...');
+  client.auth.setIdentity(did, privateKey, publicKeyId);
+  console.log('   Identity set — every write will be signed with this key\n');
+
+  // 5. Register the DID by a RegisterDid transaction. Because the id is
+  //    derived from the key, the DID must already hold a balance: someone
+  //    transfers at least the registration fee to `did` first, then the holder
+  //    registers and the fee is paid from that balance. On a funded devnet
+  //    this "just works"; otherwise fund it first.
+  console.log('5. Registering DID (must be pre-funded)...');
   try {
     await client.registerDid(didDocument);
-    console.log('   DID registered successfully\n');
+    console.log('   DID registration submitted\n');
   } catch (error) {
     console.log(`   Note: ${error}\n`);
   }
-
-  // 5. Set identity for per-request signing (synchronous — no server session).
-  console.log('5. Setting identity...');
-  client.auth.setIdentity(did, privateKey, publicKeyId);
-  console.log('   Identity set — every write will be signed with this key\n');
 
   // The remaining steps target a subgrove that needs to be registered + funded
   // first; see app_registration.ts. Errors here just fall back to printing
@@ -115,21 +118,8 @@ async function main() {
     console.log(`   Note: ${error}\n`);
   }
 
-  // 9. Update data
-  console.log('9. Updating data...');
-  try {
-    await client.update(datasetId, 'user-1', {
-      ...testData,
-      score: 150,
-      updated: Date.now(),
-    });
-    console.log('   Data updated successfully\n');
-  } catch (error) {
-    console.log(`   Note: ${error}\n`);
-  }
-
-  // 10. Get root hash
-  console.log('10. Getting root hash...');
+  // 9. Get root hash
+  console.log('9. Getting root hash...');
   try {
     const rootHash = await client.getRootHash();
     console.log(`   Verified root hash: ${rootHash.substring(0, 32)}...\n`);

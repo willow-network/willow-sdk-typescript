@@ -9,6 +9,7 @@
  */
 
 import { BroadcastResult } from '../consensus/types';
+import { toJson } from './json';
 
 export interface SubmitTxOptions {
   apiKey?: string;
@@ -55,7 +56,9 @@ export async function submitTxToApi(
       ...(opts.apiKey ? { 'X-API-Key': opts.apiKey } : {}),
       ...(opts.headers ?? {}),
     },
-    body: JSON.stringify(txWrapper),
+    // A u64 or u128 above 2^53 is carried as a bigint and sent as its exact
+    // digits, which `JSON.stringify` can't write.
+    body: toJson(txWrapper),
     signal: AbortSignal.timeout(opts.timeoutMs ?? 30_000),
   });
 

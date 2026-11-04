@@ -20,6 +20,8 @@ import {
   DeleteFileManifestTx,
   storeFileManifestSignMessage,
   StoreFileManifestTx,
+  unregisterStorageNodeSignMessage,
+  UnregisterStorageNodeTx,
 } from '../consensus/types';
 import { submitTxToApi, SubmitTxOptions } from '../internal/tx';
 import { RequestSigner, resolveRequest } from '../internal/http';
@@ -275,22 +277,24 @@ export class FileOperations {
   }
 
   /**
-   * Unregister a storage node (submits UnregisterStorageNode to consensus).
+   * Unregister a storage node (submits UnregisterStorageNode to consensus),
+   * signed over the node DID and the nonce
+   * ({@link unregisterStorageNodeSignMessage}). The signing identity is the
+   * node's DID; `signing.ownerDid` is not used.
    */
   async unregisterStorageNode(
     nodeDid: string,
     signing?: FileSigningOptions,
   ): Promise<void> {
-    const signMessage = `unregister_storage_node:${nodeDid}`;
-    const signature = signing
-      ? signing.signFunction(signMessage, signing.privateKey)
-      : '';
-    const tx = createTransactionWrapper('UnregisterStorageNode', {
+    const unregister: UnregisterStorageNodeTx = {
       nodeDid,
-      signature,
       publicKeyId: signing?.publicKeyId ?? '',
       nonce: signing?.nonce ?? 0,
-    });
+    };
+    unregister.signature = signing
+      ? signing.signFunction(unregisterStorageNodeSignMessage(unregister), signing.privateKey)
+      : '';
+    const tx = createTransactionWrapper('UnregisterStorageNode', unregister);
     const result = await this.submitTx(tx);
     if (!result.success) {
       throw new WillowError(

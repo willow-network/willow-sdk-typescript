@@ -7,9 +7,15 @@
  */
 
 import { ApiResponse, WillowError } from "../types";
-import { WillowAuth, signEd25519 } from "../auth";
+import { WillowAuth } from "../auth";
 import { BroadcastResult } from "../consensus";
-import { Transaction, createTransactionWrapper } from "../consensus/types";
+import {
+  SignFunction,
+  Transaction,
+  createTransactionWrapper,
+  grantSubgroveKeySignMessage,
+  rotateSubgroveKeySignMessage,
+} from "../consensus/types";
 import { HttpClient, HttpError, RequestSigner } from "../internal/http";
 import { submitTxToApi } from "../internal/tx";
 
@@ -131,6 +137,7 @@ export class PrivacyOperations {
   private auth: WillowAuth;
   private privateKey: string;
   private publicKeyId: string;
+  private signFunction?: SignFunction;
   private apiUrl: string;
   /**
    * Signs a key-grant read in the older form, over the path exactly as sent
@@ -143,14 +150,18 @@ export class PrivacyOperations {
    *
    * @param apiUrl - Willow REST API base URL (e.g. "http://localhost:3031")
    * @param auth - WillowAuth instance with identity set (used for REST auth headers)
-   * @param privateKey - Ed25519 private key hex (used for signing consensus transactions)
+   * @param privateKey - Private key hex (used for signing consensus transactions)
    * @param publicKeyId - Public key ID for the DID (e.g. "did:willow:abc#key-1")
+   * @param signFunction - Signs a transaction's message with `privateKey`.
+   *   Defaults to the sign function of `auth`'s identity
+   *   (`auth.getSignFunction()`: secp256k1 or Ed25519).
    */
   constructor(
     apiUrl: string,
     auth: WillowAuth,
     privateKey: string,
     publicKeyId: string,
+    signFunction?: SignFunction,
   ) {
     this.apiUrl = apiUrl.replace(/\/+$/, "");
     this.api = new HttpClient({ baseURL: this.apiUrl });
@@ -158,6 +169,13 @@ export class PrivacyOperations {
     this.sign = (method, target) => auth.getAuthHeaders(method, target);
     this.privateKey = privateKey;
     this.publicKeyId = publicKeyId;
+    this.signFunction = signFunction;
+  }
+
+  /** Sign a transaction's message with this instance's key. */
+  private signMessage(message: string): string {
+    const sign = this.signFunction ?? this.auth.getSignFunction();
+    return sign(message, this.privateKey);
   }
 
   // ── Read operations (REST API) ─────────────────────────────────────
@@ -260,8 +278,8 @@ export class PrivacyOperations {
   /**
    * Grant a subgrove encryption key to a DID.
    *
-   * Builds a GrantSubgroveKey transaction, signs it with Ed25519, and
-   * broadcasts to the CometBFT consensus layer.
+   * Builds a GrantSubgroveKey transaction, signs every field of it and its
+   * nonce ({@link grantSubgroveKeySignMessage}), and submits it.
    *
    * @param subgroveId - Subgrove ID
    * @param grant - The encrypted key grant for the grantee
@@ -274,26 +292,22 @@ export class PrivacyOperations {
     const did = this.requireDid();
     const nonce = await this.getNextNonce(did);
 
-    // Sign message format must match the Rust consensus handler:
-    // "GrantSubgroveKey:{subgrove_id}:{grantee_did}:{sender_did}:{nonce}"
-    const message = `GrantSubgroveKey:${subgroveId}:${grant.grantee_did}:${did}:${nonce}`;
-    const signature = signEd25519(message, this.privateKey);
-
-    return this.broadcastTransaction("GrantSubgroveKey", {
+    const tx = {
       subgroveId,
       encryptedKeyGrant: grant,
       senderDid: did,
-      signature,
       publicKeyId: this.publicKeyId,
       nonce,
-    });
+    };
+    const signature = this.signMessage(grantSubgroveKeySignMessage(tx));
+
+    return this.broadcastTransaction("GrantSubgroveKey", { ...tx, signature });
   }
 
   /**
    * Revoke a subgrove encryption key from a DID.
    *
-   * Builds a RevokeSubgroveKey transaction, signs it with Ed25519, and
-   * broadcasts to the CometBFT consensus layer.
+   * Builds a RevokeSubgroveKey transaction, signs it, and submits it.
    *
    * @param subgroveId - Subgrove ID
    * @param revokeDid - DID to revoke access from
@@ -309,7 +323,7 @@ export class PrivacyOperations {
     // Sign message format must match the Rust consensus handler:
     // "RevokeSubgroveKey:{subgrove_id}:{revokee_did}:{sender_did}:{nonce}"
     const message = `RevokeSubgroveKey:${subgroveId}:${revokeDid}:${did}:${nonce}`;
-    const signature = signEd25519(message, this.privateKey);
+    const signature = this.signMessage(message);
 
     return this.broadcastTransaction("RevokeSubgroveKey", {
       subgroveId,
@@ -324,8 +338,9 @@ export class PrivacyOperations {
   /**
    * Rotate the subgrove encryption key and re-grant to authorized DIDs.
    *
-   * Builds a RotateSubgroveKey transaction, signs it with Ed25519, and
-   * broadcasts to the CometBFT consensus layer.
+   * Builds a RotateSubgroveKey transaction, signs every field of it,
+   * every grant, and its nonce ({@link rotateSubgroveKeySignMessage}), and
+   * submits it.
    *
    * Only the subgrove owner can rotate keys. The new epoch must be
    * exactly current_epoch + 1. All existing grants are deleted and
@@ -344,20 +359,17 @@ export class PrivacyOperations {
     const did = this.requireDid();
     const nonce = await this.getNextNonce(did);
 
-    // Sign message format must match the Rust consensus handler:
-    // "RotateSubgroveKey:{subgrove_id}:{new_epoch}:{sender_did}:{nonce}"
-    const message = `RotateSubgroveKey:${subgroveId}:${newEpoch}:${did}:${nonce}`;
-    const signature = signEd25519(message, this.privateKey);
-
-    return this.broadcastTransaction("RotateSubgroveKey", {
+    const tx = {
       subgroveId,
       newEpoch,
       newGrants,
       senderDid: did,
-      signature,
       publicKeyId: this.publicKeyId,
       nonce,
-    });
+    };
+    const signature = this.signMessage(rotateSubgroveKeySignMessage(tx));
+
+    return this.broadcastTransaction("RotateSubgroveKey", { ...tx, signature });
   }
 
   // ── Private helpers ─────────────────────────────────────────────────

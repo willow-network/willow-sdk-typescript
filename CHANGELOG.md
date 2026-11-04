@@ -26,6 +26,24 @@ package adheres to [Semantic Versioning](https://semver.org/).
   file manifest, or a file delete signs (see the README's "Data and file
   write signing"), and the `StoreFileManifestTx` and `DeleteFileManifestTx`
   types they take.
+- `registerSubgroveSignMessage`, `registerSubgroveUnsignedBincode`,
+  `grantSubgroveKeySignMessage`, `rotateSubgroveKeySignMessage`,
+  `unregisterStorageNodeSignMessage`, and `registerDidSignMessage`, which
+  return the message (or, for a registration, the bincode its `Config`
+  hashes) each of these transactions signs (see the README's "Registration,
+  key grant, and storage-node signing").
+- `WillowAuth.getAlgorithm()`, `getSignFunction()`, and
+  `transactionSigner()`: the identity's algorithm, its sign function, and the
+  identity as a transaction `Signer`.
+- `RegisterSubgroveTx` carries every field of the chain's struct
+  (`description`, `admins`, `checkpointVerification`, `privacy`,
+  `initialOwnerKeyGrant`, `templateConfig`, `confirmationDepth`,
+  `cryptographicCompleteness`), and the mode types are typed field by field
+  (`ReadPricing`, `ExecutionMode`, `IndexerConfig`, `WasmModule`,
+  `CompletenessCommitments`, `TemplateSubgroveConfig`, `TeeType`,
+  `UintInput`).
+- An optional `signFunction` argument to the `PrivacyOperations`
+  constructor.
 
 ### Changed
 
@@ -63,6 +81,40 @@ package adheres to [Semantic Versioning](https://semver.org/).
 - A file manifest's `contentHash` and `chunkMerkleRoot` must be 32 bytes of
   hex; any other length throws `INVALID_DIGEST` before the transaction is
   sent.
+- **Registrations, key grants, and storage-node removals sign every field
+  and their nonce.** RegisterSubgrove is signed, in every mode, over its
+  subgrove, owner, `Config` (the SHA-256 of the transaction's bincode with
+  an empty signature), and nonce; GrantSubgroveKey and RotateSubgroveKey
+  over every field of each grant; UnregisterStorageNode over the node and
+  the nonce. The SDK sends every field of a registration explicitly and
+  hashes exactly what it sends; u64 and u128 values above 2^53 − 1 are sent
+  as exact digits. It refuses to sign a text field holding a `\n` or a lone
+  surrogate, or a number outside its type.
+- **`WillowClient` signs transactions with its identity's algorithm.** A
+  secp256k1 identity's transactions were signed as Ed25519 and never
+  verified. `PrivacyOperations` signs with its identity's algorithm too.
+- A file manifest's `chunkCount` and `chunkSize` are u32 on the chain; a
+  larger value is refused before signing or sending.
+- **`WillowClient.registerDid` sends a RegisterDid transaction**, signed by
+  the identity (the new DID), at nonce 1, and returns its
+  `BroadcastResult`. The document goes as the chain's `DidDocument` and is
+  signed over its JSON text as the chain writes it. The API has no DID
+  registration route; `WillowAuth.registerDid` throws
+  `UNSUPPORTED_OPERATION` naming this path.
+- `createDidFromPublicKey` publishes an Ed25519 key as
+  `Ed25519VerificationKey2018`, the type the chain derives a DID from and
+  verifies.
+- **`WillowData.registerSubgrove` sends a RegisterSubgrove transaction** and
+  returns its `BroadcastResult`, as `WillowClient.registerSubgrove` does. The
+  API has no REST registration route.
+- `WillowData.storeData`, `batchStore`, `updateData`, and `deleteData`, and
+  `WillowClient.update` and `delete`, throw `UNSUPPORTED_OPERATION` without
+  sending anything. The API serves no data writes over REST, and the SDK
+  builds no UpdateData or DeleteData transaction; a StoreData of an existing
+  key is refused in its block. Write each new key with `client.store`.
+- A registration's retention window goes into its BlockchainIndexing mode,
+  in the chain's form; one for another mode is refused. It was sent as a
+  top-level field the chain does not read.
 
 ### Removed
 

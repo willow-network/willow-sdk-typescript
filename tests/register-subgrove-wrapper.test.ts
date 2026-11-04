@@ -37,6 +37,7 @@ describe('createTransactionWrapper — RegisterSubgrove access lists', () => {
         name: 'My Subgrove',
         writers: ['did:willow:owner', 'did:willow:writer2'],
         free_readers: ['did:willow:reader1'],
+        read_pricing: null,
       },
     });
   });
@@ -58,6 +59,7 @@ describe('createTransactionWrapper — RegisterSubgrove access lists', () => {
       name: 'sg',
       writers: ['did:willow:owner'],
       free_readers: [],
+      read_pricing: null,
     });
   });
 
@@ -79,8 +81,54 @@ describe('createTransactionWrapper — RegisterSubgrove access lists', () => {
     expect(typeof wrapper.initial_funding).toBe('string');
   });
 
-  it('omits initial_funding entirely when no funding is supplied', () => {
+  it('sends initial_funding as null when no funding is supplied', () => {
     const wrapper = createTransactionWrapper('RegisterSubgrove', baseTx()).RegisterSubgrove;
-    expect('initial_funding' in wrapper).toBe(false);
+    expect(wrapper.initial_funding).toBeNull();
+  });
+
+  it('writes initialFunding without leading zeros, as the chain decodes it', () => {
+    const wrapper = createTransactionWrapper(
+      'RegisterSubgrove',
+      baseTx({ initialFunding: '007' }),
+    ).RegisterSubgrove;
+    expect(wrapper.initial_funding).toBe('7');
+  });
+
+  it('sends every field of the chain struct, in its order, defaults written out', () => {
+    const wrapper = createTransactionWrapper('RegisterSubgrove', baseTx()).RegisterSubgrove;
+    expect(Object.keys(wrapper)).toEqual([
+      'subgrove_id',
+      'name',
+      'description',
+      'schema',
+      'owner_did',
+      'admins',
+      'initial_funding',
+      'checkpoint_verification',
+      'mode',
+      'privacy',
+      'initial_owner_key_grant',
+      'template_config',
+      'confirmation_depth',
+      'signature',
+      'public_key_id',
+      'nonce',
+      'cryptographic_completeness',
+    ]);
+    expect(wrapper).toMatchObject({
+      description: '',
+      admins: [],
+      checkpoint_verification: { required_tee: null },
+      privacy: null,
+      initial_owner_key_grant: null,
+      template_config: null,
+      confirmation_depth: 0,
+      cryptographic_completeness: false,
+    });
+  });
+
+  it('sends no top-level retention_window, which the chain struct does not have', () => {
+    const wrapper = createTransactionWrapper('RegisterSubgrove', baseTx()).RegisterSubgrove;
+    expect('retention_window' in wrapper).toBe(false);
   });
 });

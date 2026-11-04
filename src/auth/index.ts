@@ -9,6 +9,7 @@ import {
   DidDocument,
 } from '../types';
 import { HttpClient } from '../internal/http';
+import type { Signer, SignFunction } from '../consensus/types';
 import {
   base64ToBytes,
   bytesToBase64,
@@ -64,9 +65,10 @@ export function detectAlgorithm(did: string, privateKey?: string): SignatureAlgo
  * Because self-certifying Willow DIDs cannot reveal their algorithm from the id
  * string, the on-chain DID document's key `type` is the authoritative signal.
  * The SDK derives these types itself (see `createDidFromPublicKey` /
- * `createDidFromWallet` in `../utils`): Ed25519 keys use `'Ed25519'` and
- * secp256k1 keys use `'EcdsaSecp256k1VerificationKey2019'`. Other common W3C
- * spellings are accepted too. Returns `undefined` for unrecognized types so
+ * `createDidFromWallet` in `../utils`): Ed25519 keys use
+ * `'Ed25519VerificationKey2018'` and secp256k1 keys use
+ * `'EcdsaSecp256k1VerificationKey2019'`, the types the chain verifies. Other
+ * common W3C spellings are accepted too. Returns `undefined` for unrecognized types so
  * callers can fall back to {@link detectAlgorithm}.
  */
 export function algorithmFromKeyType(
@@ -418,17 +420,45 @@ export class WillowAuth {
     return this.publicKeyId;
   }
 
+  /** The signature algorithm of the identity, once one is set. */
+  getAlgorithm(): SignatureAlgorithm | undefined {
+    return this.algorithm;
+  }
+
   /**
-   * Register a new DID document
+   * The function that signs a transaction's message with the identity's key:
+   * {@link signSecp256k1} for a secp256k1 identity, else {@link signEd25519}.
    */
-  async registerDid(didDocument: DidDocument): Promise<DidDocument> {
-    const response = await this.api.post<ApiResponse<DidDocument>>('/did', didDocument);
+  getSignFunction(): SignFunction {
+    return this.algorithm === 'secp256k1' ? signSecp256k1 : signEd25519;
+  }
 
-    if (!response.success) {
-      throw new WillowError(response.error || 'Failed to register DID', 'REGISTRATION_FAILED');
-    }
+  /**
+   * The identity as a transaction {@link Signer}: its key, its key id, and
+   * the sign function of its algorithm.
+   *
+   * @throws WillowError `NO_IDENTITY` if no identity is set.
+   */
+  transactionSigner(): Required<Signer> {
+    const { privateKey, publicKeyId } = this.requireIdentity();
+    return { privateKey, publicKeyId, signFunction: this.getSignFunction() };
+  }
 
-    return response.data!;
+  /**
+   * The API serves no DID registration route: a DID is registered by a
+   * RegisterDid transaction sent through `POST /tx/submit`. Use
+   * `WillowClient.registerDid(didDocument)`, or
+   * `ConsensusClient.registerDid(didDocument, signer)`.
+   *
+   * @deprecated Always throws `UNSUPPORTED_OPERATION`.
+   */
+  async registerDid(_didDocument: DidDocument): Promise<DidDocument> {
+    throw new WillowError(
+      'The API has no DID registration route; a DID is registered by a RegisterDid ' +
+        'transaction. Use WillowClient.registerDid(didDocument) or ' +
+        'ConsensusClient.registerDid(didDocument, signer).',
+      'UNSUPPORTED_OPERATION',
+    );
   }
 
   /**
@@ -479,7 +509,7 @@ export class WillowAuth {
    * permission or a place on a free-reader list), and it can be replayed with
    * any body until the timestamp expires. The client signs its reads of
    * subgrove data with {@link signRequestWithNonce}, and its other signed
-   * requests (writes, key-grant reads, transaction submission) with this form.
+   * requests (key-grant reads and transaction submission) with this form.
    */
   signRequest(method: string, path: string): SignedRequestHeaders {
     const { did, privateKey, publicKeyId } = this.requireIdentity();

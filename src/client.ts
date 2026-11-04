@@ -1,14 +1,15 @@
 import { WillowAuth, SignatureAlgorithm, algorithmFromKeyType } from "./auth";
-import { WillowData } from "./data";
+import { WillowData, registerSubgroveRequest } from "./data";
 import { FileOperations } from "./files";
 import { EthOperations } from "./eth-state";
 import { VerifiableRpcOperations } from "./verifiable-rpc";
 import { ConsensusClient } from "./consensus";
-import { BroadcastResult, RegisterSubgroveOptions, Signer, SubgroveMode } from "./consensus/types";
+import { BroadcastResult, RegisterSubgroveOptions, Signer } from "./consensus/types";
 import { WillowIndexers } from "./indexers";
 import { WillowSubscriptions } from "./subscriptions";
 import {
   WillowConfig,
+  WillowError,
   DidDocument,
   RegisterSubgroveRequest,
   DataRecord,
@@ -80,13 +81,20 @@ export class WillowClient {
       indexerUrl: config.indexerUrl,
     });
 
+    this.consensus = new ConsensusClient({
+      consensusRpcUrl: cometUrl,
+      apiUrl: config.apiUrl,
+      apiKey: config.apiKey,
+      logger: config.logger,
+    });
+
     this.data = new WillowData(
       config.apiUrl,
       this.auth,
       this.indexers,
       cometUrl,
       config.proofVerificationOptions,
-      { logger: config.logger, lightClient: config.lightClient },
+      { logger: config.logger, lightClient: config.lightClient, consensus: this.consensus },
     );
     this.subscriptions = new WillowSubscriptions(config.apiUrl, this.indexers, {
       webSocket: config.webSocket,
@@ -99,14 +107,6 @@ export class WillowClient {
     // throw INDEXER_URL_REQUIRED rather than asking the API.
     this.eth = new EthOperations(config.indexerUrl ?? "", undefined, config.apiKey);
     this.verifiableRpc = new VerifiableRpcOperations(config.indexerUrl ?? "");
-
-    this.consensus = new ConsensusClient({
-      consensusRpcUrl: cometUrl,
-      apiUrl: config.apiUrl,
-      apiKey: config.apiKey,
-      logger: config.logger,
-    });
-
   }
 
   /**
@@ -155,10 +155,31 @@ export class WillowClient {
   }
 
   /**
-   * Register a new DID
+   * Register a DID by a RegisterDid transaction, signed by the identity set
+   * with `auth.setIdentity` (the DID being registered, and a key in its
+   * document).
+   *
+   * The document is sent as the chain's `DidDocument`: each key in
+   * `publicKeys` is controlled by the DID and listed for authentication. The
+   * DID must already hold the registration fee. Returns the consensus
+   * `BroadcastResult`; throws when the transaction is refused.
    */
-  async registerDid(didDocument: DidDocument): Promise<DidDocument> {
-    return this.auth.registerDid(didDocument);
+  async registerDid(didDocument: DidDocument): Promise<BroadcastResult> {
+    this.requireIdentity();
+    if (this.auth.getDid() !== didDocument.id) {
+      throw new WillowError(
+        `The identity (${this.auth.getDid()}) is not the DID being registered (${didDocument.id}); ` +
+          'set the identity to the new DID and one of its keys first.',
+        'IDENTITY_MISMATCH',
+      );
+    }
+    const result = await this.consensus.registerDid(didDocument, this.signer());
+    if (!result.success) {
+      throw new Error(
+        `registerDid failed: ${result.errorMessage ?? result.rawLog ?? 'unknown'}`,
+      );
+    }
+    return result;
   }
 
   /**
@@ -180,27 +201,7 @@ export class WillowClient {
     options?: RegisterSubgroveOptions,
   ): Promise<BroadcastResult> {
     this.requireIdentity();
-    const mode: SubgroveMode =
-      options?.mode ?? {
-        DataStorage: {
-          name: request.name,
-          writers: request.writers,
-          free_readers: request.readers,
-        },
-      };
-    const result = await this.consensus.registerSubgrove(
-      request.dataset_id,
-      JSON.stringify(request.schema ?? {}),
-      this.auth.getDid()!,
-      this.signer(),
-      { name: request.name, ...options, mode },
-    );
-    if (!result.success) {
-      throw new Error(
-        `registerSubgrove failed: ${result.errorMessage ?? result.rawLog ?? 'unknown'}`,
-      );
-    }
-    return result;
+    return registerSubgroveRequest(this.consensus, this.auth, request, options);
   }
 
   /** @deprecated Use {@link registerSubgrove} — "subgrove" is the on-chain term. */
@@ -273,18 +274,25 @@ export class WillowClient {
   }
 
   /**
-   * Update data via a consensus transaction (same as store — idempotent upsert).
+   * Changing an existing key takes an UpdateData transaction, which this SDK
+   * does not build (a StoreData of an existing key is refused in its block).
+   * Write new keys with {@link store}.
+   *
+   * @deprecated Always throws `UNSUPPORTED_OPERATION`.
    */
   async update(
     datasetId: string,
     key: string,
     value: any,
   ): Promise<void> {
-    return this.store(datasetId, key, value);
+    return this.data.updateData(datasetId, key, value);
   }
 
   /**
-   * Delete data by key.
+   * Deleting a key takes a DeleteData transaction, which this SDK does not
+   * build.
+   *
+   * @deprecated Always throws `UNSUPPORTED_OPERATION`.
    */
   async delete(datasetId: string, key: string): Promise<void> {
     return this.data.deleteData(datasetId, key);
@@ -417,12 +425,12 @@ export class WillowClient {
     }
   }
 
-  /** Builds a consensus Signer from the configured identity. Call requireIdentity() first. */
+  /**
+   * The configured identity as a consensus Signer, with the sign function of
+   * its algorithm (secp256k1 or Ed25519). Call requireIdentity() first.
+   */
   private signer(): Signer {
-    return {
-      privateKey: this.auth.getPrivateKey()!,
-      publicKeyId: this.auth.getPublicKeyId()!,
-    };
+    return this.auth.transactionSigner();
   }
 
   /**

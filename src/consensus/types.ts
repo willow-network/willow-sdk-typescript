@@ -4,7 +4,6 @@
  * Transaction structures and types for direct blockchain interaction.
  */
 
-import { keccak_256 } from '@noble/hashes/sha3';
 import { sha256 } from '@noble/hashes/sha256';
 import { WillowError } from '../types';
 import {
@@ -15,7 +14,12 @@ import {
   hexToBytes,
   utf8ToBytes,
 } from '../internal/bytes';
+import { toJson } from '../internal/json';
 import type { WillowLogger } from '../internal/logger';
+import type { PrivacyConfig } from '../privacy';
+import { invalid, text, textLine } from './fields';
+import { chainDidDocument, keyGrantWire, registerSubgroveWire } from './wire';
+import { registerSubgroveBincode } from './bincode';
 
 /**
  * Base exception for consensus client operations
@@ -158,50 +162,164 @@ export interface RegisterDidTx {
   nonce: number;
 }
 
-/** How long real-time indexed data is retained on consensus nodes. */
+/**
+ * An unsigned integer the chain holds as u64 or u128: a safe-integer number,
+ * a bigint, or a string of decimal digits. A number at or above 2^53 is
+ * refused, since it may already have been rounded.
+ */
+export type UintInput = number | bigint | string;
+
+/**
+ * How long real-time indexed data is retained on consensus nodes. The chain's
+ * own form (`{ Blocks: n }`, `{ Seconds: n }`, `'Indefinite'`, `'VerifyOnly'`)
+ * is accepted too.
+ */
 export type RetentionWindow =
   | { type: 'Blocks'; value: number }
   | { type: 'Seconds'; value: number }
   | { type: 'Indefinite' }
-  | { type: 'VerifyOnly' };
+  | { type: 'VerifyOnly' }
+  | { Blocks: UintInput }
+  | { Seconds: UintInput }
+  | 'Indefinite'
+  | 'VerifyOnly';
+
+/** A TEE the chain can require. */
+export type TeeType = 'AwsNitro' | 'IntelSgx' | 'AmdSev';
+
+/** Paid reads on a data or file subgrove. */
+export interface ReadPricing {
+  enabled: boolean;
+  /** u128, in the token's smallest unit. */
+  price_per_query: UintInput;
+  /** Owner's share in basis points (u32). */
+  owner_revenue_share_bps: number;
+}
+
+/** Who runs a BlockchainIndexing subgrove's transformations. */
+export type ExecutionMode =
+  | 'ConsensusExecution'
+  | { IndexerExecution: { sampling_rate_percent: number } }
+  | { TeeExecution: { tee_type: TeeType } };
+
+/** Indexer requirements and rewards of a BlockchainIndexing subgrove. */
+export interface IndexerConfig {
+  min_indexers: number;
+  max_indexers: number;
+  /** u128. */
+  reward_per_epoch: UintInput;
+  /** u64; the chain's default, 100, when omitted. */
+  epoch_length?: UintInput;
+  /** u128. */
+  min_indexer_stake: UintInput;
+}
+
+/** A WebAssembly module of a BlockchainIndexing subgrove. */
+export interface WasmModule {
+  name: string;
+  /** The 32-byte SHA-256 of `content`, as bytes or hex. */
+  hash: number[] | Uint8Array | string;
+  content: number[] | Uint8Array;
+}
+
+/** Commitments to an indexing subgrove's log and transaction filters. */
+export interface CompletenessCommitments {
+  log_config_hash: number[];
+  tx_config_hash: number[];
+  deferred?: boolean;
+  /** u128. */
+  bond_amount?: UintInput;
+}
 
 /**
  * Subgrove mode — determines what kind of data the subgrove holds and how
- * it's ingested. Three variants match the Rust `SubgroveMode` enum. When
- * omitted, the wire defaults to DataStorage with empty values.
+ * it's ingested. Three variants match the Rust `SubgroveMode` enum. The SDK
+ * sends every field, with the chain's default for one left out.
  */
 export type SubgroveMode =
-  | { DataStorage: { name: string; writers?: string[]; free_readers?: string[]; read_pricing?: any } }
+  | {
+      DataStorage: {
+        name: string;
+        writers?: string[];
+        free_readers?: string[];
+        read_pricing?: ReadPricing | null;
+      };
+    }
   | {
       FileStorage: {
         name: string;
-        max_file_size: number;
+        max_file_size: UintInput;
         replication_factor: number;
         writers?: string[];
         free_readers?: string[];
-        read_pricing?: any;
-        retention_period?: number;
+        read_pricing?: ReadPricing | null;
+        retention_period?: UintInput;
       };
     }
-  | { BlockchainIndexing: { manifest_content?: number[]; wasm_modules?: any[]; execution_mode?: any; indexer_config?: any; retention_window?: RetentionWindow } };
+  | {
+      BlockchainIndexing: {
+        manifest_content: number[] | Uint8Array;
+        wasm_modules?: WasmModule[];
+        execution_mode: ExecutionMode;
+        indexer_config: IndexerConfig;
+        retention_window?: RetentionWindow;
+        completeness?: CompletenessCommitments | null;
+        historical_auth_mode?: 'BftEquivalent' | 'CanonizedAccumulator';
+      };
+    };
+
+/** The ZK-template binding a subgrove can carry. */
+export interface TemplateSubgroveConfig {
+  template_id: string;
+  template_version: number;
+  variant_id: string;
+  parameters: number[] | Uint8Array;
+  contracts: string[];
+  event_signatures: string[];
+  chain: string | null;
+}
 
 /**
- * Subgrove registration transaction
+ * Subgrove registration transaction.
+ *
+ * It is signed over a message whose `Config` line is the SHA-256 of the
+ * transaction's bincode, so every field is signed; see
+ * {@link registerSubgroveSignMessage}.
  */
 export interface RegisterSubgroveTx {
   subgroveId: string;
-  /**
-   * Top-level human-readable name. The chain stores this and signs over it
-   * for DataStorage/FileStorage modes (the per-mode `name` is not part of
-   * the signing message). Defaults to `subgroveId` when omitted.
-   */
+  /** Top-level human-readable name. Defaults to `subgroveId` when omitted. */
   name?: string;
+  /** Defaults to `''`. */
+  description?: string;
   schema: string; // JSON schema as string
   ownerDid: string;
+  /** Defaults to `[]`. */
+  admins?: string[];
+  /**
+   * Defaults to a DataStorage mode named `name` whose only writer is the
+   * owner.
+   */
   mode?: SubgroveMode;
+  /**
+   * The retention window of a BlockchainIndexing mode that sets none. The
+   * chain has no retention window for other modes, so the SDK refuses one.
+   */
   retention_window?: RetentionWindow;
-  /** Initial funding in smallest token unit. Transferred from ownerDid to the subgrove balance. */
+  /** Initial funding (u128) in smallest token unit. Transferred from ownerDid to the subgrove balance. */
   initialFunding?: string;
+  /** Defaults to `{ required_tee: null }`. */
+  checkpointVerification?: { required_tee: TeeType | null };
+  /** Defaults to `null` (a public subgrove). */
+  privacy?: PrivacyConfig | null;
+  /** Defaults to `null`. */
+  initialOwnerKeyGrant?: EncryptedKeyGrant | null;
+  /** Defaults to `null`. */
+  templateConfig?: TemplateSubgroveConfig | null;
+  /** u32; defaults to 0. */
+  confirmationDepth?: number;
+  /** Defaults to `false`. */
+  cryptographicCompleteness?: boolean;
   signature?: string; // hex-encoded
   publicKeyId?: string;
   nonce?: number;
@@ -274,11 +392,13 @@ export interface UnregisterStorageNodeTx {
  */
 export interface EncryptedKeyGrant {
   grantee_did: string;
+  /** u32. */
   key_epoch: number;
   grantee_public_key_id: string;
   ephemeral_public_key: number[];
   encrypted_key: number[];
   granted_by: string;
+  /** u64, Unix seconds. */
   granted_at: number;
 }
 
@@ -413,31 +533,16 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
   const publicKeyId = tx.publicKeyId ?? '';
 
   switch (txType) {
-    case 'RegisterSubgrove': {
-      const t = transaction as RegisterSubgroveTx;
-      const name = t.name ?? t.subgroveId;
-      const wrapper: Record<string, unknown> = {
-        subgrove_id: t.subgroveId,
-        name,
-        description: '',
-        schema: t.schema,
-        owner_did: t.ownerDid,
-        admins: [],
-        mode: t.mode ?? { DataStorage: { name, writers: [t.ownerDid], free_readers: [] } },
-        retention_window: t.retention_window,
-        signature: sig,
-        public_key_id: publicKeyId,
-        nonce,
+    case 'RegisterSubgrove':
+      // Every field, in the struct's order, with the chain's default for one
+      // the caller left out written out: the signed `Config` hashes the
+      // bincode of exactly this object. `initial_funding` (u128) goes as a
+      // decimal string, which the chain's `option_u128_flexible` decodes
+      // exactly; other u128s above 2^53 go as bigints, which the SDK's JSON
+      // writer sends as exact digits.
+      return {
+        RegisterSubgrove: registerSubgroveWire(transaction as RegisterSubgroveTx, sig as number[]),
       };
-      if (t.initialFunding) {
-        // The chain's `initial_funding` is u128; its `option_u128_flexible`
-        // deserializer accepts a JSON string for the TS SDK. Send the string
-        // verbatim so values above 2^53 round-trip exactly (parseInt would
-        // lose precision).
-        wrapper.initial_funding = t.initialFunding;
-      }
-      return { RegisterSubgrove: wrapper };
-    }
     case 'DataStore': {
       const t = transaction as DataStoreTx;
       const data = Array.from(storeDataBytes(t.data));
@@ -471,7 +576,7 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
       const t = transaction as RegisterDidTx;
       return {
         RegisterDid: {
-          did_document: t.didDocument,
+          did_document: chainDidDocument(t.didDocument),
           signature: sig,
           public_key_id: publicKeyId,
           nonce,
@@ -518,10 +623,10 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
           file_key: t.fileKey,
           filename: t.filename,
           content_type: t.contentType,
-          total_size: t.totalSize,
+          total_size: safeUint('totalSize', t.totalSize, 64),
           content_hash: Array.from(digestBytes('contentHash', t.contentHash)),
-          chunk_count: t.chunkCount,
-          chunk_size: t.chunkSize,
+          chunk_count: safeUint('chunkCount', t.chunkCount, 32),
+          chunk_size: safeUint('chunkSize', t.chunkSize, 32),
           chunk_merkle_root: Array.from(digestBytes('chunkMerkleRoot', t.chunkMerkleRoot)),
           owner_did: t.ownerDid,
           signature: sig,
@@ -547,7 +652,7 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
       const t = transaction as UnregisterStorageNodeTx;
       return {
         UnregisterStorageNode: {
-          node_did: t.nodeDid,
+          node_did: text('nodeDid', t.nodeDid),
           signature: sig,
           public_key_id: publicKeyId,
           nonce,
@@ -558,9 +663,9 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
       const t = transaction as GrantSubgroveKeyTx;
       return {
         GrantSubgroveKey: {
-          subgrove_id: t.subgroveId,
-          encrypted_key_grant: t.encryptedKeyGrant,
-          sender_did: t.senderDid,
+          subgrove_id: text('subgroveId', t.subgroveId),
+          encrypted_key_grant: keyGrantWire('encryptedKeyGrant', t.encryptedKeyGrant),
+          sender_did: text('senderDid', t.senderDid),
           signature: sig,
           public_key_id: publicKeyId,
           nonce,
@@ -584,10 +689,10 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
       const t = transaction as RotateSubgroveKeyTx;
       return {
         RotateSubgroveKey: {
-          subgrove_id: t.subgroveId,
-          new_epoch: t.newEpoch,
-          new_grants: t.newGrants,
-          sender_did: t.senderDid,
+          subgrove_id: text('subgroveId', t.subgroveId),
+          new_epoch: safeUint('newEpoch', t.newEpoch, 32),
+          new_grants: keyGrantsWire(t.newGrants),
+          sender_did: text('senderDid', t.senderDid),
           signature: sig,
           public_key_id: publicKeyId,
           nonce,
@@ -600,45 +705,33 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
 }
 
 /**
- * Keccak256 hash of a string, matching the Rust server's
- * `TransactionValidator::hash_string` (uses `sha3::Keccak256`).
+ * A number field of the first set of signed transactions, which carry their
+ * numbers as JS numbers: a safe integer within u`bits`. A JS number is exact
+ * only up to 2^53 - 1, so a larger, negative, or fractional value is refused
+ * rather than rounded; ChunkCount and ChunkSize are u32 on the chain, so a
+ * value above 2^32 - 1 is refused too.
  */
-function schemaHash(schema: string): string {
-  return bytesToHex(keccak_256(utf8ToBytes(schema)));
-}
-
-/**
- * A `Label: value` line of a signed message. The value goes in verbatim, with
- * no escaping or normalization. The chain refuses a text field holding a line
- * feed (the byte 0x0A), so the SDK refuses to sign one. In a JS string only
- * U+000A encodes to that byte, so a CR or U+2028 is signed as it is.
- */
-function textLine(label: string, value: string): string {
-  if (typeof value !== 'string') {
-    throw new WillowError(`${label} must be a string`, 'INVALID_SIGNED_FIELD');
-  }
-  if (value.includes('\n')) {
-    throw new WillowError(
-      `${label} holds a line break, which a signed field can't`,
-      'LINE_BREAK_IN_SIGNED_FIELD',
-    );
-  }
-  return `${label}: ${value}`;
-}
-
-/**
- * A `Label: n` line: unsigned decimal, no leading zeros. The chain's numbers
- * are u64 and a JS number is exact only up to 2^53 - 1, so a larger, negative,
- * or fractional value is refused rather than rounded.
- */
-function uintLine(label: string, value: number | undefined): string {
+function safeUint(label: string, value: number | undefined, bits: 32 | 64): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw new WillowError(
       `${label} must be a non-negative safe integer, got ${String(value)}`,
       'INVALID_SIGNED_FIELD',
     );
   }
-  return `${label}: ${value}`;
+  if (bits === 32 && value > 0xffff_ffff) {
+    throw new WillowError(`${label} is outside u32: ${value}`, 'INVALID_SIGNED_FIELD');
+  }
+  return value;
+}
+
+/** A `Label: n` line of a {@link safeUint}: unsigned decimal, no leading zeros. */
+function uintLine(label: string, value: number | undefined, bits: 32 | 64 = 64): string {
+  return `${label}: ${safeUint(label, value, bits)}`;
+}
+
+function keyGrantsWire(grants: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(grants)) throw invalid('newGrants must be an array');
+  return grants.map((g, i) => keyGrantWire(`newGrants[${i}]`, g));
 }
 
 /**
@@ -699,8 +792,9 @@ export function storeDataSignMessage(tx: DataStoreTx): string {
  * `encryption`, so the line is `none`.
  *
  * @throws WillowError if `subgroveId`, `fileKey`, `ownerDid`, `filename`, or
- *   `contentType` holds a `\n`, a digest is not 32 bytes of hex, or a number
- *   is not a non-negative safe integer.
+ *   `contentType` holds a `\n`, a digest is not 32 bytes of hex, a number is
+ *   not a non-negative safe integer, or `chunkCount` or `chunkSize` is
+ *   outside u32.
  */
 export function storeFileManifestSignMessage(tx: StoreFileManifestTx): string {
   return [
@@ -712,8 +806,8 @@ export function storeFileManifestSignMessage(tx: StoreFileManifestTx): string {
     textLine('ContentType', tx.contentType),
     uintLine('TotalSize', tx.totalSize),
     `ContentHash: ${bytesToHex(digestBytes('contentHash', tx.contentHash))}`,
-    uintLine('ChunkCount', tx.chunkCount),
-    uintLine('ChunkSize', tx.chunkSize),
+    uintLine('ChunkCount', tx.chunkCount, 32),
+    uintLine('ChunkSize', tx.chunkSize, 32),
     `ChunkMerkleRoot: ${bytesToHex(digestBytes('chunkMerkleRoot', tx.chunkMerkleRoot))}`,
     'Encryption: none',
     uintLine('Nonce', tx.nonce),
@@ -746,6 +840,156 @@ export function deleteFileManifestSignMessage(tx: DeleteFileManifestTx): string 
   ].join('\n');
 }
 
+/** The nonce of a signed transaction, which the message must carry. */
+function nonceLine(nonce: number | undefined): string {
+  return uintLine('Nonce', nonce);
+}
+
+/**
+ * The bincode (1.x default) of a RegisterSubgrove transaction with an empty
+ * signature: the bytes its signed `Config` line hashes. It encodes the body
+ * {@link createTransactionWrapper} sends, field for field.
+ *
+ * @throws WillowError if a field is not one the chain can decode as given
+ *   (a text field with a lone surrogate, an integer outside its type or an
+ *   unsafe JS number, an unknown enum variant, a missing required field).
+ */
+export function registerSubgroveUnsignedBincode(tx: RegisterSubgroveTx): Uint8Array {
+  return registerSubgroveBincode(registerSubgroveWire(tx, []));
+}
+
+/**
+ * The message a RegisterSubgrove transaction is signed over, in every mode:
+ *
+ * ```
+ * RegisterSubgrove
+ * Subgrove: <subgroveId>
+ * Owner: <ownerDid>
+ * Config: <hex SHA-256 of the transaction's bincode with an empty signature>
+ * Nonce: <nonce>
+ * ```
+ *
+ * `Config` hashes {@link registerSubgroveUnsignedBincode}, so the signature
+ * covers every field the transaction carries, including the defaults the SDK
+ * writes out for fields the caller left unset. Lines are joined by `\n`
+ * with no trailing newline. Set the nonce before building the message.
+ *
+ * @throws WillowError if `subgroveId` or `ownerDid` holds a `\n`, the nonce
+ *   is missing or not a non-negative safe integer, or a field can't be
+ *   encoded (see {@link registerSubgroveUnsignedBincode}).
+ */
+export function registerSubgroveSignMessage(tx: RegisterSubgroveTx): string {
+  nonceLine(tx.nonce);
+  const w = registerSubgroveWire(tx, []);
+  return [
+    'RegisterSubgrove',
+    textLine('Subgrove', w.subgrove_id),
+    textLine('Owner', w.owner_did),
+    `Config: ${bytesToHex(sha256(registerSubgroveBincode(w)))}`,
+    `Nonce: ${w.nonce}`,
+  ].join('\n');
+}
+
+/** The seven lines of one key grant, from its wire form. */
+function grantLines(g: Record<string, unknown>): string[] {
+  return [
+    textLine('Grantee', g.grantee_did),
+    textLine('GranteeKey', g.grantee_public_key_id),
+    `KeyEpoch: ${g.key_epoch}`,
+    `EphemeralKey: ${bytesToHex(Uint8Array.from(g.ephemeral_public_key as number[]))}`,
+    `EncryptedKey: ${bytesToHex(Uint8Array.from(g.encrypted_key as number[]))}`,
+    textLine('GrantedBy', g.granted_by),
+    `GrantedAt: ${g.granted_at}`,
+  ];
+}
+
+/**
+ * The message a GrantSubgroveKey transaction is signed over:
+ *
+ * ```
+ * GrantSubgroveKey
+ * Subgrove: <subgroveId>
+ * Sender: <senderDid>
+ * Grantee: <grantee_did>
+ * GranteeKey: <grantee_public_key_id>
+ * KeyEpoch: <key_epoch>
+ * EphemeralKey: <hex of ephemeral_public_key>
+ * EncryptedKey: <hex of encrypted_key>
+ * GrantedBy: <granted_by>
+ * GrantedAt: <granted_at>
+ * Nonce: <nonce>
+ * ```
+ *
+ * @throws WillowError if a text field holds a `\n` or a lone surrogate, a
+ *   byte field holds a value outside 0..255, `key_epoch` is outside u32,
+ *   `granted_at` is outside u64 (or an unsafe JS number), or the nonce is not
+ *   a non-negative safe integer.
+ */
+export function grantSubgroveKeySignMessage(tx: GrantSubgroveKeyTx): string {
+  return [
+    'GrantSubgroveKey',
+    textLine('Subgrove', tx.subgroveId),
+    textLine('Sender', tx.senderDid),
+    ...grantLines(keyGrantWire('encryptedKeyGrant', tx.encryptedKeyGrant)),
+    nonceLine(tx.nonce),
+  ].join('\n');
+}
+
+/**
+ * The message a RotateSubgroveKey transaction is signed over:
+ *
+ * ```
+ * RotateSubgroveKey
+ * Subgrove: <subgroveId>
+ * Sender: <senderDid>
+ * NewEpoch: <newEpoch>
+ * Grants: <number of newGrants>
+ * <for each grant in order, its seven lines Grantee … GrantedAt>
+ * Nonce: <nonce>
+ * ```
+ *
+ * @throws WillowError as {@link grantSubgroveKeySignMessage}, or if
+ *   `newEpoch` is outside u32.
+ */
+export function rotateSubgroveKeySignMessage(tx: RotateSubgroveKeyTx): string {
+  const grants = keyGrantsWire(tx.newGrants);
+  return [
+    'RotateSubgroveKey',
+    textLine('Subgrove', tx.subgroveId),
+    textLine('Sender', tx.senderDid),
+    uintLine('NewEpoch', tx.newEpoch, 32),
+    `Grants: ${grants.length}`,
+    ...grants.flatMap(grantLines),
+    nonceLine(tx.nonce),
+  ].join('\n');
+}
+
+/**
+ * The message an UnregisterStorageNode transaction is signed over:
+ *
+ * ```
+ * UnregisterStorageNode
+ * Node: <nodeDid>
+ * Nonce: <nonce>
+ * ```
+ *
+ * @throws WillowError if `nodeDid` holds a `\n` or the nonce is not a
+ *   non-negative safe integer.
+ */
+export function unregisterStorageNodeSignMessage(tx: UnregisterStorageNodeTx): string {
+  return ['UnregisterStorageNode', textLine('Node', tx.nodeDid), nonceLine(tx.nonce)].join('\n');
+}
+
+/**
+ * The message a RegisterDid transaction is signed over: the JSON text of the
+ * DID document as the chain's `DidDocument` (every field in its order, the
+ * optional ones written out), which is the text the node signs. It is the
+ * document {@link createTransactionWrapper} sends.
+ */
+export function registerDidSignMessage(tx: RegisterDidTx): string {
+  return toJson(chainDidDocument(tx.didDocument));
+}
+
 /**
  * Create the canonical message a transaction is signed over.
  *
@@ -754,35 +998,20 @@ export function deleteFileManifestSignMessage(tx: DeleteFileManifestTx): string 
  */
 export function createSignMessage(txType: string, transaction: Transaction): string {
   switch (txType) {
-    case 'RegisterDid': {
-      const tx = transaction as RegisterDidTx;
-      return JSON.stringify(tx.didDocument);
-    }
+    case 'RegisterDid':
+      return registerDidSignMessage(transaction as RegisterDidTx);
 
-    case 'RegisterSubgrove': {
-      const tx = transaction as RegisterSubgroveTx;
-      const mode = tx.mode;
-      const sh = schemaHash(tx.schema);
-      // The validator signs over the top-level `name`, not the per-mode one
-      // (`create_register_subgrove_message` reads `params.name`, and the mode
-      // `name` field is `name: _` in the handler).
-      const name = tx.name ?? tx.subgroveId;
+    case 'RegisterSubgrove':
+      return registerSubgroveSignMessage(transaction as RegisterSubgroveTx);
 
-      // BlockchainIndexing signs a simpler payload than the other modes.
-      if (mode && 'BlockchainIndexing' in mode) {
-        return `RegisterSubgrove:${tx.subgroveId}:${tx.ownerDid}:${tx.nonce || 0}`;
-      }
+    case 'GrantSubgroveKey':
+      return grantSubgroveKeySignMessage(transaction as GrantSubgroveKeyTx);
 
-      if (mode && 'FileStorage' in mode) {
-        const fs = (mode as { FileStorage: { writers?: string[]; free_readers?: string[] } }).FileStorage;
-        return `RegisterSubgrove\nID: ${tx.subgroveId}\nMode: FileStorage\nName: ${name}\nDescription: \nSchemaHash: ${sh}\nOwner: ${tx.ownerDid}\nAdmins: \nWriters: ${(fs.writers ?? []).join(',')}\nReaders: ${(fs.free_readers ?? []).join(',')}\nNonce: ${tx.nonce || 0}`;
-      }
-      // DataStorage mode (default)
-      const ds = mode && 'DataStorage' in mode
-        ? (mode as { DataStorage: { writers?: string[]; free_readers?: string[] } }).DataStorage
-        : { writers: [tx.ownerDid], free_readers: [] as string[] };
-      return `RegisterSubgrove\nID: ${tx.subgroveId}\nName: ${name}\nDescription: \nSchemaHash: ${sh}\nOwner: ${tx.ownerDid}\nAdmins: \nWriters: ${(ds.writers ?? []).join(',')}\nReaders: ${(ds.free_readers ?? []).join(',')}\nNonce: ${tx.nonce || 0}`;
-    }
+    case 'RotateSubgroveKey':
+      return rotateSubgroveKeySignMessage(transaction as RotateSubgroveKeyTx);
+
+    case 'UnregisterStorageNode':
+      return unregisterStorageNodeSignMessage(transaction as UnregisterStorageNodeTx);
 
     case 'Transfer': {
       const tx = transaction as TransferTx;

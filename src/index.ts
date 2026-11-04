@@ -173,6 +173,12 @@ export {
   storeDataSignMessage,
   storeFileManifestSignMessage,
   deleteFileManifestSignMessage,
+  registerSubgroveSignMessage,
+  registerSubgroveUnsignedBincode,
+  grantSubgroveKeySignMessage,
+  rotateSubgroveKeySignMessage,
+  unregisterStorageNodeSignMessage,
+  registerDidSignMessage,
 } from "./consensus";
 export type {
   ConsensusConfig,
@@ -184,11 +190,25 @@ export type {
   DataStoreTx,
   StoreFileManifestTx,
   DeleteFileManifestTx,
+  GrantSubgroveKeyTx,
+  RevokeSubgroveKeyTx,
+  RotateSubgroveKeyTx,
+  UnregisterStorageNodeTx,
   Transaction,
   Signer,
   SignFunction,
   RegisterSubgroveOptions,
   StoreFileManifestFields,
+  SubgroveMode,
+  RetentionWindow,
+  UintInput,
+  TeeType,
+  ReadPricing,
+  ExecutionMode,
+  IndexerConfig,
+  WasmModule,
+  CompletenessCommitments,
+  TemplateSubgroveConfig,
 } from "./consensus";
 
 // Export file storage operations

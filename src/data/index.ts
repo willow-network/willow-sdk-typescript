@@ -4,7 +4,6 @@ import {
   DataRecord,
   ProofResponse,
   RegisterSubgroveRequest,
-  DatasetRegistration,
   WillowLightClientOptions,
   QueryRequest,
   QueryResponse,
@@ -33,6 +32,62 @@ import {
 } from "../indexers";
 import { HttpClient, HttpError, RequestSigner } from "../internal/http";
 import { WillowLogger, silentLogger } from "../internal/logger";
+import { ConsensusClient } from "../consensus/client";
+import type {
+  BroadcastResult,
+  RegisterSubgroveOptions,
+  SubgroveMode,
+} from "../consensus/types";
+
+/**
+ * Register a subgrove from a {@link RegisterSubgroveRequest} by a
+ * RegisterSubgrove transaction signed by `auth`'s identity, which owns it.
+ *
+ * The request's `name`, `writers`, and `readers` become a `DataStorage` mode
+ * (`readers` maps to the on-chain `free_readers`) unless `options.mode` is
+ * given. Throws when the transaction is refused.
+ */
+export async function registerSubgroveRequest(
+  consensus: Pick<ConsensusClient, "registerSubgrove">,
+  auth: WillowAuth,
+  request: RegisterSubgroveRequest,
+  options?: RegisterSubgroveOptions,
+): Promise<BroadcastResult> {
+  const signer = auth.transactionSigner();
+  const mode: SubgroveMode =
+    options?.mode ?? {
+      DataStorage: {
+        name: request.name,
+        writers: request.writers,
+        free_readers: request.readers,
+      },
+    };
+  const result = await consensus.registerSubgrove(
+    request.dataset_id,
+    JSON.stringify(request.schema ?? {}),
+    auth.getDid()!,
+    signer,
+    { name: request.name, ...options, mode },
+  );
+  if (!result.success) {
+    throw new Error(
+      `registerSubgrove failed: ${result.errorMessage ?? result.rawLog ?? "unknown"}`,
+    );
+  }
+  return result;
+}
+
+/**
+ * The API serves no data writes: each is a transaction sent through
+ * `POST /tx/submit`.
+ */
+function noDataWriteRoute(what: string, instead: string): WillowError {
+  return new WillowError(
+    `The API serves no ${what} route; data is written by transactions sent through ` +
+      `POST /tx/submit. ${instead}`,
+    "UNSUPPORTED_OPERATION",
+  );
+}
 
 export class ValidatorHasNoDataError extends WillowError {
   constructor(subgroveId: string, reason: string) {
@@ -59,6 +114,12 @@ export interface WillowDataOptions {
   logger?: WillowLogger;
   /** Overrides for the auto-created light client (chain ID, endpoints, …). */
   lightClient?: WillowLightClientOptions;
+  /**
+   * The consensus client that sends this client's transactions
+   * (`registerSubgrove`). `WillowClient` passes its own; without one, one is
+   * made for `apiUrl`.
+   */
+  consensus?: ConsensusClient;
 }
 
 export class WillowData {
@@ -73,17 +134,13 @@ export class WillowData {
   private proofOptions?: ProofVerificationOptions;
   private logger: WillowLogger;
   private lightClientOptions?: WillowLightClientOptions;
+  private consensus?: ConsensusClient;
   /**
    * Signs a read of subgrove data (`/data`, `/proof`, `/query`, `/sql`,
    * `/graphql`): X-API-Key, plus the nonce form with an identity set. Only
    * that form carries the DID's read rights.
    */
   private signRead: RequestSigner;
-  /**
-   * Signs any other request in the older form, which the API accepts in the
-   * seconds after a restart and with more clock skew than the nonce form.
-   */
-  private signOther: RequestSigner;
 
   constructor(
     apiUrl: string,
@@ -100,10 +157,20 @@ export class WillowData {
     this.api = new HttpClient({ baseURL: apiUrl });
     this.auth = auth;
     this.signRead = (method, target, body) => auth.getSignedHeaders(method, target, body);
-    this.signOther = (method, target) => auth.getAuthHeaders(method, target);
     this.computedFieldRegistry = new ComputedFieldRegistry();
     this.logger = options?.logger ?? silentLogger;
     this.lightClientOptions = options?.lightClient;
+    this.consensus = options?.consensus;
+  }
+
+  private consensusClient(): ConsensusClient {
+    this.consensus ??= new ConsensusClient({
+      apiUrl: this.apiUrl,
+      apiKey: this.auth.getApiKey(),
+      consensusRpcUrl: this.cometbftRpcUrl,
+      logger: this.logger,
+    });
+    return this.consensus;
   }
 
   /**
@@ -199,63 +266,42 @@ export class WillowData {
   }
 
   /**
-   * Register a subgrove via the REST API.
+   * Register a subgrove by a RegisterSubgrove transaction signed by the
+   * auth identity, which owns it (see {@link registerSubgroveRequest}).
+   * Returns the consensus `BroadcastResult`; throws when it is refused.
    */
   async registerSubgrove(
     request: RegisterSubgroveRequest,
-  ): Promise<DatasetRegistration> {
-    // Convert to the API's expected format (subgrove endpoint for compatibility)
-    const subgroveRequest = {
-      subgrove_id: request.dataset_id,
-      name: request.name,
-      schema: request.schema,
-      owner_did: request.owner_did,
-      writers: request.writers,
-      readers: request.readers,
-    };
-
-    const response = await this.api.post<ApiResponse<DatasetRegistration>>(
-      "/register/subgrove",
-      subgroveRequest,
-      { sign: this.signOther },
-    );
-
-    if (!response.success) {
-      throw new WillowError(
-        response.error || "Failed to register dataset",
-        "DATASET_REGISTRATION_FAILED",
-      );
-    }
-
-    return response.data!;
+    options?: RegisterSubgroveOptions,
+  ): Promise<BroadcastResult> {
+    return registerSubgroveRequest(this.consensusClient(), this.auth, request, options);
   }
 
   /** @deprecated Use {@link registerSubgrove} — "subgrove" is the on-chain term. */
   async registerDataset(
     request: RegisterSubgroveRequest,
-  ): Promise<DatasetRegistration> {
-    return this.registerSubgrove(request);
+    options?: RegisterSubgroveOptions,
+  ): Promise<BroadcastResult> {
+    return this.registerSubgrove(request, options);
   }
 
   /**
-   * Store data (batch operation)
+   * The API serves no `POST /data/:subgrove`: data is written by a StoreData
+   * transaction per key. Use `WillowClient.store(subgroveId, key, value)` (or
+   * `ConsensusClient.storeData`) for each key.
+   *
+   * @deprecated Always throws `UNSUPPORTED_OPERATION`.
    */
   async storeData(
-    datasetId: string,
-    data: Record<string, any>,
+    _datasetId: string,
+    _data: Record<string, any>,
   ): Promise<void> {
-    const response = await this.api.post<ApiResponse>(
-      `/data/${datasetId}`,
-      data,
-      { sign: this.signOther },
+    throw noDataWriteRoute(
+      "POST /data/:subgrove",
+      "Store each key with WillowClient.store(subgroveId, key, value), one StoreData " +
+        "transaction per key, and send a write that depends on another only after the " +
+        "first has landed.",
     );
-
-    if (!response.success) {
-      throw new WillowError(
-        response.error || "Failed to store data",
-        "STORE_FAILED",
-      );
-    }
   }
 
   /**
@@ -371,45 +417,37 @@ export class WillowData {
   }
 
   /**
-   * Update data by key
+   * The API serves no `PUT /data/:subgrove/:key`: an existing key is changed
+   * by an UpdateData transaction, which this SDK does not build.
+   *
+   * @deprecated Always throws `UNSUPPORTED_OPERATION`.
    */
   async updateData(
-    datasetId: string,
-    key: string,
-    data: any,
+    _datasetId: string,
+    _key: string,
+    _data: any,
   ): Promise<void> {
-    const response = await this.api.put<ApiResponse>(
-      `/data/${datasetId}/${key}`,
-      data,
-      { sign: this.signOther },
+    throw noDataWriteRoute(
+      "PUT /data/:subgrove/:key",
+      "An existing key is changed by an UpdateData transaction, which this SDK does " +
+        "not build.",
     );
-
-    if (!response.success) {
-      throw new WillowError(
-        response.error || "Failed to update data",
-        "UPDATE_FAILED",
-      );
-    }
   }
 
   /**
-   * Delete data by key
+   * The API serves no `DELETE /data/:subgrove/:key`: a key is deleted by a
+   * DeleteData transaction, which this SDK does not build.
+   *
+   * @deprecated Always throws `UNSUPPORTED_OPERATION`.
    */
   async deleteData(
-    datasetId: string,
-    key: string,
+    _datasetId: string,
+    _key: string,
   ): Promise<void> {
-    const response = await this.api.delete<ApiResponse>(
-      `/data/${datasetId}/${key}`,
-      { sign: this.signOther },
+    throw noDataWriteRoute(
+      "DELETE /data/:subgrove/:key",
+      "A key is deleted by a DeleteData transaction, which this SDK does not build.",
     );
-
-    if (!response.success) {
-      throw new WillowError(
-        response.error || "Failed to delete data",
-        "DELETE_FAILED",
-      );
-    }
   }
 
   /**
@@ -435,7 +473,11 @@ export class WillowData {
   }
 
   /**
-   * Batch operations helper
+   * The API serves no batch write: data is written by a StoreData
+   * transaction per key. Use `WillowClient.store(subgroveId, key, value)` for
+   * each record.
+   *
+   * @deprecated Always throws `UNSUPPORTED_OPERATION`.
    */
   async batchStore(
     datasetId: string,

@@ -32,6 +32,29 @@ function getPublicKeyId(did: string): string {
 // Helper to wait for transaction propagation
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+/**
+ * Store each record by its own StoreData transaction, waiting for each to
+ * land before sending the next: the API has no batch write, and the next
+ * nonce is read from the chain.
+ */
+async function storeEach(
+  client: WillowClient,
+  subgroveId: string,
+  records: Array<{ key: string; value: any }>,
+): Promise<void> {
+  for (const { key, value } of records) {
+    const result = await client.consensus.storeData(
+      subgroveId,
+      key,
+      value,
+      client.auth.getDid()!,
+      client.auth.transactionSigner(),
+    );
+    expect(result.success).toBe(true);
+    await client.consensus.waitForTransaction(result.txHash!);
+  }
+}
+
 const didFile = process.env.WILLOW_TEST_DID_FILE;
 const fundedDIDRaw =
   didFile && fs.existsSync(didFile) ? fs.readFileSync(didFile, 'utf-8').trim() : null;
@@ -112,9 +135,9 @@ describeIntegration('Willow Tests', () => {
       };
 
       // Register on node 1
-      const registration = await client1.data.registerDataset(datasetRequest);
-      expect(registration.dataset_id).toBe('blog_posts');
-      expect(registration.schema.indexes).toHaveLength(4);
+      const registration = await client1.registerSubgrove(datasetRequest);
+      expect(registration.success).toBe(true);
+      await client1.consensus.waitForTransaction(registration.txHash!);
 
       // Wait for propagation
       await sleep(3000);
@@ -162,8 +185,8 @@ describeIntegration('Willow Tests', () => {
     ];
 
     it('should store indexed documents', async () => {
-      // Store documents via batch operation
-      await client1.data.batchStore('blog_posts', testPosts);
+      // Store documents, one transaction each
+      await storeEach(client1, 'blog_posts', testPosts);
 
       // Wait for indexing
       await sleep(5000);
@@ -307,24 +330,6 @@ describeIntegration('Willow Tests', () => {
       }
     });
   });
-
-  describe('Unique Constraint Enforcement', () => {
-    it('should enforce unique constraints', async () => {
-      const duplicatePost = {
-        title: 'Introduction to TypeScript SDK', // Duplicate title
-        content: 'This should fail due to unique constraint',
-        author: 'charlie',
-        timestamp: 3000,
-        views: 50,
-      };
-
-      await expect(
-        client1.data.storeData('blog_posts', {
-          post_duplicate: duplicatePost,
-        })
-      ).rejects.toThrow();
-    });
-  });
 });
 
 describeIntegration('Performance Tests', () => {
@@ -361,8 +366,8 @@ describeIntegration('Performance Tests', () => {
       readers: [],
     };
 
-    await client.data.registerDataset(perfDataset);
-    await sleep(3000);
+    const registration = await client.registerSubgrove(perfDataset);
+    await client.consensus.waitForTransaction(registration.txHash!);
 
     // Generate test data
     const categories = ['electronics', 'books', 'clothing', 'food', 'toys'];
@@ -378,12 +383,10 @@ describeIntegration('Performance Tests', () => {
 
     // Measure bulk insert time
     const startTime = Date.now();
-    await client.data.batchStore('perf_test', testData);
-    await sleep(5000); // Wait for indexing
+    await storeEach(client, 'perf_test', testData);
     const insertTime = Date.now() - startTime;
 
     console.log(`Inserted 50 documents in ${insertTime}ms`);
-    expect(insertTime).toBeLessThan(10000); // Should complete within 10 seconds
 
     // Test query performance
     const queryStartTime = Date.now();

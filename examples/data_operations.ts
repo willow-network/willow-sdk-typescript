@@ -43,8 +43,9 @@ async function main() {
   console.log('Setting up identity...');
   // A real deployment funds `did` (>= the registration fee) before registering.
   try {
-    await client.registerDid(didDocument);
+    // The DID's registration is signed by its own key.
     client.auth.setIdentity(did, privateKey, publicKeyId);
+    await client.registerDid(didDocument);
     console.log(`Authenticated as: ${did}\n`);
   } catch (error) {
     console.log(`Note: ${error}\n`);
@@ -72,8 +73,10 @@ async function main() {
     console.log(`   Note: ${error}\n`);
   }
 
-  // 2. Batch store
-  console.log('2. Batch store multiple items...');
+  // 2. Store several items. Each key is its own StoreData transaction, and the
+  //    next nonce is read from the chain, so wait for each to land before
+  //    sending the next.
+  console.log('2. Store several items...');
   const batchProducts = [
     { key: 'prod-002', value: { id: 'prod-002', name: 'Wireless Mouse', category: 'electronics', price: 49.99, stock: 200 } },
     { key: 'prod-003', value: { id: 'prod-003', name: 'USB-C Cable', category: 'accessories', price: 19.99, stock: 500 } },
@@ -81,8 +84,17 @@ async function main() {
     { key: 'prod-005', value: { id: 'prod-005', name: 'Mechanical Keyboard', category: 'electronics', price: 149.99, stock: 75 } },
   ];
   try {
-    await products.batchStore(batchProducts);
-    console.log(`   Batch stored ${batchProducts.length} products\n`);
+    for (const { key, value } of batchProducts) {
+      const result = await client.consensus.storeData(
+        datasetId,
+        key,
+        value,
+        did,
+        client.auth.transactionSigner(),
+      );
+      await client.consensus.waitForTransaction(result.txHash!);
+    }
+    console.log(`   Stored ${batchProducts.length} products\n`);
   } catch (error) {
     console.log(`   Note: ${error}\n`);
   }
@@ -195,44 +207,11 @@ async function main() {
   }
   console.log();
 
-  // 7. Update item
-  console.log('7. Update item...');
-  try {
-    await products.update('prod-001', {
-      id: 'prod-001',
-      name: 'Laptop Pro',
-      category: 'electronics',
-      price: 1199.99,
-      stock: 45,
-      tags: ['laptop', 'computer', 'portable', 'on-sale'],
-      on_sale: true,
-      updated_at: Date.now(),
-    });
-    console.log('   Updated prod-001 (price reduced to $1199.99, on_sale=true)\n');
-  } catch (error) {
-    console.log(`   Note: ${error}\n`);
-  }
+  // Changing or deleting an existing key takes an UpdateData or DeleteData
+  // transaction, which this SDK does not build.
 
-  console.log('   Verifying update...');
-  try {
-    const updated = await products.get('prod-001');
-    console.log(`   New price: $${updated.price}`);
-    console.log(`   On sale: ${updated.on_sale}\n`);
-  } catch (error) {
-    console.log(`   Note: ${error}\n`);
-  }
-
-  // 8. Delete item
-  console.log('8. Delete item...');
-  try {
-    await products.delete('prod-005');
-    console.log('   Deleted: prod-005 (Mechanical Keyboard)\n');
-  } catch (error) {
-    console.log(`   Note: ${error}\n`);
-  }
-
-  // 9. Get proof separately (returns the hex string directly)
-  console.log('9. Get proof for item...');
+  // 7. Get proof separately (returns the hex string directly)
+  console.log('7. Get proof for item...');
   try {
     const proofHex = await products.getProof('prod-001');
     console.log(`   Proof: ${proofHex.length / 2} bytes`);
@@ -244,13 +223,10 @@ async function main() {
   console.log('Data Operations Summary');
   console.log('=======================');
   console.log('CRUD:');
-  console.log('  - store(key, value): create or overwrite');
-  console.log('  - batchStore(items): store many atomically');
+  console.log('  - store(key, value): create a key (one transaction)');
   console.log('  - get(key): retrieve with proof verification (secure)');
   console.log('  - getUnverified(key): retrieve without verification (fast)');
-  console.log('  - getMultiple(keys): batch retrieve');
-  console.log('  - update(key, value): update existing item');
-  console.log('  - delete(key): remove item\n');
+  console.log('  - getMultiple(keys): batch retrieve\n');
 
   console.log('Query:');
   console.log('  - query({ filters }): filter by field values');
