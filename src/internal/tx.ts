@@ -32,6 +32,13 @@ export class TxTransportError extends Error {
 }
 
 /**
+ * CometBFT's answer to a transaction its mempool cache already holds: the
+ * same bytes were accepted before (pending, or committed without a refusal),
+ * so a repeat of a signed transaction that gets it was accepted.
+ */
+const TX_IN_CACHE = 'tx already exists in cache';
+
+/**
  * Submit a wrapped transaction to `POST /tx/submit`.
  *
  * Distinguishes two failure classes so callers can react correctly:
@@ -42,6 +49,11 @@ export class TxTransportError extends Error {
  *   - **Chain-level rejections** (a well-formed JSON envelope reporting failure,
  *     or a CheckTx `code !== 0`) return `BroadcastResult{ success: false }`.
  *     These are deterministic, so retrying is pointless.
+ *
+ * A repeat of a transaction CometBFT already holds ("tx already exists in
+ * cache", which the API relays as an RPC error) returns
+ * `BroadcastResult{ success: true }` without a `txHash`: the same signed
+ * bytes were accepted before.
  */
 export async function submitTxToApi(
   apiUrl: string,
@@ -74,6 +86,10 @@ export async function submitTxToApi(
     // A non-JSON body means we didn't reach the API server's tx handler
     // (proxy/gateway error page) — transport-level, so throw to allow retry.
     throw new TxTransportError(`HTTP ${response.status} from ${url}: non-JSON response body`);
+  }
+
+  if (typeof body.error === 'string' && body.error.includes(TX_IN_CACHE)) {
+    return { success: true, rawLog: body.error };
   }
 
   if (!response.ok) {

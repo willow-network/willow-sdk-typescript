@@ -44,6 +44,26 @@ interface DidNonces {
   latest: AccountNonceState | null;
 }
 
+/** The 24 used bits of `state` read against `base` (at or above its own). */
+function usedAbove(state: AccountNonceState, base: number): number {
+  const shift = base - state.base;
+  // A shift of 24 or more leaves none of the window (and `>>>` takes its
+  // count mod 32, so it can't be left to the shift).
+  if (shift >= NONCE_WINDOW) return 0;
+  return (state.used >>> shift) & ((1 << NONCE_WINDOW) - 1);
+}
+
+/**
+ * Two reports of one account's nonce state as one: the higher base, and every
+ * nonce either marks used above it. A used nonce stays used, so neither
+ * report's bits are dropped when the other's base is higher (a base-only
+ * read that advances the base keeps the bits seen above it).
+ */
+function mergeStates(a: AccountNonceState, b: AccountNonceState): AccountNonceState {
+  const base = Math.max(a.base, b.base);
+  return { base, used: usedAbove(a, base) | usedAbove(b, base) };
+}
+
 function isUsed(chain: AccountNonceState, nonce: number): boolean {
   if (nonce <= chain.base) return true;
   const offset = nonce - chain.base - 1;
@@ -191,18 +211,14 @@ export class NonceAllocator {
 
   /**
    * Merge `chain` into the newest state seen (an older answer can't lower the
-   * base or clear a used bit), then drop the nonces seen used and the holds
-   * that ran out.
+   * base or clear a used bit, and a newer one keeps the used bits seen above
+   * its base), then drop the nonces seen used and the holds that ran out.
    */
   private refresh(did: string, chain?: AccountNonceState): DidNonces {
     const account = this.account(did);
     const seen = account.latest;
     if (chain) {
-      if (!seen || chain.base > seen.base) {
-        account.latest = { base: chain.base, used: chain.used };
-      } else if (chain.base === seen.base) {
-        account.latest = { base: seen.base, used: seen.used | chain.used };
-      }
+      account.latest = seen ? mergeStates(seen, chain) : { base: chain.base, used: chain.used };
     }
     const latest = account.latest;
     if (!latest) {

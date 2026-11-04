@@ -102,8 +102,12 @@ export class WillowClient {
       webSocket: config.webSocket,
     });
 
-    this.files = new FileOperations(config.apiUrl, (method, path) =>
-      this.auth.getAuthHeaders(method, path),
+    // File writes take their nonces from, and settle them with, the same
+    // allocator as every other write.
+    this.files = new FileOperations(
+      config.apiUrl,
+      (method, path) => this.auth.getAuthHeaders(method, path),
+      this.consensus,
     );
     // Only indexers serve `/verifiable-rpc/*`; without `indexerUrl` these
     // throw INDEXER_URL_REQUIRED rather than asking the API.

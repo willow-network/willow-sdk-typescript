@@ -187,8 +187,10 @@ export {
   NONCE_HOLD_MS,
   parseAccountNonceState,
   refusalKeepsNonce,
+  TransactionSubmitError,
 } from "./consensus";
 export type {
+  SignedSubmission,
   AccountNonceState,
   NonceAllocatorOptions,
   ConsensusConfig,
@@ -223,7 +225,13 @@ export type {
 
 // Export file storage operations
 export { FileOperations, encryptFile, decryptFile } from "./files";
-export type { FileManifest, FileListResponse, FileEncryption } from "./files";
+export type {
+  FileManifest,
+  FileListResponse,
+  FileEncryption,
+  FileSigningOptions,
+  FileNonceSource,
+} from "./files";
 
 // Export privacy / key grant management
 export { PrivacyOperations, CommitmentFrequency } from "./privacy";

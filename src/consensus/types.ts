@@ -33,6 +33,52 @@ export class ConsensusError extends WillowError {
 }
 
 /**
+ * A signed transaction as it was sent: the signer's DID, the nonce the
+ * signature covers, and the exact body posted to `/tx/submit`.
+ */
+export interface SignedSubmission {
+  /** The DID whose nonce the transaction carries. */
+  did: string;
+  /** The nonce the signature covers. */
+  nonce: number;
+  /**
+   * The body posted to `/tx/submit` (`{ <Kind>: { …, signature } }`), signed.
+   * Post it again with `ConsensusClient.resubmit` to retry the write under
+   * the same nonce.
+   */
+  transaction: Record<string, unknown>;
+}
+
+/**
+ * A signed write that was sent and did not go through: its submission failed
+ * in transport (`TX_SUBMIT_FAILED`, `BROADCAST_FAILED`; the write may yet
+ * land) or the chain refused it at CheckTx (`result` is set). It carries the
+ * DID, the nonce, and the signed body, so the write can be retried under the
+ * same nonce, as a write that never landed must be:
+ * `consensus.resubmit(error)` posts the same signed body again.
+ */
+export class TransactionSubmitError extends ConsensusError implements SignedSubmission {
+  readonly did: string;
+  readonly nonce: number;
+  readonly transaction: Record<string, unknown>;
+  /** The chain's answer, when it refused the transaction at CheckTx. */
+  readonly result?: BroadcastResult;
+
+  constructor(
+    message: string,
+    code: string,
+    submission: SignedSubmission & { result?: BroadcastResult },
+  ) {
+    super(message, code);
+    this.name = 'TransactionSubmitError';
+    this.did = submission.did;
+    this.nonce = submission.nonce;
+    this.transaction = submission.transaction;
+    this.result = submission.result;
+  }
+}
+
+/**
  * Transaction status enumeration
  */
 export enum TransactionStatus {
@@ -128,6 +174,11 @@ export function createConsensusConfig(config: Partial<ConsensusConfig> & Pick<Co
  */
 export interface BroadcastResult {
   success: boolean;
+  /**
+   * The transaction's hash. Absent when the submission was a repeat of one
+   * the mempool already holds (CometBFT's "tx already exists in cache"),
+   * which counts as accepted.
+   */
   txHash?: string;
   height?: number;
   errorCode?: number;

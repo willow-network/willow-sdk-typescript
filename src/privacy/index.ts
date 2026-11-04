@@ -11,6 +11,7 @@ import { WillowAuth } from "../auth";
 import { BroadcastResult } from "../consensus";
 import {
   SignFunction,
+  TransactionSubmitError,
   Transaction,
   createTransactionWrapper,
   grantSubgroveKeySignMessage,
@@ -459,6 +460,10 @@ export class PrivacyOperations {
    * at CheckTx gives it back unless the refusal says the nonce is held, used,
    * or spent. A write that fails before it is sent gives its nonce back; one
    * whose submission failed in transport keeps it until its hold runs out.
+   * A transport failure or a refusal throws a `BROADCAST_FAILED`
+   * {@link TransactionSubmitError} carrying the DID, the nonce, the signed
+   * body, and (for a refusal) the chain's answer, so the write can be posted
+   * again under the same nonce (`ConsensusClient.resubmit(error)`).
    *
    * Encoding (snake_case keys, hex signature -> byte array) is owned by
    * `createTransactionWrapper`, the single place the SDK shapes the wire
@@ -481,21 +486,25 @@ export class PrivacyOperations {
       throw error;
     }
 
+    // Held from the send, so no other write takes it while this one is in flight.
+    this.nonces.hold(did, nonce);
     let result: BroadcastResult;
     try {
       result = await submitTxToApi(this.apiUrl, txWrapper, { headers });
     } catch (error) {
-      throw new WillowError(
+      throw new TransactionSubmitError(
         `Failed to broadcast transaction: ${error instanceof Error ? error.message : String(error)}`,
         "BROADCAST_FAILED",
+        { did, nonce, transaction: txWrapper },
       );
     }
     this.nonces.settle(did, nonce, result);
 
     if (!result.success) {
-      throw new WillowError(
+      throw new TransactionSubmitError(
         `Transaction rejected: ${result.rawLog || result.errorMessage || "unknown error"}`,
         "BROADCAST_FAILED",
+        { did, nonce, transaction: txWrapper, result },
       );
     }
 

@@ -4,13 +4,24 @@
  * Provides direct transaction broadcasting to CometBFT consensus layer.
  */
 
-import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, RegisterDidTx, RegisterSubgroveTx, RegisterSubgroveOptions, SubgroveMode, RetentionWindow, Signer, SignFunction, StoreFileManifestFields, TransferTx, DataStoreTx, StoreFileManifestTx, DeleteFileManifestTx, DeregisterSubgroveTx, SubmitAnchorTx, Transaction, createTransactionWrapper, createSignMessage } from './types';
+import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, TransactionSubmitError, SignedSubmission, RegisterDidTx, RegisterSubgroveTx, RegisterSubgroveOptions, SubgroveMode, RetentionWindow, Signer, SignFunction, StoreFileManifestFields, TransferTx, DataStoreTx, StoreFileManifestTx, DeleteFileManifestTx, DeregisterSubgroveTx, SubmitAnchorTx, Transaction, createTransactionWrapper, createSignMessage } from './types';
 import { canonicalizeAnchorBody, computeAnchorMerkleRoot, sha256Hex } from './anchor-canonical';
 import { submitTxToApi } from '../internal/tx';
 import { NonceAllocator, AccountNonceState, NONCE_WINDOW, parseAccountNonceStateBase64 } from './nonces';
 import { signEd25519, signSecp256k1, algorithmFromKeyType } from '../auth';
 import { didDocumentKeyType } from './wire';
 import { WillowLogger, silentLogger } from '../internal/logger';
+
+/**
+ * A failure of a signed write that was sent, as a {@link TransactionSubmitError}
+ * carrying the DID, nonce, and signed body (its code and message kept).
+ */
+function submissionError(error: unknown, submission: SignedSubmission): TransactionSubmitError {
+  if (error instanceof TransactionSubmitError) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  const code = error instanceof ConsensusError && error.code ? error.code : 'TX_SUBMIT_FAILED';
+  return new TransactionSubmitError(message, code, submission);
+}
 
 /** Misconfiguration (no consensusRpcUrl) must surface, never degrade to a fallback. */
 function isRpcUrlMissingError(error: unknown): boolean {
@@ -108,9 +119,19 @@ export class ConsensusClient {
       nonce: 1,
     };
 
-    const result = await this.signAndBroadcast('RegisterDid', tx, signer.privateKey, signer.signFunction);
+    const transaction = this.signTransaction('RegisterDid', tx, signer.privateKey, signer.signFunction);
     // Nonce 1 is the new DID's while the registration is pending.
     const did = typeof didDocument?.id === 'string' ? didDocument.id : undefined;
+    let sent = false;
+    let result: BroadcastResult;
+    try {
+      result = await this.broadcastTransaction(transaction, () => {
+        sent = true;
+        if (did) this.nonces.hold(did, 1);
+      });
+    } catch (error) {
+      throw did && sent ? submissionError(error, { did, nonce: 1, transaction }) : error;
+    }
     if (did && result.success) this.nonces.hold(did, 1);
     return result;
   }
@@ -572,9 +593,13 @@ export class ConsensusClient {
    * Take a nonce for `did`, build the transaction under it, sign, and
    * broadcast, then record the outcome with the nonce allocator: an accepted
    * write holds its nonce; one refused at CheckTx gives it back unless the
-   * refusal says the nonce is held, used, or spent. A write that fails before
-   * it is sent gives its nonce back; one whose submission failed in transport
-   * keeps it until its hold runs out (it may yet land).
+   * refusal says the nonce is held, used, or spent. The transaction's fields
+   * are checked before a nonce is taken; a write that fails before it is sent
+   * gives its nonce back. Each send attempt renews the nonce's hold, so no
+   * other write takes it while this one is in flight; one whose submission
+   * failed in transport keeps it until its hold runs out (it may yet land),
+   * and throws a {@link TransactionSubmitError} carrying the DID, nonce, and
+   * signed body, to {@link resubmit}.
    */
   private async submitWithNonce(
     did: string,
@@ -582,31 +607,78 @@ export class ConsensusClient {
     signer: Required<Signer>,
     build: (nonce: number) => Transaction,
   ): Promise<BroadcastResult> {
+    // Refuse a field the chain refuses before reading or taking a nonce.
+    createSignMessage(txType, build(0));
     const nonce = await this.nextNonce(did);
-    let sent = false;
+    let transaction: Record<string, unknown>;
     try {
-      const tx = build(nonce);
-      const result = await this.signAndBroadcast(txType, tx, signer.privateKey, signer.signFunction, () => {
-        sent = true;
-      });
-      this.nonces.settle(did, nonce, result);
-      return result;
+      transaction = this.signTransaction(txType, build(nonce), signer.privateKey, signer.signFunction);
     } catch (error) {
-      if (!sent) this.nonces.release(did, nonce);
+      this.nonces.release(did, nonce);
       throw error;
     }
+    return this.sendSigned({ did, nonce, transaction });
   }
 
   /**
-   * Sign a transaction and broadcast it
+   * Post a signed write again, under the nonce it was signed with: the retry
+   * of a write that never landed (its submission failed in transport, or the
+   * chain refused it at CheckTx without spending its nonce). Pass the
+   * {@link TransactionSubmitError} a write threw, or its `did`, `nonce`, and
+   * `transaction`. Whichever attempt lands first spends the nonce, and the
+   * other is refused, so the write runs at most once. A repeat of one the
+   * mempool already holds counts as accepted.
+   *
+   * The nonce is held while the post is in flight and settled with the
+   * allocator after, as for a new write; a transport failure throws a
+   * {@link TransactionSubmitError} again.
    */
-  private async signAndBroadcast(
+  async resubmit(submission: SignedSubmission): Promise<BroadcastResult> {
+    return this.sendSigned(
+      { did: submission.did, nonce: submission.nonce, transaction: submission.transaction },
+      false,
+    );
+  }
+
+  /**
+   * Post a signed write and settle its nonce: each attempt renews the hold,
+   * an answer settles it, and a transport failure keeps it held and throws
+   * the submission. A new write that fails before anything is sent gives its
+   * nonce back (`releaseUnsent`); a repeat doesn't, as its earlier attempt may
+   * yet land.
+   */
+  private async sendSigned(
+    submission: SignedSubmission,
+    releaseUnsent = true,
+  ): Promise<BroadcastResult> {
+    const { did, nonce, transaction } = submission;
+    let sent = false;
+    let result: BroadcastResult;
+    try {
+      result = await this.broadcastTransaction(transaction, () => {
+        sent = true;
+        this.nonces.hold(did, nonce);
+      });
+    } catch (error) {
+      if (!sent) {
+        if (releaseUnsent) this.nonces.release(did, nonce);
+        throw error;
+      }
+      throw submissionError(error, submission);
+    }
+    this.nonces.settle(did, nonce, result);
+    return result;
+  }
+
+  /**
+   * Sign a transaction and return the body to post (`{ <Kind>: { … } }`).
+   */
+  private signTransaction(
     txType: string,
     transaction: Transaction,
     privateKey: string,
     signFunction: SignFunction,
-    onSend?: () => void,
-  ): Promise<BroadcastResult> {
+  ): Record<string, unknown> {
     // Create canonical message for signing
     const signMessageText = createSignMessage(txType, transaction);
 
@@ -617,11 +689,7 @@ export class ConsensusClient {
     (transaction as any).signature = signatureHex;
 
     // Create transaction wrapper
-    const txWrapper = createTransactionWrapper(txType, transaction);
-
-    // Broadcast transaction
-    onSend?.();
-    return this.broadcastTransaction(txWrapper);
+    return createTransactionWrapper(txType, transaction);
   }
 
   /**
@@ -632,8 +700,14 @@ export class ConsensusClient {
    * to CometBFT's `broadcast_tx_sync`. The chain's on-the-wire format is
    * bincode — letting the API server handle the conversion keeps the SDK on
    * JSON without implementing a bincode encoder per language.
+   *
+   * A transport failure is retried with the same signed body
+   * (`maxRetries`); `onAttempt` runs before each attempt.
    */
-  private async broadcastTransaction(transaction: any): Promise<BroadcastResult> {
+  private async broadcastTransaction(
+    transaction: Record<string, unknown>,
+    onAttempt?: () => void,
+  ): Promise<BroadcastResult> {
     if (!this.config.apiUrl) {
       throw new ConsensusError(
         'apiUrl is required for transaction submission. Set it in the SDK config.',
@@ -642,6 +716,7 @@ export class ConsensusClient {
     }
 
     for (let attempt = 0; attempt <= this.config.maxRetries!; attempt++) {
+      onAttempt?.();
       try {
         return await submitTxToApi(this.config.apiUrl, transaction, {
           apiKey: this.config.apiKey,
@@ -743,10 +818,11 @@ export class ConsensusClient {
    * seen is used; on first use the error propagates rather than fabricating
    * a nonce.
    *
-   * This client's own writes call it. For a transaction it doesn't build (a
-   * file manifest from `FileOperations`), take the nonce here and report the
-   * submission's outcome with `nonces.settle(did, nonce, result)`; the nonce
-   * is held until it lands or 120 s pass.
+   * This client's own writes call it, and so does `FileOperations` given
+   * this client (as `WillowClient`'s is). For a transaction neither builds,
+   * take the nonce here and report the submission's outcome with
+   * `nonces.settle(did, nonce, result)`; the nonce is held until it lands or
+   * 120 s pass.
    */
   async nextNonce(did: string): Promise<number> {
     let chain: AccountNonceState;
