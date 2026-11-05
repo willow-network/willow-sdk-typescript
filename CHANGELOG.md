@@ -408,6 +408,11 @@ package adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Proofs of values of 64 KiB or more decode.** The merk decoder reads the
+  large-value ops (0x20-0x23, 0x28-0x2b: a u32 value length) that the Willow
+  GroveDB fork writes for such values, which grovedb 3.1.0's u16 length could
+  not express. It refuses a large-value op carrying fewer than 65,536 bytes
+  or more than 64 MiB. Proofs of smaller values are unchanged.
 - **A data or file subgrove's schema is sent in the chain's shape.** A
   `SchemaDefinition`'s fields went as objects (`{"name":{"type":"string"}}`),
   which the chain does not parse as its schema, so it refused, in its
