@@ -41,16 +41,14 @@ export function enforceExpectedRoot(computed: string, expected?: string): void {
 }
 
 /**
- * A number value the binding takes on either side: a safe integer other than
- * `-0`, or a finite non-integer below 2^53 in magnitude. `NaN`, `±Infinity`,
- * `-0`, and any integer past `MAX_SAFE_INTEGER` (which `JSON.parse` rounds:
- * 2^53+1 → 2^53) are not. The value alone can't show that it is exact
- * (`0.1` and `0.10000000000000000001` parse to one value): a proven value's
- * text is checked by {@link isExactJsonNumber}.
+ * A number value the binding takes on either side: a finite number other
+ * than `-0`. `NaN`, `±Infinity`, and `-0` are not. The value alone can't show
+ * that it is exact (`0.1` and `0.10000000000000000001` parse to one value, as
+ * do 2^53 and 2^53+1): a proven value's text is checked by
+ * {@link isExactJsonNumber}.
  */
 export function isFidelitySafeNumber(n: number): boolean {
-  if (Number.isInteger(n)) return Number.isSafeInteger(n) && !Object.is(n, -0);
-  return Number.isFinite(n) && Math.abs(n) < 2 ** 53;
+  return Number.isFinite(n) && !Object.is(n, -0);
 }
 
 /**
@@ -80,19 +78,19 @@ function exactDecimal(text: string): ExactDecimal | null {
  * Whether the number JSON text `text` parses to in JavaScript is the number
  * it writes, so that no other number's text parses to the same value: its
  * exact decimal value is the value of the shortest text that parses back to
- * the same double (`String(Number(text))`, what `JSON.stringify` writes),
- * and it is not an integer beyond ±(2^53 − 1). A double has one shortest
- * text, so no two values that pass parse to the same double. Every number a
- * shortest round-trip writer writes passes (`1.2100000000000002`, the value
- * of `1.1 * 1.1`; `0.3333333333333333`), as does the same value in another
- * form (`1.0`, `1e2`); `0.33333333333333331`, which parses to the double
- * written `0.3333333333333333`, and `9007199254740993`, which parses to
- * 2^53, do not. `-0` is left to {@link isFidelitySafeNumber}.
+ * the same double (`String(Number(text))`, what `JSON.stringify` writes). A
+ * double has one shortest text, so no two values that pass parse to the same
+ * double. Every number a shortest round-trip writer writes passes, at any
+ * magnitude (`1.2100000000000002`, the value of `1.1 * 1.1`;
+ * `0.3333333333333333`; `1000000000000000000`, the value of `1e18`), as does
+ * the same value in another form (`1.0`, `1e2`); `0.33333333333333331`,
+ * which parses to the double written `0.3333333333333333`, and
+ * `9007199254740993`, which parses to the double written
+ * `9007199254740992`, do not. `-0` is left to {@link isFidelitySafeNumber}.
  */
 export function isExactJsonNumber(text: string): boolean {
   const value = Number(text);
   if (!Number.isFinite(value)) return false;
-  if (Number.isInteger(value) && !Number.isSafeInteger(value)) return false;
   const written = exactDecimal(text);
   const shortest = exactDecimal(String(value));
   return (
@@ -120,9 +118,10 @@ export function firstInexactNumber(text: string): string | undefined {
  * Structural (deep) equality over JSON values, used to bind returned documents
  * to the proven bytes. Whitespace and object key order are normalized away by
  * comparing parsed trees; numbers are compared with `Object.is` (so `-0 !== 0`
- * and `NaN` never matches) and only when both are {@link isFidelitySafeNumber}
- * — a precision-unsafe number on either side is a non-match, so two distinct
- * committed byte sequences can never bind to the same JS value.
+ * and `NaN` never matches) and only when both are {@link isFidelitySafeNumber}.
+ * The values alone don't show that the proven text was exact: the callers
+ * check the proven text's numbers with {@link isExactJsonNumber} first, so two
+ * distinct committed byte sequences can never bind to the same JS value.
  */
 export function jsonDeepEqual(a: unknown, b: unknown): boolean {
   if (typeof a !== typeof b) return false;

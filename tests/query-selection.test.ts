@@ -335,8 +335,16 @@ describe('a number JavaScript cannot carry exactly does not verify', () => {
     return verifyQuerySelection('s1', {}, response(proof, [JSON.parse(`{"v":${text}}`)], 1));
   };
 
-  it('a decimal whose double is written as another value, or an integer beyond 2^53 - 1, is refused', async () => {
-    for (const text of ['0.12345678901234567890', '1.0000000000000000001', '0.33333333333333331', '1e-400', '9007199254740993']) {
+  it('a number whose double is written as another value is refused', async () => {
+    // 2^53 + 1 parses to 2^53, and u64::MAX to 2^64, which JavaScript writes 18446744073709552000.
+    for (const text of [
+      '0.12345678901234567890',
+      '1.0000000000000000001',
+      '0.33333333333333331',
+      '1e-400',
+      '9007199254740993',
+      '18446744073709551615',
+    ]) {
       await expect(one(text)).rejects.toThrow(/holds the number .*, which JavaScript can't carry exactly/);
     }
   });
@@ -351,6 +359,13 @@ describe('a number JavaScript cannot carry exactly does not verify', () => {
     for (const value of [1.1 * 1.1, 1 / 3, 0.1 + 0.2, 1e-320]) {
       await expect(one(String(value))).resolves.toMatch(/^[0-9a-f]{64}$/);
     }
+  });
+
+  it('an integer beyond 2^53 - 1 that JavaScript writes verifies', async () => {
+    for (const value of [1e18, 2 ** 53, Date.now() * 1e6, 2 ** 64, -(2 ** 60), 1e21]) {
+      await expect(one(String(value))).resolves.toMatch(/^[0-9a-f]{64}$/);
+    }
+    await expect(one('1000000000000000000')).resolves.toMatch(/^[0-9a-f]{64}$/);
   });
 });
 

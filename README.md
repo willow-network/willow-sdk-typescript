@@ -228,12 +228,15 @@ tree at the light client's root, then runs that selection over it and returns
 the result only when the API's `documents` and `total` are exactly it. The
 selection is the one in the body as sent, so changing the query object while
 the request is in flight does not change what its result is checked against.
-Numbers match as JSON text: `1` and `1.0` are different values. A document
-holding a number JavaScript can't carry exactly (an integer beyond
-2^53 − 1, or a decimal that `JSON.parse` rounds to a double JavaScript
-writes as another value, such as `0.33333333333333331`) does not verify;
-store such values as strings. Every number JavaScript writes verifies,
-including results such as `1.1 * 1.1` (`1.2100000000000002`) and `1 / 3`.
+Numbers match as JSON text: `1` and `1.0` are different values. A number
+verifies when its text has the exact decimal value of the text JavaScript
+writes for the double it parses to (`String(Number(text))`). So every number
+JavaScript writes verifies, at any magnitude, including results such as
+`1.1 * 1.1` (`1.2100000000000002`), `1 / 3`, and `1e18`
+(`1000000000000000000`). A document holding a number whose text parses to a
+double JavaScript writes as another value, such as `9007199254740993` (read
+as 2^53, written `9007199254740992`) or `0.33333333333333331`, does not
+verify; store such values as strings.
 
 A query the API does not apply as asked throws `QUERY_NOT_VERIFIABLE` before
 anything is sent: a filter on more than one field (the API applies only one),

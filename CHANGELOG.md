@@ -293,13 +293,15 @@ package adheres to [Semantic Versioning](https://semver.org/).
   `null`, a boolean, an array, or an object, or an object whose first key is
   `serde_json`'s private number or raw-value token) throws
   `QUERY_RESULT_NOT_VERIFIABLE`. The selection is the one in the body as
-  sent. A document holding a number JavaScript can't carry exactly (an
-  integer beyond 2^53 − 1, or a decimal that parses to a double JavaScript
-  writes as another value, such as `0.33333333333333331`) does not verify,
-  in queries and in `get`; every number JavaScript writes does. The verified
-  result carries `documents`, `total`, `offset`, `limit`, `proof`,
-  `verifiedRootHash`, and `verifiedHeight`, and none of the API's other
-  fields.
+  sent. A number verifies, in queries and in `get`, when its text has the
+  exact decimal value of the text JavaScript writes for the double it parses
+  to (`String(Number(text))`), so every number JavaScript writes does, at
+  any magnitude (`1e18` is `1000000000000000000`), and a document holding
+  one whose text parses to a double JavaScript writes as another value
+  (`9007199254740993`, read as 2^53, or `0.33333333333333331`) does not.
+  The verified result carries `documents`, `total`, `offset`, `limit`,
+  `proof`, `verifiedRootHash`, and `verifiedHeight`, and none of the API's
+  other fields.
 - **A verified read's proof height must be near the chain's.** `get`,
   `getData`, `getMultiple`, and `query` refuse a proof whose block height is
   more than `lightClient.maxProofLagBlocks` from the chain's latest height

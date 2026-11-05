@@ -64,20 +64,24 @@ function provenRawItem(bytes: Uint8Array, key = 'k'): GroveDBVerificationResult 
 beforeEach(() => jest.clearAllMocks());
 
 describe('verifyQueryProof — number-fidelity binding', () => {
-  it('rejects a big-int precision collision (proven 2^53, server sent 2^53+1)', async () => {
+  it('rejects a big-int precision collision (proven 2^53+1, which JSON.parse reads as 2^53)', async () => {
     // Both 9007199254740992 and 9007199254740993 JSON.parse to 2^53; a naive
-    // deep-equal would bind the server's distinct value. Reject it.
-    mockVerify.mockReturnValue(provenItem('{"n":9007199254740992}'));
+    // deep-equal would bind 2^53 to the proven 2^53+1. Reject it.
+    mockVerify.mockReturnValue(provenItem('{"n":9007199254740993}'));
     await expect(
-      verifyQueryProof('00', [{ n: 9007199254740993 } as any]),
+      verifyQueryProof('00', [JSON.parse('{"n":9007199254740993}')]),
     ).rejects.toThrow(/not committed by the proof/);
+    await expect(verifyItemProof('00', 'k', { n: 2 ** 53 })).rejects.toThrow(
+      /holds the number 9007199254740993, which JavaScript can't carry exactly/,
+    );
   });
 
-  it('rejects an unsafe integer even against an identical JS value (no false bind)', async () => {
-    mockVerify.mockReturnValue(provenItem('{"n":9007199254740992}'));
-    await expect(
-      verifyQueryProof('00', [{ n: 9007199254740992 } as any]),
-    ).rejects.toThrow(/not committed by the proof/);
+  it('binds an integer beyond 2^53 - 1 whose digits are the ones JavaScript writes for its double', async () => {
+    for (const n of [2 ** 53, 1e18, 2 ** 64, -(2 ** 60)]) {
+      mockVerify.mockReturnValue(provenItem(JSON.stringify({ n })));
+      await expect(verifyQueryProof('00', [{ n }])).resolves.toBe(ROOT_HEX);
+      await expect(verifyItemProof('00', 'k', { n })).resolves.toBe(ROOT_HEX);
+    }
   });
 
   it('binds a safe-integer document', async () => {
@@ -142,9 +146,12 @@ describe('a number JavaScript cannot carry exactly never binds', () => {
   it('isExactJsonNumber and firstInexactNumber', () => {
     expect(isExactJsonNumber('9007199254740991')).toBe(true);
     expect(isExactJsonNumber('-9007199254740991')).toBe(true);
-    expect(isExactJsonNumber('9007199254740992')).toBe(false);
-    expect(isExactJsonNumber('9007199254740993')).toBe(false);
-    expect(isExactJsonNumber('1e20')).toBe(false); // an integer beyond 2^53 - 1
+    expect(isExactJsonNumber('9007199254740992')).toBe(true); // 2^53
+    expect(isExactJsonNumber('9007199254740993')).toBe(false); // parses to 2^53
+    expect(isExactJsonNumber('1e20')).toBe(true);
+    expect(isExactJsonNumber('1000000000000000000')).toBe(true);
+    expect(isExactJsonNumber('18446744073709552000')).toBe(true); // 2^64, as JavaScript writes it
+    expect(isExactJsonNumber('18446744073709551616')).toBe(false); // parses to the double written 18446744073709552000
     expect(isExactJsonNumber('0.0')).toBe(true);
     expect(isExactJsonNumber('1e400')).toBe(false);
     expect(isExactJsonNumber('2.5e-308')).toBe(true);

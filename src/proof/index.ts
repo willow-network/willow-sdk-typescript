@@ -26,12 +26,13 @@
  * are compared with `Object.is` and must be ones JavaScript carries exactly:
  * a number whose text has the exact decimal value of the shortest text of the
  * double it parses to (what `JSON.stringify` writes for that double; `1.0` and
- * `1` are one value), and that is not an integer beyond ±(2^53 − 1). So every
- * number JavaScript writes binds (`1.1 * 1.1` is `1.2100000000000002`), while
- * `-0`/`0`, `NaN`, precision-lossy big integers (e.g. 2^53+1), and decimals
- * `JSON.parse` rounds to another value's double (`0.33333333333333331`) never
- * bind. Such numbers should be carried as strings to bind. A non-JSON stored
- * Item binds only by exact bytes.
+ * `1` are one value). So every number JavaScript writes binds, at any
+ * magnitude (`1.1 * 1.1` is `1.2100000000000002`, `1e18` is
+ * `1000000000000000000`), while `-0`/`0`, `NaN`, and digits `JSON.parse`
+ * rounds to the double of another value's text (`9007199254740993`, read as
+ * the double written `9007199254740992`; `0.33333333333333331`) never bind.
+ * Such numbers should be carried as strings to bind. A non-JSON stored Item
+ * binds only by exact bytes.
  */
 
 import { QueryResponse, DataRecord } from '../types';

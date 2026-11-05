@@ -13,6 +13,7 @@ import { createTrustThreshold } from '../src/light-client/types';
 import { combineHash, hexToBytes, kvDigestToKvHash, nodeHash, valueHash, NULL_HASH } from '../src/grovedb';
 import { VerifiableRpcOperations } from '../src/verifiable-rpc';
 import { WillowClient } from '../src/client';
+import { NonceAllocator } from '../src/consensus/nonces';
 import {
   Merk,
   chainProof,
@@ -117,6 +118,42 @@ describe('a verified read binds the value it returns to the proof', () => {
     await expect(client(7, hex(root)).getData('s1', 'k')).resolves.toEqual(doc);
     // A digit string that parses to a double JavaScript writes as another value still refuses.
     const text = '{"third":0.33333333333333331}';
+    const other = oneItemLayer('k', enc(text));
+    const second = chainProof(PATH, other.ops, other.root, enc('k'));
+    serve({ k: JSON.parse(text) }, { k: hex(second.proof) });
+    await expect(client(7, hex(second.root)).getData('s1', 'k')).rejects.toMatchObject({
+      code: 'PROOF_VERIFICATION_FAILED',
+    });
+  });
+
+  it("a value the SDK's own writer stores verifies, an integer beyond 2^53 - 1 too", async () => {
+    // The data each `client.store` posts, as the StoreData's bytes.
+    const stored: Uint8Array[] = [];
+    global.fetch = jest.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes('/nonce')) return reply({ success: true, data: { nonce: 0 } });
+      if (url.endsWith('/tx/submit')) {
+        stored.push(Uint8Array.from(JSON.parse(init!.body as string).StoreData.data));
+        return reply({ success: true, data: { tx_hash: 'AB12', code: 0, log: '' } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+    const did = 'did:willow:writer';
+    const writer = new WillowClient({ apiUrl: 'http://api.test', nonceAllocator: new NonceAllocator() });
+    writer.auth.setIdentity(did, '03'.repeat(32), `${did}#key-1`, 'Ed25519');
+    const values = [1e18, 2 ** 53, Date.now() * 1e6];
+    for (const amount of values) await writer.store('s1', 'k', { amount });
+    expect(stored.map((bytes) => new TextDecoder().decode(bytes))).toEqual(
+      values.map((amount) => `{"amount":${String(amount)}}`),
+    );
+    expect(new TextDecoder().decode(stored[0])).toBe('{"amount":1000000000000000000}');
+    for (const [i, amount] of values.entries()) {
+      const leaf = oneItemLayer('k', stored[i]);
+      const { proof, root } = chainProof(PATH, leaf.ops, leaf.root, enc('k'));
+      serve({ k: { amount } }, { k: hex(proof) });
+      await expect(client(7, hex(root)).getData('s1', 'k')).resolves.toEqual({ amount });
+    }
+    // Digits that parse to the double of another integer still refuse: 2^53 + 1 reads as 2^53.
+    const text = '{"amount":9007199254740993}';
     const other = oneItemLayer('k', enc(text));
     const second = chainProof(PATH, other.ops, other.root, enc('k'));
     serve({ k: JSON.parse(text) }, { k: hex(second.proof) });
