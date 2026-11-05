@@ -145,6 +145,15 @@ package adheres to [Semantic Versioning](https://semver.org/).
   verified. `PrivacyOperations` signs with its identity's algorithm too.
 - A file manifest's `chunkCount` and `chunkSize` are u32 on the chain; a
   larger value is refused before signing or sending.
+- **`ConsensusClient.transfer` sends and signs its amount as exact digits.**
+  The amount (and `TransferTx.amount`) is a u128 and takes a `bigint` or a
+  decimal string as well as a safe-integer number. An amount of 1000 WILL
+  (10^21) or more, passed as a number, was sent and signed as `1e+21`,
+  which the chain's u128 decoder refuses, so every such transfer failed
+  (retried as a transport error while its nonce was held), and an amount
+  above 2^53 could not be given exactly. A number that is not a safe
+  integer, or a value outside u128, is refused (`INVALID_SIGNED_FIELD`)
+  before a nonce is taken.
 - **`WillowClient.registerDid` sends a RegisterDid transaction**, signed by
   the identity (the new DID), at nonce 1, and returns its
   `BroadcastResult`. The document goes as the chain's `DidDocument` and is

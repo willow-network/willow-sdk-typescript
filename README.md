@@ -43,6 +43,16 @@ devnets it is derived from `apiUrl` automatically; for any other host,
 set it explicitly — operations that need CometBFT RPC throw with code
 `CONSENSUS_RPC_URL_REQUIRED` when it is missing.
 
+Token amounts are u128s in the token's smallest unit (1 WILL is 10^18), so
+most are past 2^53 − 1, the largest integer a JavaScript number holds
+exactly. `client.consensus.transfer` takes its amount as a `bigint` or a
+decimal string (or a number that is a safe integer) and sends and signs its
+exact digits:
+
+```typescript
+await client.consensus.transfer(fromDid, toDid, 1000n * 10n ** 18n, client.auth.transactionSigner());
+```
+
 ## Quick Start
 
 ```typescript

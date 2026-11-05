@@ -18,7 +18,7 @@ import { toJson } from '../internal/json';
 import type { WillowLogger } from '../internal/logger';
 import type { NonceAllocator } from './nonces';
 import type { PrivacyConfig } from '../privacy';
-import { invalid, keySubgroveId, text, textLine, willowDid } from './fields';
+import { invalid, keySubgroveId, text, textLine, uint, willowDid, wireUint } from './fields';
 import { chainDidDocument, keyGrantWire, registerSubgroveWire } from './wire';
 import { registerSubgroveBincode } from './bincode';
 
@@ -406,7 +406,13 @@ export interface RegisterSubgroveTx {
 export interface TransferTx {
   fromDid: string;
   toDid: string;
-  amount: number; // Amount in smallest unit
+  /**
+   * The amount in the token's smallest unit (1 WILL is 10^18), a u128: a
+   * bigint, a string of decimal digits, or a number that is a safe integer
+   * (a larger number may already have been rounded, and is refused). It is
+   * sent and signed as its exact decimal digits.
+   */
+  amount: UintInput;
   memo?: string;
   signature?: string; // hex-encoded
   publicKeyId?: string;
@@ -639,7 +645,9 @@ export function createTransactionWrapper(txType: string, transaction: Transactio
         Transfer: {
           from_did: t.fromDid,
           to_did: t.toDid,
-          amount: t.amount,
+          // A u128, as its exact digits (a JSON number the chain's
+          // `u128_flexible` reads exactly; `1e+21` it refuses).
+          amount: wireUint('amount', t.amount, 128),
           memo: t.memo ?? '',
           signature: sig,
           public_key_id: publicKeyId,
@@ -1164,7 +1172,8 @@ export function createSignMessage(txType: string, transaction: Transaction): str
 
     case 'Transfer': {
       const tx = transaction as TransferTx;
-      return `Transfer\nFrom: ${tx.fromDid}\nTo: ${tx.toDid}\nAmount: ${tx.amount}\nMemo: ${tx.memo || ''}\nNonce: ${tx.nonce || 0}`;
+      const amount = uint('amount', tx.amount, 128);
+      return `Transfer\nFrom: ${tx.fromDid}\nTo: ${tx.toDid}\nAmount: ${amount}\nMemo: ${tx.memo || ''}\nNonce: ${tx.nonce || 0}`;
     }
 
     case 'DataStore':

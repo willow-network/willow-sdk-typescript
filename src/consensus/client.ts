@@ -4,7 +4,7 @@
  * Provides direct transaction broadcasting to CometBFT consensus layer.
  */
 
-import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, TransactionSubmitError, SignedSubmission, RegisterDidTx, RegisterSubgroveTx, RegisterSubgroveOptions, SubgroveMode, RetentionWindow, Signer, SignFunction, StoreFileManifestFields, TransferTx, DataStoreTx, StoreFileManifestTx, DeleteFileManifestTx, DeregisterSubgroveTx, SubmitAnchorTx, Transaction, createTransactionWrapper, createSignMessage } from './types';
+import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, TransactionSubmitError, SignedSubmission, RegisterDidTx, RegisterSubgroveTx, RegisterSubgroveOptions, SubgroveMode, RetentionWindow, Signer, SignFunction, StoreFileManifestFields, TransferTx, UintInput, DataStoreTx, StoreFileManifestTx, DeleteFileManifestTx, DeregisterSubgroveTx, SubmitAnchorTx, Transaction, createTransactionWrapper, createSignMessage } from './types';
 import { canonicalizeAnchorBody, computeAnchorMerkleRoot, sha256Hex } from './anchor-canonical';
 import { submitTxToApi } from '../internal/tx';
 import { NonceAllocator, AccountNonceState, NONCE_WINDOW, isUsed, parseAccountNonceStateBase64 } from './nonces';
@@ -194,12 +194,18 @@ export class ConsensusClient {
   }
 
   /**
-   * Transfer tokens between DIDs
+   * Transfer tokens between DIDs.
+   *
+   * `amount` is in the token's smallest unit (1 WILL is 10^18), a u128: pass
+   * a bigint or a decimal string for an amount above 2^53 - 1 (1000 WILL is
+   * `10n ** 21n`). It is sent and signed as its exact digits. A number that
+   * is not a safe integer, or a value outside u128, is refused
+   * (`INVALID_SIGNED_FIELD`) before a nonce is taken.
    */
   async transfer(
     fromDid: string,
     toDid: string,
-    amount: number,
+    amount: UintInput,
     signer: Signer,
     memo?: string
   ): Promise<BroadcastResult>;
@@ -207,7 +213,7 @@ export class ConsensusClient {
   async transfer(
     fromDid: string,
     toDid: string,
-    amount: number,
+    amount: UintInput,
     privateKey: string,
     publicKeyId: string,
     signFunction: SignFunction,
@@ -216,7 +222,7 @@ export class ConsensusClient {
   async transfer(
     fromDid: string,
     toDid: string,
-    amount: number,
+    amount: UintInput,
     signerOrPrivateKey: Signer | string,
     publicKeyIdOrMemo?: string,
     signFunction?: SignFunction,
