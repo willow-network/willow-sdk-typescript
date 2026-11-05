@@ -1,17 +1,20 @@
 /**
  * Semantics of submitTxToApi and how the three callers react.
  *
- * The contract: a transport/HTTP-level failure (non-2xx, or an unparseable
- * body — e.g. an HTML 502/504 from a proxy) THROWS TxTransportError so the
- * consensus retry loop retries it and direct callers surface an error; a
- * chain-level rejection (well-formed JSON envelope reporting failure, or a
- * CheckTx code !== 0) returns BroadcastResult{ success: false } with no retry,
- * since it is deterministic.
+ * The contract: a transport/HTTP-level failure (a non-2xx other than a 4xx,
+ * or an unparseable body — e.g. an HTML 502/504 from a proxy) THROWS
+ * TxTransportError so the consensus retry loop retries it and direct callers
+ * surface an error; a chain-level rejection (well-formed JSON envelope
+ * reporting failure, or a CheckTx code !== 0), and a 4xx (the API refused the
+ * request before CheckTx), return BroadcastResult{ success: false } with no
+ * retry, since they are deterministic.
  */
 
 import { submitTxToApi, TxTransportError } from '../src/internal/tx';
 import { ConsensusClient } from '../src/consensus/client';
-import { ConsensusError } from '../src/consensus/types';
+import { NonceAllocator } from '../src/consensus/nonces';
+import { ConsensusError, TransactionSubmitError } from '../src/consensus/types';
+import { WillowClient } from '../src/client';
 
 const API_URL = 'http://api.test';
 
@@ -133,5 +136,93 @@ describe('ConsensusClient.broadcastTransaction — retry policy', () => {
     expect(result.success).toBe(false);
     expect(result.errorCode).toBe(7);
     expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a 4xx from /tx/submit is a refusal: the request never reached CheckTx', () => {
+  const DID = 'did:willow:writer';
+  const SEED = '03'.repeat(32);
+  const SIGNER = { privateKey: SEED, publicKeyId: `${DID}#key-1` };
+  /** A body the API's JSON reader refuses: a 422 with a text body, as axum answers. */
+  const unreadable = () =>
+    response({
+      ok: false,
+      status: 422,
+      text: 'Failed to deserialize the JSON body into the target type: StoreData: missing field `nonce`',
+    });
+  const accepted = () =>
+    response({ ok: true, status: 200, body: { success: true, data: { tx_hash: 'AB12', code: 0, log: '' } } });
+  const nonceOf = (body: string) => (Object.values(JSON.parse(body))[0] as { nonce: number }).nonce;
+
+  /** The API at nonce base 4; `/tx/submit` answers `answer()`. Returns the bodies posted. */
+  function stubChain(answer: () => Response): string[] {
+    const sent: string[] = [];
+    mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/nonce')) {
+        const body = { success: true, data: { nonce: 4 } };
+        return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+      }
+      sent.push(init!.body as string);
+      return answer();
+    });
+    return sent;
+  }
+
+  afterEach(() => mockFetch.mockReset());
+
+  it('submitTxToApi returns it as success:false, without throwing', async () => {
+    mockFetch.mockResolvedValueOnce(unreadable());
+    const result = await submitTxToApi(API_URL, { Test: {} });
+    expect(result).toMatchObject({ success: false, errorMessage: expect.stringMatching(/^HTTP 422: Failed to deserialize/) });
+    expect(result.pending).toBeUndefined();
+    const others: Array<[number, unknown]> = [
+      [400, { success: false, error: 'Failed to bincode-serialize transaction: sequence too long' }],
+      [401, undefined],
+      [413, undefined],
+      [429, undefined],
+    ];
+    for (const [status, body] of others) {
+      mockFetch.mockResolvedValueOnce(response({ ok: false, status, body }));
+      await expect(submitTxToApi(API_URL, { Test: {} })).resolves.toMatchObject({
+        success: false,
+        errorMessage: expect.stringMatching(new RegExp(`^HTTP ${status}`)),
+      });
+    }
+  });
+
+  it('one that says the transaction is already in the cache stays pending', async () => {
+    mockFetch.mockResolvedValueOnce(
+      response({ ok: false, status: 400, body: { success: false, error: 'Internal error tx already exists in cache' } }),
+    );
+    await expect(submitTxToApi(API_URL, { Test: {} })).resolves.toMatchObject({ success: false, pending: true });
+  });
+
+  it('ConsensusClient posts it once and gives its nonce back', async () => {
+    let answer = unreadable;
+    const sent = stubChain(() => answer());
+    const c = new ConsensusClient({ apiUrl: API_URL, nonceAllocator: new NonceAllocator() });
+    const result = await c.storeData('sg', 'k', { a: 1 }, DID, SIGNER);
+    expect(result).toMatchObject({
+      success: false,
+      errorMessage: expect.stringMatching(/^HTTP 422/),
+      submission: { did: DID, nonce: 5 },
+    });
+    expect(result.pending).toBeUndefined();
+    expect(sent).toHaveLength(1);
+    // Its nonce is free again: the next write takes it.
+    answer = accepted;
+    await expect(c.storeData('sg', 'k', { a: 1 }, DID, SIGNER)).resolves.toMatchObject({ success: true });
+    expect(sent.map(nonceOf)).toEqual([5, 5]);
+  });
+
+  it("WillowClient's writes throw it as a refusal, a TransactionSubmitError carrying the result", async () => {
+    const sent = stubChain(unreadable);
+    const client = new WillowClient({ apiUrl: API_URL, nonceAllocator: new NonceAllocator() });
+    client.auth.setIdentity(DID, SEED, `${DID}#key-1`, 'Ed25519');
+    const err = await client.store('sg', 'k', { a: 1 }).catch((e) => e);
+    expect(err).toBeInstanceOf(TransactionSubmitError);
+    expect(err).toMatchObject({ code: 'TX_SUBMIT_FAILED', did: DID, nonce: 5, result: { success: false } });
+    expect(err.message).toMatch(/^store failed: HTTP 422/);
+    expect(sent).toHaveLength(1);
   });
 });

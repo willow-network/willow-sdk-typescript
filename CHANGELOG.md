@@ -271,6 +271,14 @@ package adheres to [Semantic Versioning](https://semver.org/).
   without a `txHash`, and its nonce stays held. CometBFT caches a
   transaction before CheckTx runs and drops it if CheckTx refuses it, so
   the answer does not mean the transaction was accepted.
+- A 4xx from `POST /tx/submit` (a body the API can't read, one too large, an
+  API key it refuses, a rate limit) is a refusal: the request never reached
+  CheckTx, so the write returns `{ success: false }` with `HTTP <status>`
+  and the API's answer as its `errorMessage`, is not posted again, and gives
+  its nonce back. It was a transport failure, which `ConsensusClient` posted
+  again `maxRetries` times and then threw, and `FileOperations` and
+  `PrivacyOperations` threw. A 4xx whose body says the transaction is
+  already in the cache stays pending. The thrown error types are unchanged.
 - A `ConsensusClient` write's result that is not `success` (pending, or
   refused at CheckTx) carries `submission` (its `did`, `nonce`, and signed
   body), and `client.store`, `client.registerDid`,

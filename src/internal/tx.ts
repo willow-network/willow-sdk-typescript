@@ -19,10 +19,11 @@ export interface SubmitTxOptions {
 }
 
 /**
- * Transport- or HTTP-level failure (non-2xx, or a body the API server can't
- * have produced). Distinct from a chain-level rejection: it is potentially
- * transient (proxy 502/504, network blip), so the consensus retry loop should
- * retry it rather than treat it as a deterministic outcome.
+ * Transport- or HTTP-level failure (a non-2xx status other than a 4xx, or a
+ * body the API server can't have produced). Distinct from a chain-level
+ * rejection: it is potentially transient (proxy 502/504, network blip), so
+ * the consensus retry loop should retry it rather than treat it as a
+ * deterministic outcome.
  */
 export class TxTransportError extends Error {
   constructor(message: string) {
@@ -44,13 +45,19 @@ const TX_IN_CACHE = 'tx already exists in cache';
  * Submit a wrapped transaction to `POST /tx/submit`.
  *
  * Distinguishes two failure classes so callers can react correctly:
- *   - **Transport/HTTP failures** (non-2xx, or a non-JSON / malformed body —
- *     e.g. an HTML 502/504 from a proxy) THROW {@link TxTransportError}. These
- *     are non-deterministic; the consensus retry loop retries them, and direct
- *     callers surface them as an error.
- *   - **Chain-level rejections** (a well-formed JSON envelope reporting failure,
- *     or a CheckTx `code !== 0`) return `BroadcastResult{ success: false }`.
- *     These are deterministic, so retrying is pointless.
+ *   - **Transport/HTTP failures** (a non-2xx status other than a 4xx, or a
+ *     non-JSON body with any status but a 4xx — e.g. an HTML 502/504 from a
+ *     proxy) THROW {@link TxTransportError}. These are non-deterministic; the
+ *     consensus retry loop retries them, and direct callers surface them as an
+ *     error.
+ *   - **Refusals** return `BroadcastResult{ success: false }`: a chain-level
+ *     rejection (a well-formed JSON envelope reporting failure, or a CheckTx
+ *     `code !== 0`), and a 4xx, with whatever body: the API (or the gateway in
+ *     front of it) refused the request itself (a body it can't read, a body
+ *     too large, an API key it refuses, a rate limit), so it never reached
+ *     CheckTx.
+ *     These are not retried, and the nonce of a refusal that does not say it
+ *     is held, used, or spent is free again.
  *
  * A repeat of a transaction CometBFT already holds ("tx already exists in
  * cache", which the API relays as an RPC error) returns
@@ -86,20 +93,20 @@ export async function submitTxToApi(
   try {
     body = text === '' ? {} : JSON.parse(text);
   } catch {
+    if (isClientError(response.status)) {
+      return text.includes(TX_IN_CACHE) ? alreadyInCache(text) : refusedRequest(response.status, text);
+    }
     // A non-JSON body means we didn't reach the API server's tx handler
     // (proxy/gateway error page) — transport-level, so throw to allow retry.
     throw new TxTransportError(`HTTP ${response.status} from ${url}: non-JSON response body`);
   }
 
   if (typeof body.error === 'string' && body.error.includes(TX_IN_CACHE)) {
-    return {
-      success: false,
-      pending: true,
-      errorMessage:
-        'unconfirmed: CometBFT already holds this transaction, which is in CheckTx, in the mempool, ' +
-        "committed, or about to be refused; confirm it by the account's nonce state",
-      rawLog: body.error,
-    };
+    return alreadyInCache(body.error);
+  }
+
+  if (isClientError(response.status)) {
+    return refusedRequest(response.status, typeof body.error === 'string' ? body.error : text);
   }
 
   if (!response.ok) {
@@ -121,6 +128,38 @@ export async function submitTxToApi(
     errorMessage: code !== 0 ? body.data.log : undefined,
     rawLog: body.data.log,
   };
+}
+
+/** The result of a repeat of a transaction CometBFT already holds: pending. */
+function alreadyInCache(rawLog: string): BroadcastResult {
+  return {
+    success: false,
+    pending: true,
+    errorMessage:
+      'unconfirmed: CometBFT already holds this transaction, which is in CheckTx, in the mempool, ' +
+      "committed, or about to be refused; confirm it by the account's nonce state",
+    rawLog,
+  };
+}
+
+/** A 4xx: the request was refused before it reached CheckTx. */
+function isClientError(status: number): boolean {
+  return status >= 400 && status < 500;
+}
+
+/** The longest part of a refused request's body a result carries. */
+const MAX_REFUSAL_DETAIL = 500;
+
+/**
+ * The result of a request the API (or a gateway in front of it) refused with
+ * a 4xx, `detail` being its error or body text: nothing reached CheckTx, so
+ * it is a refusal whose nonce is given back, not a transport failure to
+ * retry.
+ */
+function refusedRequest(status: number, detail: string): BroadcastResult {
+  const trimmed = detail.trim().slice(0, MAX_REFUSAL_DETAIL);
+  const message = `HTTP ${status}${trimmed ? `: ${trimmed}` : ''}`;
+  return { success: false, errorMessage: message, rawLog: message };
 }
 
 /**
