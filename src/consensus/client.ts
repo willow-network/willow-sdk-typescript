@@ -248,7 +248,12 @@ export class ConsensusClient {
   }
 
   /**
-   * Store data on the blockchain
+   * Store data on the blockchain: one key's value, by a StoreData
+   * transaction. `data` must be a JSON object (it is sent as its
+   * `JSON.stringify` text): the chain refuses anything else in the block,
+   * which spends the nonce, so anything else (`undefined`, `null`, an array,
+   * a string, a number) is refused (`INVALID_SIGNED_FIELD`) before a nonce
+   * is taken.
    */
   async storeData(
     subgroveId: string,

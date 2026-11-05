@@ -159,6 +159,9 @@ const unverifiedResults = await client.queryUnverified('dataset', { /* query */ 
 await client.store('dataset-id', 'key', { field: 'value' });
 ```
 
+A value must be a JSON object: the chain refuses anything else in the block,
+which spends the nonce, so `client.store` refuses `undefined`, `null`, an
+array, a string, or a number (`INVALID_SIGNED_FIELD`) before taking one.
 Each key is written by its own transaction, sent through `POST /tx/submit`;
 the API takes no data writes over REST (its data-write routes answer 501). Up to 24 writes from one identity
 can be in flight together, each under its own nonce (see [Nonces](#nonces)).

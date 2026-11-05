@@ -21,6 +21,7 @@ import type { PrivacyConfig } from '../privacy';
 import { invalid, keySubgroveId, text, textLine, uint, willowDid, wireUint } from './fields';
 import { chainDidDocument, keyGrantWire, registerSubgroveWire } from './wire';
 import { registerSubgroveBincode } from './bincode';
+import { parseNodeJsonText } from '../proof/node-json';
 
 /**
  * Base exception for consensus client operations
@@ -577,6 +578,30 @@ function storeDataBytes(data: string): Uint8Array {
 }
 
 /**
+ * A StoreData's `data`, checked: JSON text the node reads as an object. The
+ * node refuses any other data in the block, which spends the nonce, so it is
+ * refused before signing: text that is not JSON (or that the node's JSON
+ * reader refuses, such as an escaped lone surrogate), or JSON that is not an
+ * object.
+ */
+function storeDataText(data: unknown): string {
+  if (typeof data !== 'string') {
+    throw invalid('StoreData data must be the JSON text of an object');
+  }
+  let value: ReturnType<typeof parseNodeJsonText>;
+  try {
+    value = parseNodeJsonText(data);
+  } catch {
+    value = null;
+  }
+  if (value?.t !== 'obj') {
+    const shown = data.length > 40 ? `${data.slice(0, 40)}…` : data;
+    throw invalid(`StoreData data must be a JSON object the node can read, not ${JSON.stringify(shown)}`);
+  }
+  return data;
+}
+
+/**
  * Decode a hex digest a transaction carries as `[u8; 32]`, refusing any
  * other length. `0x` and upper case are accepted; the wire carries the bytes.
  */
@@ -864,8 +889,13 @@ function revokeFields(tx: RevokeSubgroveKeyTx): Record<string, string> {
  * block after its signature and nonce verify still spends that nonce; to
  * retry, sign again under the next free nonce.
  *
- * @throws WillowError if `subgroveId`, `key`, or `ownerDid` holds a `\n`, or
- *   the nonce is not a non-negative safe integer.
+ * `tx.data` must be the JSON text of an object: the node refuses any other
+ * data in the block, after the signature and nonce verify, so the SDK
+ * refuses to sign it (`INVALID_SIGNED_FIELD`).
+ *
+ * @throws WillowError if `subgroveId`, `key`, or `ownerDid` holds a `\n`,
+ *   `data` is not the JSON text of an object, or the nonce is not a
+ *   non-negative safe integer.
  */
 export function storeDataSignMessage(tx: DataStoreTx): string {
   return [
@@ -873,7 +903,7 @@ export function storeDataSignMessage(tx: DataStoreTx): string {
     textLine('Subgrove', tx.subgroveId),
     textLine('Key', tx.key),
     textLine('Owner', tx.ownerDid),
-    `DataHash: ${bytesToHex(sha256(storeDataBytes(tx.data)))}`,
+    `DataHash: ${bytesToHex(sha256(storeDataBytes(storeDataText(tx.data))))}`,
     uintLine('Nonce', tx.nonce),
   ].join('\n');
 }

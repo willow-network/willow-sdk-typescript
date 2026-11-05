@@ -402,3 +402,25 @@ describe('a write that did not go through carries what was sent', () => {
     expect(sent).toHaveLength(1);
   });
 });
+
+describe('a StoreData value must be a JSON object', () => {
+  it('anything else is refused before a nonce is taken or anything is sent', async () => {
+    const sent = stubChain(4, () => accepted());
+    const allocator = new NonceAllocator();
+    const c = new ConsensusClient({ apiUrl: 'http://api.test', nonceAllocator: allocator });
+    const client = new WillowClient({ apiUrl: 'http://api.test', nonceAllocator: allocator });
+    client.auth.setIdentity(DID, SEED, KEY_ID, 'Ed25519');
+    // `undefined` would be signed as 0 bytes; a lone surrogate is escaped to text the node can't read.
+    const notObjects: unknown[] = [undefined, null, [1, 2], 'text', 42, true, new Date(0), { s: '\ud800' }];
+    for (const value of notObjects) {
+      await expect(c.storeData('sg', 'k', value, DID, SIGNER)).rejects.toMatchObject({ code: 'INVALID_SIGNED_FIELD' });
+      await expect(client.store('sg', 'k', value)).rejects.toMatchObject({ code: 'INVALID_SIGNED_FIELD' });
+    }
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(0);
+
+    // No nonce was taken: an object takes base + 1.
+    await c.storeData('sg', 'k', { a: [1, null] }, DID, SIGNER);
+    expect(sent.map(nonceOf)).toEqual([5]);
+  });
+});

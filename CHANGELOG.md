@@ -237,6 +237,11 @@ package adheres to [Semantic Versioning](https://semver.org/).
   refused (`INVALID_SCHEMA`). `JSON.parse` takes each.
 - `ConsensusClient` checks a write's fields before it reads or takes a
   nonce.
+- A StoreData whose data is not the JSON text of an object is refused before
+  it is signed (`INVALID_SIGNED_FIELD`), and `client.store` and
+  `consensus.storeData` refuse a value that is not a JSON object before
+  taking a nonce. The chain refuses any other data in the block, which
+  spends the nonce; `undefined` was signed as 0 bytes.
 - **`ProofVerifier.verifyInclusionProof` and `verifyAbsenceProof` take the
   key's path (required)** and bind the key, the path, and the value (or the
   absence) to the proof. They returned true for any valid proof at the

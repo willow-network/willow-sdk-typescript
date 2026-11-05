@@ -277,7 +277,9 @@ export class WillowClient {
   }
 
   /**
-   * Store data via a consensus transaction. A write refused at CheckTx, or
+   * Store data via a consensus transaction. `value` must be a JSON object;
+   * anything else is refused (`INVALID_SIGNED_FIELD`) before a nonce is
+   * taken, as the chain refuses it. A write refused at CheckTx, or
    * whose outcome is pending (`result.pending`), throws a
    * `TransactionSubmitError` (`TX_SUBMIT_FAILED`) carrying the DID, nonce,
    * signed body, and `result`, to confirm it or post it again

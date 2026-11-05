@@ -205,7 +205,7 @@ describe('signed data and file write messages: refusals', () => {
   });
 
   it('signs a line break inside the data, which is hashed', () => {
-    const msg = storeDataSignMessage({ ...store, data: '"a\\nb\nc"' });
+    const msg = storeDataSignMessage({ ...store, data: '{"t":"a\\nb",\n"u":1}' });
     expect(msg.split('\n')).toHaveLength(6);
   });
 
