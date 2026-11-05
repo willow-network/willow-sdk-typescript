@@ -23,6 +23,7 @@
 
 import {
   WillowClient,
+  TransactionStatus,
   generateEd25519KeyPair,
   createDidFromPublicKey,
   QueryRequest,
@@ -93,7 +94,10 @@ async function main() {
       // A write refused at CheckTx, or whose outcome is pending, has no tx
       // hash to wait on; its `submission` can be confirmed or posted again.
       if (!result.success) throw new Error(`a write did not go through: ${result.errorMessage}`);
-      await client.consensus.waitForTransaction(result.txHash!);
+      // A write refused in its block lands too, as FAILED.
+      if ((await client.consensus.waitForTransaction(result.txHash!)) !== TransactionStatus.SUCCESS) {
+        throw new Error(`a write was refused in its block: ${result.txHash}`);
+      }
     }
     console.log(`   Stored ${batchProducts.length} products\n`);
   } catch (error) {

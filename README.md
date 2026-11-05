@@ -61,7 +61,7 @@ await client.consensus.transfer(fromDid, toDid, 1000n * 10n ** 18n, client.auth.
 ## Quick Start
 
 ```typescript
-import { WillowClient, generateWallet, createDidFromWallet } from '@willow-network/sdk';
+import { WillowClient, TransactionStatus, generateWallet, createDidFromWallet } from '@willow-network/sdk';
 
 // 1. Generate a wallet and DID
 const wallet = generateWallet();
@@ -79,9 +79,12 @@ client.auth.setIdentity(
 
 // 3. Register the DID by a RegisterDid transaction, signed by its own key.
 //    The DID must already hold the registration fee (see below). Wait for
-//    it to land before writing with it.
+//    it to land before writing with it: a transaction refused in its block
+//    lands too, as FAILED.
 const registered = await client.registerDid(didDocument);
-await client.consensus.waitForTransaction(registered.txHash!);
+if ((await client.consensus.waitForTransaction(registered.txHash!)) !== TransactionStatus.SUCCESS) {
+  throw new Error('the DID registration was refused in its block');
+}
 
 // 4. Store data (requires the 'users' subgrove to exist — see below), and
 //    wait for the write to land before reading it back. (`client.store`
@@ -94,7 +97,9 @@ const stored = await client.consensus.storeData(
   client.auth.transactionSigner(),
 );
 if (!stored.success) throw new Error(`store did not go through: ${stored.errorMessage}`);
-await client.consensus.waitForTransaction(stored.txHash!);
+if ((await client.consensus.waitForTransaction(stored.txHash!)) !== TransactionStatus.SUCCESS) {
+  throw new Error('the store was refused in its block');
+}
 
 // 5. Retrieve data (automatically verified!)
 const data = await client.get('users', 'alice');

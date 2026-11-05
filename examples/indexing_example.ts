@@ -14,6 +14,7 @@
  */
 
 import { WillowClient } from '../src/client';
+import { TransactionStatus } from '../src/consensus';
 import {
   RegisterSubgroveRequest,
   SchemaDefinition,
@@ -120,7 +121,10 @@ async function main() {
   for (const result of results) {
     // A refused or pending write has no tx hash to wait on.
     if (!result.success) throw new Error(`a write did not go through: ${result.errorMessage}`);
-    await client.consensus.waitForTransaction(result.txHash!);
+    // A write refused in its block lands too, as FAILED.
+    if ((await client.consensus.waitForTransaction(result.txHash!)) !== TransactionStatus.SUCCESS) {
+      throw new Error(`a write was refused in its block: ${result.txHash}`);
+    }
   }
 
   // 1. Hash-index lookup
