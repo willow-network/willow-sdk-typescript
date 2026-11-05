@@ -713,8 +713,8 @@ export class WillowData {
    * tree, and its root must be the light client's root for the proof's block
    * height, which must be at most `lightClient.maxProofLagBlocks` behind
    * the chain's latest and at most one block ahead of it, before the
-   * selection is run; the result carries
-   * `verifiedRootHash` and `verifiedHeight`.
+   * selection is run; the result carries `verifiedRootHash` and
+   * `verifiedHeight`.
    *
    * A query whose selection can't be verified throws `QUERY_NOT_VERIFIABLE`
    * before anything is sent: a filter on more than one field (the API
