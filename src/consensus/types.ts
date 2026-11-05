@@ -180,17 +180,22 @@ export interface BroadcastResult {
   /** CheckTx accepted the transaction. */
   success: boolean;
   /**
-   * The outcome is unknown (`success` is false): CometBFT answered that it
-   * already holds these bytes ("tx already exists in cache"). It caches a
-   * transaction before CheckTx runs and drops it if CheckTx refuses it, so
-   * the transaction may be in CheckTx, in the mempool, committed, or about to
-   * be refused. Its nonce stays held. `submission` carries the DID, nonce,
-   * and signed body. `ConsensusClient.isNonceUsed(did, nonce)` says whether
-   * a transaction with the nonce has been included in a block, not whether
-   * it applied: a refusal in the block spends the nonce too, so read the
-   * state the write changes to see that it applied. While the nonce is
-   * unused, `ConsensusClient.resubmit(result.submission)` posts the same
-   * signed body again; whichever copy lands first spends the nonce.
+   * The outcome is unknown (`success` is false), and the nonce stays held.
+   * Either CometBFT answered that it already holds these bytes ("tx already
+   * exists in cache"): it caches a transaction before CheckTx runs and drops
+   * it if CheckTx refuses it, so the transaction may be in CheckTx, in the
+   * mempool, committed, or about to be refused. Or the API, or a gateway in
+   * front of it, refused the request with a 4xx that says nothing about the
+   * transaction: an earlier post of it threw after it was sent (or this was
+   * a `resubmit`), and that post may still land; or the status is not one a
+   * body causes (an API key refused, a rate limit), and the same body may
+   * pass later. `submission` carries the DID, nonce, and signed body.
+   * `ConsensusClient.isNonceUsed(did, nonce)` says whether a transaction
+   * with the nonce has been included in a block, not whether it applied: a
+   * refusal in the block spends the nonce too, so read the state the write
+   * changes to see that it applied. While the nonce is unused,
+   * `ConsensusClient.resubmit(result.submission)` posts the same signed body
+   * again; whichever copy lands first spends the nonce.
    */
   pending?: boolean;
   /**

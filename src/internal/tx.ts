@@ -16,6 +16,12 @@ export interface SubmitTxOptions {
   timeoutMs?: number;
   /** Extra headers (e.g. DID auth) to send with the request. */
   headers?: Record<string, string>;
+  /**
+   * An earlier post of the same signed transaction may have reached
+   * CometBFT: it threw after it was sent, or this is a resubmission. A 4xx
+   * answers this request only, not the transaction, so it is then `pending`.
+   */
+  repeat?: boolean;
 }
 
 /**
@@ -44,7 +50,8 @@ const TX_IN_CACHE = 'tx already exists in cache';
 /**
  * Submit a wrapped transaction to `POST /tx/submit`.
  *
- * Distinguishes two failure classes so callers can react correctly:
+ * Distinguishes three outcomes other than acceptance so callers can react
+ * correctly:
  *   - **Transport/HTTP failures** (a non-2xx status other than a 4xx, or a
  *     non-JSON body with any status but a 4xx — e.g. an HTML 502/504 from a
  *     proxy) THROW {@link TxTransportError}. These are non-deterministic; the
@@ -52,18 +59,22 @@ const TX_IN_CACHE = 'tx already exists in cache';
  *     error.
  *   - **Refusals** return `BroadcastResult{ success: false }`: a chain-level
  *     rejection (a well-formed JSON envelope reporting failure, or a CheckTx
- *     `code !== 0`), and a 4xx, with whatever body: the API (or the gateway in
- *     front of it) refused the request itself (a body it can't read, a body
- *     too large, an API key it refuses, a rate limit), so it never reached
- *     CheckTx.
- *     These are not retried, and the nonce of a refusal that does not say it
- *     is held, used, or spent is free again.
- *
- * A repeat of a transaction CometBFT already holds ("tx already exists in
- * cache", which the API relays as an RPC error) returns
- * `BroadcastResult{ success: false, pending: true }` without a `txHash`: the
- * same signed bytes were seen, but whether they are accepted is unknown.
- * Confirm by the account's nonce state (`ConsensusClient.isNonceUsed`).
+ *     `code !== 0`), and, on the first post of a transaction, a 4xx a body
+ *     causes (400, 413, 415, 422: a body the API can't read or encode, or one
+ *     too large), with whatever body: the API (or the gateway in front of it)
+ *     refused this body, so this transaction never reached CheckTx and never
+ *     will. These are not retried, and the nonce of a refusal that does not
+ *     say it is held, used, or spent is free again.
+ *   - **Pending** returns `BroadcastResult{ success: false, pending: true }`
+ *     without a `txHash`, its nonce held: a repeat of a transaction CometBFT
+ *     already holds ("tx already exists in cache", which the API relays as an
+ *     RPC error): the same signed bytes were seen, but whether they are
+ *     accepted is unknown; any other 4xx (401, 402, 403, 408, 429, …: an API
+ *     key refused, a rate limit), which refuses the request, not the
+ *     transaction, and which the same body may pass later; and any 4xx to a
+ *     `repeat`, which reached no CheckTx itself but says nothing about the
+ *     earlier post, which may still land. Confirm by the account's nonce
+ *     state (`ConsensusClient.isNonceUsed`) before posting it again.
  */
 export async function submitTxToApi(
   apiUrl: string,
@@ -94,7 +105,7 @@ export async function submitTxToApi(
     body = text === '' ? {} : JSON.parse(text);
   } catch {
     if (isClientError(response.status)) {
-      return text.includes(TX_IN_CACHE) ? alreadyInCache(text) : refusedRequest(response.status, text);
+      return text.includes(TX_IN_CACHE) ? alreadyInCache(text) : clientError(response.status, text, opts);
     }
     // A non-JSON body means we didn't reach the API server's tx handler
     // (proxy/gateway error page) — transport-level, so throw to allow retry.
@@ -106,7 +117,7 @@ export async function submitTxToApi(
   }
 
   if (isClientError(response.status)) {
-    return refusedRequest(response.status, typeof body.error === 'string' ? body.error : text);
+    return clientError(response.status, typeof body.error === 'string' ? body.error : text, opts);
   }
 
   if (!response.ok) {
@@ -142,24 +153,55 @@ function alreadyInCache(rawLog: string): BroadcastResult {
   };
 }
 
-/** A 4xx: the request was refused before it reached CheckTx. */
+/** A 4xx: this request was refused before it reached CheckTx. */
 function isClientError(status: number): boolean {
   return status >= 400 && status < 500;
 }
+
+/**
+ * The 4xx statuses a request's body causes (a body the API can't read or
+ * encode, one too large, one of another media type): the same body is
+ * refused every time.
+ */
+const BODY_REFUSALS = new Set([400, 413, 415, 422]);
 
 /** The longest part of a refused request's body a result carries. */
 const MAX_REFUSAL_DETAIL = 500;
 
 /**
  * The result of a request the API (or a gateway in front of it) refused with
- * a 4xx, `detail` being its error or body text: nothing reached CheckTx, so
- * it is a refusal whose nonce is given back, not a transport failure to
- * retry.
+ * a 4xx, `detail` being its error or body text. The request never reached
+ * CheckTx, but that says nothing of an earlier post of the same transaction,
+ * which may still land, so only the first post of one, refused for its body,
+ * is a refusal whose nonce is given back. Any other is pending, its nonce
+ * held: a 4xx to a repeat, and one the body doesn't cause (an API key
+ * refused, a rate limit), which the same body may pass later. Neither is a
+ * transport failure to retry at once.
  */
-function refusedRequest(status: number, detail: string): BroadcastResult {
+function clientError(status: number, detail: string, opts: SubmitTxOptions): BroadcastResult {
   const trimmed = detail.trim().slice(0, MAX_REFUSAL_DETAIL);
-  const message = `HTTP ${status}${trimmed ? `: ${trimmed}` : ''}`;
-  return { success: false, errorMessage: message, rawLog: message };
+  const answer = `HTTP ${status}${trimmed ? `: ${trimmed}` : ''}`;
+  if (opts.repeat) {
+    return {
+      success: false,
+      pending: true,
+      errorMessage:
+        `${answer}; this post was refused before CheckTx, but an earlier post of the same transaction ` +
+        "may still land, so its nonce stays held; confirm it by the account's nonce state",
+      rawLog: answer,
+    };
+  }
+  if (!BODY_REFUSALS.has(status)) {
+    return {
+      success: false,
+      pending: true,
+      errorMessage:
+        `${answer}; the request was refused before CheckTx for a reason other than its body, so its ` +
+        'nonce stays held to post the same transaction again',
+      rawLog: answer,
+    };
+  }
+  return { success: false, errorMessage: answer, rawLog: answer };
 }
 
 /**

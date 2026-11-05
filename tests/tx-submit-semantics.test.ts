@@ -5,9 +5,11 @@
  * or an unparseable body — e.g. an HTML 502/504 from a proxy) THROWS
  * TxTransportError so the consensus retry loop retries it and direct callers
  * surface an error; a chain-level rejection (well-formed JSON envelope
- * reporting failure, or a CheckTx code !== 0), and a 4xx (the API refused the
- * request before CheckTx), return BroadcastResult{ success: false } with no
- * retry, since they are deterministic.
+ * reporting failure, or a CheckTx code !== 0), and a 4xx its body causes on
+ * the first post of a transaction (the API refused the body before CheckTx),
+ * return BroadcastResult{ success: false } with no retry, since they are
+ * deterministic. Any other 4xx answers the request, not the transaction: it
+ * is pending, its nonce held.
  */
 
 import { submitTxToApi, TxTransportError } from '../src/internal/tx';
@@ -139,7 +141,7 @@ describe('ConsensusClient.broadcastTransaction — retry policy', () => {
   });
 });
 
-describe('a 4xx from /tx/submit is a refusal: the request never reached CheckTx', () => {
+describe('a 4xx from /tx/submit: the request never reached CheckTx', () => {
   const DID = 'did:willow:writer';
   const SEED = '03'.repeat(32);
   const SIGNER = { privateKey: SEED, publicKeyId: `${DID}#key-1` };
@@ -170,22 +172,47 @@ describe('a 4xx from /tx/submit is a refusal: the request never reached CheckTx'
 
   afterEach(() => mockFetch.mockReset());
 
-  it('submitTxToApi returns it as success:false, without throwing', async () => {
+  it('submitTxToApi returns the first post of a body it refuses as success:false, without throwing', async () => {
     mockFetch.mockResolvedValueOnce(unreadable());
     const result = await submitTxToApi(API_URL, { Test: {} });
     expect(result).toMatchObject({ success: false, errorMessage: expect.stringMatching(/^HTTP 422: Failed to deserialize/) });
     expect(result.pending).toBeUndefined();
     const others: Array<[number, unknown]> = [
       [400, { success: false, error: 'Failed to bincode-serialize transaction: sequence too long' }],
-      [401, undefined],
       [413, undefined],
-      [429, undefined],
+      [415, undefined],
     ];
     for (const [status, body] of others) {
       mockFetch.mockResolvedValueOnce(response({ ok: false, status, body }));
-      await expect(submitTxToApi(API_URL, { Test: {} })).resolves.toMatchObject({
+      const refusal = await submitTxToApi(API_URL, { Test: {} });
+      expect(refusal).toMatchObject({
         success: false,
         errorMessage: expect.stringMatching(new RegExp(`^HTTP ${status}`)),
+      });
+      expect(refusal.pending).toBeUndefined();
+    }
+  });
+
+  it('a 4xx its body does not cause is pending: the same body may pass later', async () => {
+    for (const status of [401, 402, 403, 404, 408, 429]) {
+      mockFetch.mockResolvedValueOnce(response({ ok: false, status, text: 'Too Many Requests' }));
+      await expect(submitTxToApi(API_URL, { Test: {} })).resolves.toMatchObject({
+        success: false,
+        pending: true,
+        errorMessage: expect.stringMatching(new RegExp(`^HTTP ${status}: Too Many Requests; .*nonce stays held`)),
+        rawLog: `HTTP ${status}: Too Many Requests`,
+      });
+    }
+  });
+
+  it('any 4xx to a repeat is pending: it says nothing about the earlier post', async () => {
+    for (const status of [400, 413, 422, 429]) {
+      mockFetch.mockResolvedValueOnce(response({ ok: false, status, text: 'refused' }));
+      await expect(submitTxToApi(API_URL, { Test: {} }, { repeat: true })).resolves.toMatchObject({
+        success: false,
+        pending: true,
+        errorMessage: expect.stringMatching(/earlier post of the same transaction may still land/),
+        rawLog: `HTTP ${status}: refused`,
       });
     }
   });
@@ -197,7 +224,7 @@ describe('a 4xx from /tx/submit is a refusal: the request never reached CheckTx'
     await expect(submitTxToApi(API_URL, { Test: {} })).resolves.toMatchObject({ success: false, pending: true });
   });
 
-  it('ConsensusClient posts it once and gives its nonce back', async () => {
+  it('ConsensusClient posts a body refused on its first post once, and gives its nonce back', async () => {
     let answer = unreadable;
     const sent = stubChain(() => answer());
     const c = new ConsensusClient({ apiUrl: API_URL, nonceAllocator: new NonceAllocator() });
@@ -213,6 +240,72 @@ describe('a 4xx from /tx/submit is a refusal: the request never reached CheckTx'
     answer = accepted;
     await expect(c.storeData('sg', 'k', { a: 1 }, DID, SIGNER)).resolves.toMatchObject({ success: true });
     expect(sent.map(nonceOf)).toEqual([5, 5]);
+  });
+
+  it('a 4xx to a retry after a post that threw is pending, and its nonce stays held', async () => {
+    // The first post fails in transport (a gateway's 502, the SDK's own
+    // timeout): CometBFT may hold it. The retry is refused before CheckTx.
+    const firsts: Array<() => Response> = [
+      () => response({ ok: false, status: 502, text: '<html>502 Bad Gateway</html>' }),
+      () => {
+        throw new Error('The operation was aborted due to timeout');
+      },
+    ];
+    for (const first of firsts) {
+      for (const status of [429, 422]) {
+        let posts = 0;
+        let answer = (): Response =>
+          ++posts === 1 ? first() : response({ ok: false, status, text: 'Too Many Requests' });
+        const sent = stubChain(() => answer());
+        const c = new ConsensusClient({ apiUrl: API_URL, nonceAllocator: new NonceAllocator(), maxRetries: 1 });
+        const result = await c.storeData('sg', 'k', { a: 1 }, DID, SIGNER);
+        expect(result).toMatchObject({
+          success: false,
+          pending: true,
+          rawLog: `HTTP ${status}: Too Many Requests`,
+          submission: { did: DID, nonce: 5 },
+        });
+        expect(sent).toHaveLength(2);
+        // The first post may still land, so the next write takes 6.
+        answer = accepted;
+        await expect(c.storeData('sg', 'k2', { a: 1 }, DID, SIGNER)).resolves.toMatchObject({ success: true });
+        expect(sent.map(nonceOf)).toEqual([5, 5, 6]);
+      }
+    }
+  });
+
+  it('resubmit answered with a 4xx is pending, and its nonce stays held', async () => {
+    let answer = (): Response => {
+      throw new Error('connection reset');
+    };
+    const sent = stubChain(() => answer());
+    const c = new ConsensusClient({ apiUrl: API_URL, nonceAllocator: new NonceAllocator(), maxRetries: 0 });
+    const err = await c.storeData('sg', 'k', { a: 1 }, DID, SIGNER).catch((e) => e);
+    expect(err).toBeInstanceOf(TransactionSubmitError);
+    for (const status of [429, 422]) {
+      answer = () => response({ ok: false, status, text: 'refused' });
+      await expect(c.resubmit(err)).resolves.toMatchObject({
+        success: false,
+        pending: true,
+        submission: { did: DID, nonce: 5 },
+      });
+    }
+    answer = accepted;
+    await expect(c.storeData('sg', 'k2', { a: 1 }, DID, SIGNER)).resolves.toMatchObject({ success: true });
+    expect(sent.map(nonceOf)).toEqual([5, 5, 5, 6]);
+  });
+
+  it('a first post refused for a reason other than its body is pending, to post again under its nonce', async () => {
+    let answer = (): Response => response({ ok: false, status: 429, text: 'Too Many Requests' });
+    const sent = stubChain(() => answer());
+    const c = new ConsensusClient({ apiUrl: API_URL, nonceAllocator: new NonceAllocator() });
+    const result = await c.storeData('sg', 'k', { a: 1 }, DID, SIGNER);
+    expect(result).toMatchObject({ success: false, pending: true, submission: { did: DID, nonce: 5 } });
+    expect(sent).toHaveLength(1);
+    answer = accepted;
+    await expect(c.storeData('sg', 'k2', { a: 1 }, DID, SIGNER)).resolves.toMatchObject({ success: true });
+    await expect(c.resubmit(result.submission!)).resolves.toMatchObject({ success: true });
+    expect(sent.map(nonceOf)).toEqual([5, 6, 5]);
   });
 
   it("WillowClient's writes throw it as a refusal, a TransactionSubmitError carrying the result", async () => {

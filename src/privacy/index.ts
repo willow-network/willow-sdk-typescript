@@ -460,10 +460,11 @@ export class PrivacyOperations {
    * at CheckTx gives it back unless the refusal says the nonce is held, used,
    * or spent. A write that fails before it is sent gives its nonce back; one
    * whose submission failed in transport keeps it until its hold runs out.
-   * A transport failure or a refusal throws a `BROADCAST_FAILED`
-   * {@link TransactionSubmitError} carrying the DID, the nonce, the signed
-   * body, and (for a refusal) the chain's answer, so the write can be posted
-   * again under the same nonce (`ConsensusClient.resubmit(error)`).
+   * A transport failure, a refusal, or a pending answer throws a
+   * `BROADCAST_FAILED` {@link TransactionSubmitError} carrying the DID, the
+   * nonce, the signed body, and (for a refusal or a pending answer) the
+   * answer, so the write can be posted again under the same nonce
+   * (`ConsensusClient.resubmit(error)`).
    *
    * Encoding (snake_case keys, hex signature -> byte array) is owned by
    * `createTransactionWrapper`, the single place the SDK shapes the wire

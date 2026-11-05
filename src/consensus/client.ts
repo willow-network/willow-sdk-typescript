@@ -639,7 +639,8 @@ export class ConsensusClient {
    * `transaction`. Whichever attempt lands first spends the nonce, and the
    * other is refused, so the write runs at most once. A repeat of one the
    * mempool already holds returns `pending` (its outcome unknown; see
-   * {@link isNonceUsed}). A result that is not `success` carries the
+   * {@link isNonceUsed}), as does a 4xx, which answers this post only: an
+   * earlier one may still land. A result that is not `success` carries the
    * submission again.
    *
    * The nonce is held while the post is in flight and settled with the
@@ -649,7 +650,7 @@ export class ConsensusClient {
   async resubmit(submission: SignedSubmission): Promise<BroadcastResult> {
     return this.sendSigned(
       { did: submission.did, nonce: submission.nonce, transaction: submission.transaction },
-      false,
+      true,
     );
   }
 
@@ -657,24 +658,28 @@ export class ConsensusClient {
    * Post a signed write and settle its nonce: each attempt renews the hold,
    * an answer settles it, and a transport failure keeps it held and throws
    * the submission. A new write that fails before anything is sent gives its
-   * nonce back (`releaseUnsent`); a repeat doesn't, as its earlier attempt may
-   * yet land.
+   * nonce back; a `repeat` (a resubmission) doesn't, as its earlier attempt
+   * may yet land, and a 4xx to it is pending.
    */
   private async sendSigned(
     submission: SignedSubmission,
-    releaseUnsent = true,
+    repeat = false,
   ): Promise<BroadcastResult> {
     const { did, nonce, transaction } = submission;
     let sent = false;
     let result: BroadcastResult;
     try {
-      result = await this.broadcastTransaction(transaction, () => {
-        sent = true;
-        this.nonces.hold(did, nonce);
-      });
+      result = await this.broadcastTransaction(
+        transaction,
+        () => {
+          sent = true;
+          this.nonces.hold(did, nonce);
+        },
+        repeat,
+      );
     } catch (error) {
       if (!sent) {
-        if (releaseUnsent) this.nonces.release(did, nonce);
+        if (!repeat) this.nonces.release(did, nonce);
         throw error;
       }
       throw submissionError(error, submission);
@@ -716,11 +721,15 @@ export class ConsensusClient {
    * JSON without implementing a bincode encoder per language.
    *
    * A transport failure is retried with the same signed body
-   * (`maxRetries`); `onAttempt` runs before each attempt.
+   * (`maxRetries`); `onAttempt` runs before each attempt. A post that threw
+   * may have reached CometBFT, so a 4xx to a later one (or to any post of a
+   * `repeat`, a resubmission) is pending, not a refusal: it answers that
+   * request only, and the earlier post may still land.
    */
   private async broadcastTransaction(
     transaction: Record<string, unknown>,
     onAttempt?: () => void,
+    repeat = false,
   ): Promise<BroadcastResult> {
     if (!this.config.apiUrl) {
       throw new ConsensusError(
@@ -729,12 +738,14 @@ export class ConsensusClient {
       );
     }
 
+    let earlier = repeat;
     for (let attempt = 0; attempt <= this.config.maxRetries!; attempt++) {
       onAttempt?.();
       try {
         return await submitTxToApi(this.config.apiUrl, transaction, {
           apiKey: this.config.apiKey,
           timeoutMs: this.config.requestTimeoutSecs! * 1000,
+          repeat: earlier,
         });
       } catch (error) {
         if (attempt === this.config.maxRetries) {
@@ -745,7 +756,8 @@ export class ConsensusClient {
             'TX_SUBMIT_FAILED'
           );
         }
-        // fall through to retry
+        // This post may have reached CometBFT before it failed.
+        earlier = true;
       }
     }
     throw new ConsensusError('tx submit: exhausted retries', 'TX_SUBMIT_FAILED');
