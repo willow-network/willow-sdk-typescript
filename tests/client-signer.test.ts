@@ -172,6 +172,31 @@ describe('a transaction is signed with the algorithm of the key the chain verifi
     await unregistered.init(undefined, keyId);
     expect(unregistered.auth.getPublicKeyId()).toBe(keyId);
     expect(unregistered.auth.getAlgorithm()).toBe('Ed25519');
+
+    // So does a lookup that fails any other way: the network, a 5xx, a 400.
+    const failures: Array<() => Promise<Response>> = [
+      async () => {
+        throw new TypeError('fetch failed');
+      },
+      async () => ({ ok: false, status: 503, text: async () => 'upstream down' }) as unknown as Response,
+      async () =>
+        ({ ok: false, status: 400, text: async () => '{"success":false,"error":"Invalid DID"}' }) as unknown as Response,
+    ];
+    for (const failure of failures) {
+      global.fetch = jest.fn(failure) as unknown as typeof fetch;
+      for (const [privateKey, guessed] of [
+        [SEED, 'Ed25519'],
+        [`0x${SEED}`, 'secp256k1'],
+      ]) {
+        const offline = new WillowClient({ apiUrl: 'http://api.test', did, privateKey, nonceAllocator: new NonceAllocator() });
+        await offline.init(undefined, keyId);
+        expect(offline.auth.getPublicKeyId()).toBe(keyId);
+        expect(offline.auth.getAlgorithm()).toBe(guessed);
+      }
+      // Without a key id the document is needed, and the failure is thrown.
+      const keyless = new WillowClient({ apiUrl: 'http://api.test', did, privateKey: SEED, nonceAllocator: new NonceAllocator() });
+      await expect(keyless.init()).rejects.toBeDefined();
+    }
   });
 
   it('registerDid signs with the document key\'s algorithm when the identity\'s was guessed', async () => {

@@ -194,7 +194,9 @@ package adheres to [Semantic Versioning](https://semver.org/).
   to `setIdentity` or `init()`, or read by `init()` from the DID document;
   requests still sign with the guess. `init()` given no algorithm reads the
   key's type from the document with or without a key id; given a key id, it
-  skipped the document and kept the guess.
+  skipped the document and kept the guess. Given a key id, a lookup that
+  fails in any way (a DID the API doesn't know, a network error, a 5xx, a
+  400) still keeps the guess, and `init()` completes.
   `WillowAuth.transactionSigner(keyAlgorithm?)` takes the algorithm of the
   key the chain will verify with.
 - `registerDid` (`WillowClient` and `ConsensusClient`) signs with the

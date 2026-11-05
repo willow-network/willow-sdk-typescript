@@ -7,7 +7,6 @@ import { ConsensusClient } from "./consensus";
 import { didDocumentKeyType } from "./consensus/wire";
 import { BroadcastResult, RegisterSubgroveOptions, Signer } from "./consensus/types";
 import { writeNotAccepted } from "./internal/tx";
-import { HttpError } from "./internal/http";
 import { WillowIndexers } from "./indexers";
 import { WillowSubscriptions } from "./subscriptions";
 import {
@@ -125,10 +124,12 @@ export class WillowClient {
    * first key. Without `algorithm` it takes the algorithm of that key's type
    * in the document, the authoritative signal: self-certifying Willow DIDs
    * don't encode the algorithm, and a `0x`-prefixed 64-hex key may be either
-   * kind. With a key id, a DID the API doesn't know (a 404), or a document
-   * that doesn't list the key, leaves the algorithm to be guessed
-   * from the key's format, as `auth.setIdentity` does (and a transaction is
-   * not signed with a guessed secp256k1).
+   * kind. With a key id, a lookup that fails in any way (a DID the API
+   * doesn't know, a network error, a 5xx, a 400), or a document that doesn't
+   * list the key, leaves the algorithm to be guessed from the key's format,
+   * as `auth.setIdentity` does, and `init` completes: a transaction is not
+   * signed with a guessed secp256k1, so the guess can't sign one wrongly.
+   * Without a key id the document is required, and a failed lookup throws.
    *
    * @param algorithm - The identity's signature algorithm. When given, it
    *   wins over the document's.
@@ -169,18 +170,15 @@ export class WillowClient {
   /**
    * The keys of `did`'s document as the API serves it (the chain's document,
    * whose keys are `public_keys`). When the document is needed only for a
-   * key's algorithm (`required` false), a DID the API doesn't know gives no
-   * keys rather than throwing.
+   * key's algorithm (`required` false), a lookup that fails in any way gives
+   * no keys rather than throwing, and the algorithm is guessed.
    */
   private async documentKeys(did: string, required: boolean): Promise<DidDocument["publicKeys"]> {
     let didDoc: DidDocument;
     try {
       didDoc = await this.auth.getDidDocument(did);
     } catch (error) {
-      const unknown =
-        (error instanceof HttpError && error.status === 404) ||
-        (error instanceof WillowError && error.code === "DID_NOT_FOUND");
-      if (!required && unknown) return [];
+      if (!required) return [];
       throw error;
     }
     const keys =
