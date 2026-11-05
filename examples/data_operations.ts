@@ -73,9 +73,9 @@ async function main() {
     console.log(`   Note: ${error}\n`);
   }
 
-  // 2. Store several items. Each key is its own StoreData transaction, and the
-  //    next nonce is read from the chain, so wait for each to land before
-  //    sending the next.
+  // 2. Store several items. Each key is its own StoreData transaction; the
+  //    client gives writes in flight together distinct nonces (up to 24 per
+  //    identity), so they can be sent at once.
   console.log('2. Store several items...');
   const batchProducts = [
     { key: 'prod-002', value: { id: 'prod-002', name: 'Wireless Mouse', category: 'electronics', price: 49.99, stock: 200 } },
@@ -84,14 +84,15 @@ async function main() {
     { key: 'prod-005', value: { id: 'prod-005', name: 'Mechanical Keyboard', category: 'electronics', price: 149.99, stock: 75 } },
   ];
   try {
-    for (const { key, value } of batchProducts) {
-      const result = await client.consensus.storeData(
-        datasetId,
-        key,
-        value,
-        did,
-        client.auth.transactionSigner(),
-      );
+    const results = await Promise.all(
+      batchProducts.map(({ key, value }) =>
+        client.consensus.storeData(datasetId, key, value, did, client.auth.transactionSigner()),
+      ),
+    );
+    for (const result of results) {
+      // A write refused at CheckTx, or whose outcome is pending, has no tx
+      // hash to wait on; its `submission` can be confirmed or posted again.
+      if (!result.success) throw new Error(`a write did not go through: ${result.errorMessage}`);
       await client.consensus.waitForTransaction(result.txHash!);
     }
     console.log(`   Stored ${batchProducts.length} products\n`);

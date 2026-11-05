@@ -108,17 +108,18 @@ async function main() {
     },
   ];
 
-  // Each key is its own StoreData transaction; wait for each to land, since
-  // the next nonce is read from the chain.
+  // Each key is its own StoreData transaction. Writes in flight together get
+  // distinct nonces, so they can be sent at once; wait for each to land
+  // before querying.
   console.log('Storing products...');
-  for (const { key, value } of products) {
-    const result = await client.consensus.storeData(
-      'products',
-      key,
-      value,
-      fundedDID,
-      client.auth.transactionSigner(),
-    );
+  const results = await Promise.all(
+    products.map(({ key, value }) =>
+      client.consensus.storeData('products', key, value, fundedDID, client.auth.transactionSigner()),
+    ),
+  );
+  for (const result of results) {
+    // A refused or pending write has no tx hash to wait on.
+    if (!result.success) throw new Error(`a write did not go through: ${result.errorMessage}`);
     await client.consensus.waitForTransaction(result.txHash!);
   }
 
