@@ -263,7 +263,8 @@ package adheres to [Semantic Versioning](https://semver.org/).
   body), and `client.store`, `client.registerDid`,
   `client.registerSubgrove`, and `client.data.registerSubgrove` throw it as
   a `TransactionSubmitError` (`TX_SUBMIT_FAILED`) with `result`, where they
-  threw an `Error` with the message alone. `isNonceUsed` says whether a
+  threw an `Error` with the message alone. `client.deregisterSubgrove`,
+  which returned such a result without throwing, throws it too. `isNonceUsed` says whether a
   transaction with the nonce has been included in a block, not whether the
   write applied: a refusal in the block spends the nonce too.
 - **`client.query` and `data.query` verify the query's whole result.** The

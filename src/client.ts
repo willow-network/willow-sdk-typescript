@@ -259,14 +259,21 @@ export class WillowClient {
    * so a second register of the same subgrove_id is a no-op. The server
    * bumps `deployment_epoch` on deregister, which indexers watch for to
    * restart their pipelines on the next loop tick.
+   *
+   * Returns the consensus `BroadcastResult`. A deregistration refused at
+   * CheckTx, or whose outcome is pending, throws a `TransactionSubmitError`
+   * (`TX_SUBMIT_FAILED`) carrying the DID, nonce, signed body, and `result`,
+   * as `store` and `registerSubgrove` do.
    */
   async deregisterSubgrove(subgroveId: string): Promise<BroadcastResult> {
     this.requireIdentity();
-    return this.consensus.deregisterSubgrove(
+    const result = await this.consensus.deregisterSubgrove(
       subgroveId,
       this.auth.getDid()!,
       this.signer(),
     );
+    if (!result.success) throw writeNotAccepted('deregisterSubgrove', result);
+    return result;
   }
 
   /**

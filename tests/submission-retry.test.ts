@@ -379,4 +379,26 @@ describe('a write that did not go through carries what was sent', () => {
     expect(refusal).toMatchObject({ code: 'TX_SUBMIT_FAILED', result: { rawLog: 'Insufficient balance' } });
     expect(refusal.message).toBe('store failed: Insufficient balance');
   });
+
+  it('WillowClient.deregisterSubgrove throws it too', async () => {
+    let sent = stubChain(4, () => inCache());
+    const client = new WillowClient({ apiUrl: 'http://api.test', nonceAllocator: new NonceAllocator() });
+    client.auth.setIdentity(DID, SEED, KEY_ID, 'Ed25519');
+
+    const pending = await client.deregisterSubgrove('sg').catch((e) => e);
+    expect(pending).toBeInstanceOf(TransactionSubmitError);
+    expect(pending).toMatchObject({ code: 'TX_SUBMIT_FAILED', did: DID, nonce: 5, result: { pending: true } });
+    expect(pending.message).toMatch(/^deregisterSubgrove failed: unconfirmed/);
+    expect(toJson(pending.transaction)).toBe(sent[0]);
+
+    stubChain(4, () => refused('Only the owner can deregister'));
+    const refusal = await client.deregisterSubgrove('sg').catch((e) => e);
+    expect(refusal).toBeInstanceOf(TransactionSubmitError);
+    expect(refusal).toMatchObject({ code: 'TX_SUBMIT_FAILED', result: { rawLog: 'Only the owner can deregister' } });
+    expect(refusal.message).toBe('deregisterSubgrove failed: Only the owner can deregister');
+
+    sent = stubChain(4, () => accepted());
+    await expect(client.deregisterSubgrove('sg')).resolves.toMatchObject({ success: true, txHash: 'AB12' });
+    expect(sent).toHaveLength(1);
+  });
 });
