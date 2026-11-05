@@ -200,8 +200,8 @@ describe('value-bearing leaf binding', () => {
     const { results } = verifyGroveDBProof(proof);
     expect(results.map((r) => [r.tree, r.value, r.element])).toEqual([[true, null, null]]);
     const proofHex = Buffer.from(proof).toString('hex');
-    await expect(verifyItemProof(proofHex, 'balance', 1000)).rejects.toThrow(/does not match/);
-    await expect(verifyItemProof(proofHex, 'balance', treeBytes)).rejects.toThrow(/does not match/);
+    await expect(verifyItemProof(proofHex, 'balance', 1000)).rejects.toThrow(/not the KV node/);
+    await expect(verifyItemProof(proofHex, 'balance', treeBytes)).rejects.toThrow(/not the KV node/);
     await expect(verifyQueryProof(proofHex, [{ balance: 1000 }])).rejects.toThrow(/not committed/);
   });
 

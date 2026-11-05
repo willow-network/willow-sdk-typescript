@@ -258,7 +258,8 @@ describe('subtree bytes are bound or not given', () => {
       expect(hashToHex(r.rootHash)).toBe(dataRoot);
       expect(r.results.map((e) => [e.tree, e.value, e.element])).toEqual([[true, null, null]]);
     }
-    await expect(verifyItemProof(hex(proof), 'a1', DOC_A1)).rejects.toThrow(/does not match/);
+    // A subtree is not the KV node holding an Item that a value is taken from.
+    await expect(verifyItemProof(hex(proof), 'a1', DOC_A1)).rejects.toThrow(/not the KV node/);
     await expect(verifyItemProof(hex(proof), 'a1', undefined)).resolves.toBe(dataRoot);
   });
 

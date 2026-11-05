@@ -50,6 +50,7 @@ import {
   pathEqual,
   pathLabel,
   provenEntry,
+  provenItemPayload,
   provenRaw,
   requireValueBinds,
 } from './binding';
@@ -166,10 +167,14 @@ export async function verifyQueryProof(
  * Beyond computing the root, this enforces that the proof actually contains
  * the requested `key` at the given `path` — rejecting proofs that are
  * internally valid but prove a different (key, path) within the same state
- * tree — and, when `value` is supplied (including JSON `null`), that the proven
- * payload binds to it: JSON values bind by structural equality with number
- * fidelity enforced (see {@link jsonDeepEqual}); a non-JSON stored Item binds
- * by exact bytes (pass a `Uint8Array` as `value`). Pass `undefined` to skip
+ * tree — and, when `value` is supplied (including JSON `null`), that the key
+ * is proven as the `KV` node holding an Item that grovedb proves a stored
+ * value in, and that the Item's payload binds to `value`: JSON values bind by
+ * structural equality with number fidelity enforced (see
+ * {@link jsonDeepEqual}); a non-JSON stored Item binds by exact bytes (pass a
+ * `Uint8Array` as `value`). A reference at the key (a `KVRefValueHash` node,
+ * whose value is the element it points to) is not the key's value, and is
+ * refused, as is an Item given as another node. Pass `undefined` to skip
  * value binding and check only the (key, path) and root. A response field
  * that is missing reads as `undefined` too: to bind a value an API returned,
  * refuse an answer that carries none before calling this (as `getData`
@@ -197,7 +202,7 @@ export async function verifyItemProof(
     throw new Error(`Proof does not contain key "${key}" at path [${pathLabel(path)}]`);
   }
 
-  if (value !== undefined) requireValueBinds(key, provenRaw(match), value);
+  if (value !== undefined) requireValueBinds(key, provenItemPayload(key, match), value);
 
   const computed = hashToHex(verification.rootHash);
   enforceExpectedRoot(computed, options?.expectedRootHash);

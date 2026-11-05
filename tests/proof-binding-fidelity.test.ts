@@ -30,7 +30,7 @@ import { isExactJsonNumber, firstInexactNumber } from '../src/proof/shared';
 
 const mockVerify = verifyGroveDBProof as jest.MockedFunction<typeof verifyGroveDBProof>;
 
-/** A verification result with one proven Item whose bytes are `text`. */
+/** A verification result with one proven Item whose bytes are `text`, as grovedb proves one (a KV node). */
 function provenItem(text: string, key = 'k', pathSegments: string[] = []): GroveDBVerificationResult {
   const enc = new TextEncoder();
   return {
@@ -41,6 +41,7 @@ function provenItem(text: string, key = 'k', pathSegments: string[] = []): Grove
         key: enc.encode(key),
         value: enc.encode(text),
         element: { type: 'Item', value: enc.encode(text), flags: null } as any,
+        nodeType: 'KV',
       },
     ],
   } as GroveDBVerificationResult;
@@ -56,6 +57,7 @@ function provenRawItem(bytes: Uint8Array, key = 'k'): GroveDBVerificationResult 
         key: new TextEncoder().encode(key),
         value: bytes,
         element: { type: 'Item', value: bytes, flags: null } as any,
+        nodeType: 'KV',
       },
     ],
   } as GroveDBVerificationResult;

@@ -100,6 +100,24 @@ export function provenEntry(
 }
 
 /**
+ * Require the proven entry `entry` at `key` to be the `KV` node holding an
+ * Item that grovedb proves a stored value in, and return the Item's payload.
+ * A reference at the key is proven as a `KVRefValueHash` node whose value is
+ * the element it points to, not one stored at the key; an Item given as
+ * another node is not how grovedb proves one.
+ */
+export function provenItemPayload(key: string, entry: ProvenResult): Uint8Array {
+  if (entry.nodeType !== 'KV' || entry.element?.type !== 'Item') {
+    throw new Error(
+      `The proof gives key "${key}" as a ${entry.nodeType ?? 'value'} node holding ` +
+        `${entry.element?.type ?? 'no element'}, not the KV node holding an Item that grovedb ` +
+        'proves a stored value in',
+    );
+  }
+  return entry.element.value;
+}
+
+/**
  * Require `value` to bind to `raw`, the bytes proven at `key` (`null`: no
  * value is proven there). Throws when it doesn't, or when the proven bytes
  * hold a number JavaScript can't carry exactly.
@@ -152,14 +170,7 @@ export function verifySubgroveItem(
       `Proof does not contain key "${key}" at path [${pathLabel(subgroveDataPath(subgroveId))}]`,
     );
   }
-  if (entry.nodeType !== 'KV' || entry.element?.type !== 'Item') {
-    throw new Error(
-      `The proof gives key "${key}" as a ${entry.nodeType ?? 'value'} node holding ` +
-        `${entry.element?.type ?? 'no element'}, not the KV node holding an Item that grovedb ` +
-        'proves a stored value in',
-    );
-  }
-  requireValueBinds(key, entry.element.value, value);
+  requireValueBinds(key, provenItemPayload(key, entry), value);
   const computed = hashToHex(verification.rootHash);
   enforceExpectedRoot(computed, expectedRootHash);
   return computed;

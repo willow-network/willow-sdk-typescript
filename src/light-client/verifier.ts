@@ -339,8 +339,10 @@ export class ProofVerifier {
   /**
    * Verify that `key` holds the Item `value` (its bytes) at `path`: the proof
    * verifies to `trustedRoot`, descends to `path` with no lower layer off it,
-   * and proves at `path` an Item at `key` whose bytes are `value`. False for
-   * any other proof, including a valid one of another key or path.
+   * and proves at `path` an Item at `key` whose bytes are `value`, as the
+   * `KV` node grovedb proves an Item in. False for any other proof,
+   * including a valid one of another key or path, and one that gives a
+   * reference at the key (whose value is the element it points to).
    *
    * @param path - The GroveDB path of the subtree holding `key` (e.g. the
    *   UTF-8 bytes of `["subgroves", id, "data"]`). Required: a key is only
@@ -357,10 +359,14 @@ export class ProofVerifier {
     try {
       const verification = verifyGroveDBProof(proofBytes, { expectedPath: path });
       if (!this.arraysEqual(verification.rootHash, trustedRoot)) return false;
+      // The value is the payload of the Item grovedb proves at the key, as a
+      // KV node: a reference (KVRefValueHash) carries the element it points
+      // to, which is not stored at the key.
       return verification.results.some(
         (r) =>
           this.pathEqual(r.path, path) &&
           this.arraysEqual(r.key, key) &&
+          r.nodeType === 'KV' &&
           r.element?.type === 'Item' &&
           this.arraysEqual(r.element.value, value)
       );

@@ -86,7 +86,7 @@ describe('GroveDB envelope descent', () => {
     const parent = f.path.slice(0, 3);
     expect(await verifyItemProof(f.proof_dropped_layer, f.path[3], undefined, parent)).toBe(f.root);
     await expect(verifyItemProof(f.proof_dropped_layer, f.path[3], { a: 1 }, parent)).rejects.toThrow(
-      /does not match the returned data/,
+      /not the KV node holding an Item/,
     );
     await expect(verifyQueryProof(f.proof_dropped_layer, [{ a: 1 }], { path: parent })).rejects.toThrow(
       /not committed by the proof/,

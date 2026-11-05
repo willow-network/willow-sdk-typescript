@@ -321,7 +321,9 @@ package adheres to [Semantic Versioning](https://semver.org/).
   Such an answer, with the key's genuine proof, was checked for the key
   alone: `get` returned `undefined`, and `getMultiple` reported the key
   absent without an absence proof.
-- `get`, `getData`, and `getMultiple` take a key's value only from the `KV`
+- `get`, `getData`, `getMultiple`, `verifyItemProof` (and
+  `GroveDBProofVerifier.verifyItemProof`) given a value, and
+  `ProofVerifier.verifyInclusionProof` take a key's value only from the `KV`
   node holding an Item that grovedb proves a stored value in. A reference
   at the key (a `KVRefValueHash` node, whose value is the element it points
   to) was taken as the key's value; it, and an Item given as another node,
