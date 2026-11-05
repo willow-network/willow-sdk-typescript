@@ -113,11 +113,12 @@ export interface WillowConfig {
 }
 
 /**
- * Which backend should serve a query.
+ * Which backend should serve a SQL or GraphQL query. The SDK verifies
+ * nothing on this path, whichever serves it: the result is the backend's
+ * answer, and a proof it carries is not checked.
  *
- * - `'validator'`: consensus-verified chain-tip. Every row comes with
- *   Merkle proofs. Fails fast for `VerifyOnly` subgroves (validator
- *   never stored the data).
+ * - `'validator'`: the validator's API, at the chain tip. Fails fast for
+ *   `VerifyOnly` subgroves (validator never stored the data).
  * - `'indexer'`: full history + analytics. Trust is sampling/dispute based.
  *   Fails if no indexer serves the subgrove or all reachable ones fail.
  * - `'auto'` (default): indexer if any serves this subgrove, otherwise

@@ -10,7 +10,9 @@
 // 5. Either side sends `complete` to end the subscription
 //
 // The `source` option picks which server:
-//   - `'validator'` (default): consensus-verified chain-tip events
+//   - `'validator'` (default): the validator's API's chain-tip events
+//
+// The SDK verifies no event, from either source: each is the server's answer.
 //   - `'indexer'`: the indexer's own event bus (e.g. `IndexedDataStored`
 //     when it submits a new chain-tip block). Useful for subgroves where
 //     the validator's retention is too short (or `VerifyOnly`) to see the
@@ -79,9 +81,9 @@ export interface SubscribeOptions {
   /**
    * Which server to open the WebSocket against.
    *
-   * - `'validator'` (default): `{apiUrl}/graphql/ws`. Consensus-verified
-   *   chain-tip events. Use this for real-time data on subgroves that
-   *   have chain-tip retention.
+   * - `'validator'` (default): `{apiUrl}/graphql/ws`. Chain-tip events
+   *   (unverified: the SDK checks no event, from either source). Use this
+   *   for real-time data on subgroves that have chain-tip retention.
    * - `'indexer'`: picks the best-performing indexer for the subgrove via
    *   discovery (or the configured `indexerUrl` override) and connects
    *   to its `/graphql/ws`. The indexer fires `IndexedDataStored` events

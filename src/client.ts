@@ -439,10 +439,13 @@ export class WillowClient {
   }
 
   /**
-   * Execute a SQL query against a subgrove.
+   * Execute a SQL query against a subgrove. The result is unverified: the SDK
+   * checks nothing on this path, from a validator or an indexer, and a
+   * `proof` the response carries (`includeProof`) is returned as the API sent
+   * it, not checked.
    *
-   * Routes to an indexer (history + analytics) or the validator (chain-tip,
-   * consensus-verified) based on `options.source`. See `QuerySource` in
+   * Routes to an indexer (history + analytics) or the validator's API
+   * (chain-tip data) based on `options.source`. See `QuerySource` in
    * `./types` for details.
    */
   async sqlQuery(
@@ -454,10 +457,13 @@ export class WillowClient {
   }
 
   /**
-   * Execute a GraphQL query against a subgrove.
+   * Execute a GraphQL query against a subgrove. The result is unverified: the
+   * SDK checks nothing on this path, from a validator or an indexer, and a
+   * proof the response carries (`includeProof`) is returned as the API sent
+   * it, not checked.
    *
-   * Routes to an indexer (history + analytics) or the validator (chain-tip,
-   * consensus-verified) based on `options.source`. See `QuerySource` in
+   * Routes to an indexer (history + analytics) or the validator's API
+   * (chain-tip data) based on `options.source`. See `QuerySource` in
    * `./types` for details.
    */
   async graphqlQuery(

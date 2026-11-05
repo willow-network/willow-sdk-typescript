@@ -951,7 +951,9 @@ export class WillowData {
   }
 
   /**
-   * Execute a SQL query against a subgrove with optional Merkle proof.
+   * Execute a SQL query against a subgrove. The result is unverified: the SDK
+   * checks nothing on this path, and a `proof` the response carries
+   * (`options.includeProof`) is returned as the API sent it, not checked.
    *
    * Routes to the validator (chain-tip) or an indexer (full history) based
    * on `options.source`. Defaults to `'auto'`: prefers an indexer when one
@@ -981,11 +983,12 @@ export class WillowData {
   }
 
   /**
-   * Execute a GraphQL query against a subgrove.
+   * Execute a GraphQL query against a subgrove. The result is unverified: the
+   * SDK checks nothing on this path, and a proof the response carries
+   * (`options.includeProof`) is returned as the API sent it, not checked.
    *
-   * Routes to the validator (chain-tip, consensus-verified) or an indexer
-   * (full history, analytics-friendly) based on `options.source`. Defaults
-   * to `'auto'`.
+   * Routes to the validator (chain-tip) or an indexer (full history,
+   * analytics-friendly) based on `options.source`. Defaults to `'auto'`.
    *
    * @param subgroveId - Subgrove ID to query
    * @param query - GraphQL query string

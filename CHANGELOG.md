@@ -361,6 +361,11 @@ package adheres to [Semantic Versioning](https://semver.org/).
   which it never implemented, throws `UNSUPPORTED`.
 - `WillowClient.getRootHash()` is documented as the root the API reports,
   which the SDK does not verify.
+- `sqlQuery`, `graphqlQuery`, `QuerySource`, and GraphQL subscriptions are
+  documented as unverified: the SDK checks nothing on these paths, from a
+  validator or an indexer, including a proof a response carries
+  (`includeProof`). They were documented as consensus-verified, every row
+  with Merkle proofs.
 - `grovedb.deserializeElement` refuses trailing bytes.
 
 ### Removed

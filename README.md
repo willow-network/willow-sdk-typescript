@@ -913,8 +913,8 @@ try {
 | `delete(datasetId, key)` | Throws `UNSUPPORTED_OPERATION` |
 | `query(datasetId, query)` | Query, verified as the query's whole result (`QUERY_NOT_VERIFIABLE` or `QUERY_RESULT_NOT_VERIFIABLE` when it can't be) |
 | `queryUnverified(datasetId, query)` | Query without verification |
-| `sqlQuery(subgroveId, sql, options?)` | SQL query routed to indexer or validator |
-| `graphqlQuery(subgroveId, query, options?)` | GraphQL query routed to indexer or validator |
+| `sqlQuery(subgroveId, sql, options?)` | SQL query routed to indexer or validator (unverified: the SDK checks nothing, including a proof the response carries) |
+| `graphqlQuery(subgroveId, query, options?)` | GraphQL query routed to indexer or validator (unverified: the SDK checks nothing, including a proof the response carries) |
 | `getProof(datasetId, key)` | Get raw Merkle proof |
 | `getRootHash()` | The root the API reports at `/state/root-hash/verified` (not verified by the SDK) |
 | `getRootHashLocal()` | The API node's local root hash |
