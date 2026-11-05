@@ -213,7 +213,20 @@ const multiple = await collection.getMultiple(['key1', 'key2', 'key3']);
 `getMultiple` leaves out a key the API reports absent only when the API's
 proof for the key proves it absent; otherwise it throws. An answer that
 reports success but carries no value is refused (`PROOF_VERIFICATION_FAILED`):
-there is nothing to check against the proof.
+there is nothing to check against the proof. Each key is read and verified
+on its own, against the root of its own proof's height, so two keys may be
+verified at different heights; the result carries none of them (use
+`client.data.getVerifiedData` for one key's root and height).
+
+The result is an object with no prototype, each value an own property, so a
+key named `__proto__` or `constructor` reads as that key's value (or
+`undefined` when it is absent), never as one inherited. Test for a key with
+`key in result` or
+`Object.hasOwn(result, key)`. Copy it with spread (`{ ...result }`) or
+`Object.fromEntries`: `Object.assign({}, result)` and
+`copy[key] = result[key]` assign a key named `__proto__` through the copy's
+prototype setter, which sets the copy's prototype instead of copying the
+key.
 
 ### Query Data
 

@@ -643,7 +643,10 @@ export class WillowData {
    *
    * The result has no prototype: each key is an own property, so a key named
    * `__proto__` is returned as a key, and a key left out reads as
-   * `undefined` (`"toString" in result` is false).
+   * `undefined` (`"toString" in result` is false). Copy it with spread or
+   * `Object.fromEntries`: `Object.assign` and `copy[key] = result[key]` set
+   * the copy's prototype for a key named `__proto__`. Each key is verified
+   * at its own proof's height, which the result does not carry.
    */
   async getMultiple(
     datasetId: string,
