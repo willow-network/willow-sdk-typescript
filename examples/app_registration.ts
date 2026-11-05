@@ -159,12 +159,8 @@ async function main() {
   console.log('  - orders:   private order records');
   console.log('  - users:    public profiles, owner-managed');
   console.log();
-  console.log('Index types used:');
-  console.log('  - unique:   no duplicates (sku, order_id, username)');
-  console.log('  - hash:     fast equality (category, status, customer_did)');
-  console.log('  - range:    numeric comparisons (price, rating, date)');
-  console.log('  - fulltext: text search (name + description)');
-  console.log('  - compound: multi-field (category + price)');
+  console.log('The schemas declare fields and required fields only: the chain');
+  console.log('refuses a schema that declares indexes (SCHEMA_INDEXES_UNSUPPORTED).');
   console.log();
   console.log('Subgrove registration example complete!');
 }
