@@ -73,22 +73,31 @@ client.auth.setIdentity(
 );
 
 // 3. Register the DID by a RegisterDid transaction, signed by its own key.
-//    The DID must already hold the registration fee (see below).
-await client.registerDid(didDocument);
+//    The DID must already hold the registration fee (see below). Wait for
+//    it to land before writing with it.
+const registered = await client.registerDid(didDocument);
+await client.consensus.waitForTransaction(registered.txHash!);
 
-// 4. Store data (requires the 'users' subgrove to exist — see below)
-await client.store('users', 'alice', {
-  name: 'Alice',
-  score: 100,
-});
+// 4. Store data (requires the 'users' subgrove to exist — see below), and
+//    wait for the write to land before reading it back. (`client.store`
+//    sends the same write but returns no transaction hash to wait on.)
+const stored = await client.consensus.storeData(
+  'users',
+  'alice',
+  { name: 'Alice', score: 100 },
+  didDocument.id,
+  client.auth.transactionSigner(),
+);
+if (!stored.success) throw new Error(`store did not go through: ${stored.errorMessage}`);
+await client.consensus.waitForTransaction(stored.txHash!);
 
 // 5. Retrieve data (automatically verified!)
 const data = await client.get('users', 'alice');
 console.log(data);
 ```
 
-> **Prerequisite:** `client.store()` writes into a *subgrove* that must already
-> be registered on-chain and funded — step 4 fails otherwise. See
+> **Prerequisite:** step 4 writes into a *subgrove* that must already be
+> registered on-chain and funded — it fails otherwise. See
 > [Register Subgrove](#register-subgrove) and `examples/app_registration.ts`
 > for registering one, or use a devnet with pre-registered subgroves.
 > Registration itself costs tokens, so the signing DID needs a funded balance.
