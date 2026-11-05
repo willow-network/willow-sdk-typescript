@@ -268,7 +268,14 @@ JavaScript writes verifies, at any magnitude, including results such as
 (`1000000000000000000`). A document holding a number whose text parses to a
 double JavaScript writes as another value, such as `9007199254740993` (read
 as 2^53, written `9007199254740992`) or `0.33333333333333331`, does not
-verify; store such values as strings.
+verify, in `get` or in any query page that selects it, whichever writer
+stored it; store such values as strings.
+
+A number that verifies still reads back as a double. `18446744073709552000`,
+the text JavaScript writes for 2^64, verifies, and reads back as 2^64, whose
+exact value is `18446744073709551616`: `BigInt(value)` is not the stored
+digits. Keep amounts, and any other integer that must stay exact, as strings
+(`{ amount: '18446744073709551615' }`).
 
 A query the API does not apply as asked throws `QUERY_NOT_VERIFIABLE` before
 anything is sent: a filter on more than one field (the API applies only one),
