@@ -1178,10 +1178,33 @@ export function registerDidSignMessage(tx: RegisterDidTx): string {
 }
 
 /**
+ * Check a SubmitAnchor's text fields as every signed text field is checked
+ * (a string, with no lone UTF-16 surrogate, which has no UTF-8 form): the
+ * anchor hash it is signed over, and the fields the body carries and the
+ * chain hashes into it.
+ */
+function submitAnchorText(tx: SubmitAnchorTx): void {
+  text('did', tx.did);
+  text('anchorId', tx.anchorId);
+  text('merkleRoot', tx.merkleRoot);
+  if (!Array.isArray(tx.receiptHashes)) throw invalid('receiptHashes must be an array of strings');
+  tx.receiptHashes.forEach((hash, i) => text(`receiptHashes[${i}]`, hash));
+  text('timestamp', tx.timestamp);
+  text('previousAnchorHash', tx.previousAnchorHash);
+  text('anchorHash', tx.anchorHash);
+}
+
+/**
  * Create the canonical message a transaction is signed over.
  *
  * The byte sequence here must match the format the chain's signature
  * validator re-derives — any drift causes the signature check to fail.
+ *
+ * @throws WillowError (`INVALID_SIGNED_FIELD`) for a Transfer,
+ *   DeregisterSubgrove, or SubmitAnchor text field that is not a string or
+ *   holds a lone UTF-16 surrogate, which has no UTF-8 form (the API refuses
+ *   the body); each other kind's message function documents its own
+ *   refusals.
  */
 export function createSignMessage(txType: string, transaction: Transaction): string {
   switch (txType) {
@@ -1205,8 +1228,11 @@ export function createSignMessage(txType: string, transaction: Transaction): str
 
     case 'Transfer': {
       const tx = transaction as TransferTx;
+      const from = text('fromDid', tx.fromDid);
+      const to = text('toDid', tx.toDid);
       const amount = uint('amount', tx.amount, 128);
-      return `Transfer\nFrom: ${tx.fromDid}\nTo: ${tx.toDid}\nAmount: ${amount}\nMemo: ${tx.memo || ''}\nNonce: ${tx.nonce || 0}`;
+      const memo = text('memo', tx.memo || '');
+      return `Transfer\nFrom: ${from}\nTo: ${to}\nAmount: ${amount}\nMemo: ${memo}\nNonce: ${tx.nonce || 0}`;
     }
 
     case 'DataStore':
@@ -1220,13 +1246,16 @@ export function createSignMessage(txType: string, transaction: Transaction): str
 
     case 'DeregisterSubgrove': {
       const tx = transaction as DeregisterSubgroveTx;
-      return `DeregisterSubgrove:${tx.subgroveId}:${tx.ownerDid}:${tx.nonce || 0}`;
+      const subgrove = text('subgroveId', tx.subgroveId);
+      const owner = text('ownerDid', tx.ownerDid);
+      return `DeregisterSubgrove:${subgrove}:${owner}:${tx.nonce || 0}`;
     }
 
     case 'SubmitAnchor': {
       // Domain-tagged so a SubmitAnchor signature can't be replayed
       // against another tx type.
       const tx = transaction as SubmitAnchorTx;
+      submitAnchorText(tx);
       return `SubmitAnchor\n${tx.anchorHash}\n${tx.nonce || 0}`;
     }
 

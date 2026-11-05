@@ -7,7 +7,7 @@
  */
 import { NonceAllocator } from '../src/consensus/nonces';
 import { ConsensusClient } from '../src/consensus/client';
-import { TransactionSubmitError } from '../src/consensus/types';
+import { TransactionSubmitError, createSignMessage } from '../src/consensus/types';
 import { WillowClient } from '../src/client';
 import { FileOperations } from '../src/files';
 import { WillowAuth } from '../src/auth';
@@ -422,5 +422,81 @@ describe('a StoreData value must be a JSON object', () => {
     // No nonce was taken: an object takes base + 1.
     await c.storeData('sg', 'k', { a: [1, null] }, DID, SIGNER);
     expect(sent.map(nonceOf)).toEqual([5]);
+  });
+});
+
+describe('Transfer, DeregisterSubgrove, and SubmitAnchor text fields are checked like the others', () => {
+  const BAD = 'x\ud800';
+  const ANCHOR = {
+    did: DID,
+    anchorId: 'anchor-1',
+    sequenceRange: [1, 1] as [number, number],
+    receiptHashes: ['ab'.repeat(32)],
+    timestamp: 't-1',
+    previousAnchorHash: '',
+    isGenesis: true,
+  };
+
+  it('a lone surrogate is refused before a nonce is taken or anything is sent', async () => {
+    const sent = stubChain(4, () => accepted());
+    const allocator = new NonceAllocator();
+    const c = new ConsensusClient({ apiUrl: 'http://api.test', nonceAllocator: allocator });
+    const client = new WillowClient({ apiUrl: 'http://api.test', nonceAllocator: allocator });
+    client.auth.setIdentity(DID, SEED, KEY_ID, 'Ed25519');
+    const writes: Array<() => Promise<unknown>> = [
+      () => c.transfer(DID, `did:willow:bob${BAD}`, 1n, SIGNER),
+      () => c.transfer(DID, 'did:willow:bob', 1n, SIGNER, `memo ${BAD}`),
+      () => c.deregisterSubgrove(`sg${BAD}`, DID, SIGNER),
+      () => client.deregisterSubgrove(`sg${BAD}`),
+      () => c.submitAnchor({ ...ANCHOR, anchorId: BAD }, SIGNER),
+      () => c.submitAnchor({ ...ANCHOR, timestamp: BAD }, SIGNER),
+      () => c.submitAnchor({ ...ANCHOR, previousAnchorHash: BAD }, SIGNER),
+      () => c.submitAnchor({ ...ANCHOR, receiptHashes: ['ab'.repeat(32), BAD] }, SIGNER),
+      () => c.submitAnchor({ ...ANCHOR, merkleRoot: BAD }, SIGNER),
+    ];
+    for (const write of writes) {
+      await expect(write()).rejects.toMatchObject({
+        code: 'INVALID_SIGNED_FIELD',
+        message: expect.stringMatching(/surrogate/),
+      });
+    }
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(0);
+
+    // A surrogate pair is one character, and fine; no nonce was taken: the next write takes base + 1.
+    await c.transfer(DID, 'did:willow:bob', 1n, SIGNER, 'memo 😀');
+    expect(sent.map(nonceOf)).toEqual([5]);
+  });
+
+  it('createSignMessage refuses them too', () => {
+    const transfer = { fromDid: DID, toDid: 'did:willow:bob', amount: 1, nonce: 1 };
+    const anchor = {
+      ...ANCHOR,
+      merkleRoot: 'ab'.repeat(32),
+      count: 1,
+      anchorHash: 'cd'.repeat(32),
+      nonce: 1,
+    };
+    const refused: Array<[string, Record<string, unknown>]> = [
+      ['Transfer', { ...transfer, fromDid: BAD }],
+      ['Transfer', { ...transfer, toDid: BAD }],
+      ['Transfer', { ...transfer, memo: BAD }],
+      ['DeregisterSubgrove', { subgroveId: 'sg', ownerDid: BAD, nonce: 1 }],
+      ['DeregisterSubgrove', { subgroveId: BAD, ownerDid: DID, nonce: 1 }],
+      ['SubmitAnchor', { ...anchor, did: BAD }],
+      ['SubmitAnchor', { ...anchor, anchorHash: BAD }],
+    ];
+    for (const [kind, tx] of refused) {
+      expect(() => createSignMessage(kind, tx as any)).toThrow(
+        expect.objectContaining({ code: 'INVALID_SIGNED_FIELD' }),
+      );
+    }
+    expect(createSignMessage('Transfer', transfer)).toBe(
+      `Transfer\nFrom: ${DID}\nTo: did:willow:bob\nAmount: 1\nMemo: \nNonce: 1`,
+    );
+    expect(createSignMessage('DeregisterSubgrove', { subgroveId: 'sg', ownerDid: DID, nonce: 2 })).toBe(
+      `DeregisterSubgrove:sg:${DID}:2`,
+    );
+    expect(createSignMessage('SubmitAnchor', anchor)).toBe(`SubmitAnchor\n${'cd'.repeat(32)}\n1`);
   });
 });

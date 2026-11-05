@@ -238,6 +238,13 @@ package adheres to [Semantic Versioning](https://semver.org/).
   refused (`INVALID_SCHEMA`). `JSON.parse` takes each.
 - `ConsensusClient` checks a write's fields before it reads or takes a
   nonce.
+- A Transfer's `fromDid`, `toDid`, or `memo`, a DeregisterSubgrove's
+  subgrove id or owner DID, and a SubmitAnchor's DID, anchor id, Merkle
+  root, receipt hashes, timestamp, previous anchor hash, or anchor hash
+  that is not a string or holds a lone UTF-16 surrogate is refused
+  (`INVALID_SIGNED_FIELD`) before a nonce is taken, as every other signed
+  text field is. A lone surrogate has no UTF-8 form, and the API refused the
+  body.
 - A StoreData whose data is not the JSON text of an object is refused before
   it is signed (`INVALID_SIGNED_FIELD`), and `client.store` and
   `consensus.storeData` refuse a value that is not a JSON object before
