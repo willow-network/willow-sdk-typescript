@@ -256,7 +256,11 @@ export class LightClient {
   }
 
   /**
-   * Verify a GroveDB query proof against verified headers
+   * Verify a GroveDB query proof against verified headers. A proof made at
+   * height H is of the state after block H, whose app hash is in the header
+   * of block H+1, so it is checked against that header. Like
+   * `ProofVerifier.verifyQueryProof`, it checks membership only: each
+   * `queryResult` entry is an Item the proof proves.
    */
   async verifyQueryProof(
     proof: GroveDBQueryProof,
@@ -264,12 +268,12 @@ export class LightClient {
   ): Promise<VerificationResult> {
     const verifyHeight = height || proof.height;
 
-    // Get trusted header for the height
-    const trustedHeader = await this.getHeaderByHeight(verifyHeight);
+    // The state after block H is committed in block H+1's header.
+    const trustedHeader = await this.getHeaderByHeight(verifyHeight + 1);
     if (!trustedHeader) {
       return {
         success: false,
-        error: `No verified header available for height ${verifyHeight}`,
+        error: `No verified header available for height ${verifyHeight + 1}, which commits the state after ${verifyHeight}`,
         height: verifyHeight
       };
     }
@@ -495,6 +499,43 @@ export class LightClient {
    */
   async getLatestHeight(): Promise<number | undefined> {
     return this.latestHeight;
+  }
+
+  /**
+   * The chain's latest height as the configured endpoints report it
+   * (CometBFT `/status`): the highest height that a majority of the
+   * endpoints that answer, and at least `minValidatorsForConsensus` of them,
+   * have reached (the lower median of their heights), or the latest header
+   * this client holds if that is higher. An endpoint reporting a height far
+   * above or below the others' moves it only with a majority. It trusts the
+   * endpoints as the root-hash path does. Verified reads refuse a proof
+   * whose height is far from it, since the API chooses the height it proves
+   * at.
+   *
+   * @throws LightClientError when fewer than `minValidatorsForConsensus`
+   *   endpoints answer.
+   */
+  async getLatestChainHeight(): Promise<number> {
+    const timeoutMs = this.config.requestTimeoutSecs! * 1000;
+    const answers = await Promise.all(
+      this.config.validatorEndpoints.map((endpoint) =>
+        this.fetchStatus(endpoint, timeoutMs).catch(() => null)
+      )
+    );
+    const heights = answers
+      .map((status) => status?.latestHeight)
+      .filter((h): h is number => Number.isSafeInteger(h) && h! > 0)
+      .sort((a, b) => b - a);
+    const needed = Math.max(1, this.config.minValidatorsForConsensus ?? 1);
+    if (heights.length < needed) {
+      throw new LightClientError(
+        `Only ${heights.length} endpoints reported the latest height; ${needed} are needed`
+      );
+    }
+    // Heights run highest first: the k-th has been reached by k endpoints.
+    const majority = Math.floor(heights.length / 2) + 1;
+    const reached = heights[Math.max(needed, majority) - 1];
+    return this.latestHeight !== undefined && this.latestHeight > reached ? this.latestHeight : reached;
   }
 
   /**

@@ -4,6 +4,7 @@ import { ProofVerificationOptions } from '../proof';
 import type { WillowLogger } from '../internal/logger';
 import type { TrustThreshold } from '../light-client/types';
 import type { WebSocketConstructor } from '../subscriptions';
+import type { NonceAllocator } from '../consensus/nonces';
 
 /**
  * Light-client settings used when the SDK auto-creates a light client for
@@ -35,6 +36,13 @@ export interface WillowLightClientOptions {
   maxClockDriftSecs?: number;
   /** Per-request timeout in seconds. Default: 30. */
   requestTimeoutSecs?: number;
+  /**
+   * How many blocks a verified read's proof may be behind the chain's latest
+   * height (as the endpoints report it): the API chooses the height it
+   * proves at, so a proof further behind the latest, or more than one block
+   * ahead of it, is refused (`PROOF_HEIGHT_OUT_OF_RANGE`). Default: 20.
+   */
+  maxProofLagBlocks?: number;
 }
 
 export interface WillowConfig {
@@ -92,14 +100,25 @@ export interface WillowConfig {
    * pass an implementation such as the `ws` package's `WebSocket` class.
    */
   webSocket?: WebSocketConstructor;
+  /**
+   * Hands out transaction nonces per DID, so writes in flight together get
+   * distinct ones. Defaults to `NonceAllocator.shared(apiUrl)`, which every
+   * client of that API URL in the process shares for the life of the
+   * process, and which never lowers the nonce base it has seen for a DID.
+   * Pass `new NonceAllocator()` for a client that must not share that state:
+   * a test, or a process that talks to a chain that was reset, or to more
+   * than one chain, at one API URL.
+   */
+  nonceAllocator?: NonceAllocator;
 }
 
 /**
- * Which backend should serve a query.
+ * Which backend should serve a SQL or GraphQL query. The SDK verifies
+ * nothing on this path, whichever serves it: the result is the backend's
+ * answer, and a proof it carries is not checked.
  *
- * - `'validator'`: consensus-verified chain-tip. Every row comes with
- *   Merkle proofs. Fails fast for `VerifyOnly` subgroves (validator
- *   never stored the data).
+ * - `'validator'`: the validator's API, at the chain tip. Fails fast for
+ *   `VerifyOnly` subgroves (validator never stored the data).
  * - `'indexer'`: full history + analytics. Trust is sampling/dispute based.
  *   Fails if no indexer serves the subgrove or all reachable ones fail.
  * - `'auto'` (default): indexer if any serves this subgrove, otherwise
@@ -157,9 +176,20 @@ export interface DidDocument {
 }
 
 // Dataset Types
+
+/** A field type of the chain's schema, as the schema writes it. */
+export type SchemaFieldType = 'string' | 'number' | 'boolean' | 'array' | 'object' | 'bytes';
+
+/** A field's type, with the SDK's flags; sent as its `type`. */
 export interface FieldType {
-  type: 'string' | 'number' | 'boolean' | 'array' | 'object' | 'bytes';
+  type: SchemaFieldType;
+  /**
+   * @deprecated The chain's schema has no per-field index, and a data or
+   * file subgrove's schema can't declare indexes: the SDK refuses `true`
+   * (`SCHEMA_INDEXES_UNSUPPORTED`).
+   */
   indexed?: boolean;
+  /** `true` adds the field to the schema's `required_fields`. */
   required?: boolean;
 }
 
@@ -170,9 +200,25 @@ export interface IndexDefinition {
   type?: 'unique' | 'hash' | 'range' | 'fulltext' | 'compound';
 }
 
+/**
+ * A data or file subgrove's schema. The SDK sends it in the chain's shape
+ * (see `serializeSchema`): `{"version":1,"fields":{"name":"string"},
+ * "indexes":[],"required_fields":["name"]}`.
+ */
 export interface SchemaDefinition {
+  /** u32. */
   version: number;
-  fields: Record<string, FieldType>;
+  /**
+   * Each field's type: the chain's own form (`name: 'string'`) or a
+   * {@link FieldType} (`name: { type: 'string', required: true }`). The
+   * SDK refuses a type the chain has none of.
+   */
+  fields: Record<string, SchemaFieldType | FieldType>;
+  /**
+   * The chain refuses a DataStorage or FileStorage registration whose schema
+   * declares indexes, and the SDK refuses to sign one: leave this out or
+   * empty.
+   */
   indexes?: IndexDefinition[];
   required_fields?: string[];
 }
@@ -251,7 +297,22 @@ export interface QueryResponse {
   offset?: number;
   limit?: number;
   proof?: string;
-  verifiedRootHash?: string; // Added when proof is successfully verified
+  /** The root the result was verified against (`client.query` sets it). */
+  verifiedRootHash?: string;
+  /**
+   * The block height whose state the result was verified against: the state
+   * after that block (`client.query` sets it).
+   */
+  verifiedHeight?: number;
+}
+
+/** A key's value, with the root and block height it was verified against. */
+export interface VerifiedData {
+  data: DataRecord;
+  /** The root the value's proof was verified against (hex). */
+  rootHash: string;
+  /** The block height whose state the proof is of: the state after that block. */
+  height: number;
 }
 
 // Token Types

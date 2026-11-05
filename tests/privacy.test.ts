@@ -2,6 +2,7 @@ import { PrivacyOperations, EncryptedKeyGrant, CommitmentFrequency } from '../sr
 import { WillowAuth, signEd25519 } from '../src/auth';
 import { WillowError } from '../src/types';
 import { hexToBytes } from '../src/internal/bytes';
+import { NonceAllocator } from '../src/consensus/nonces';
 
 /** The wire signature is the byte-array form of the hex signEd25519 output. */
 function sigArray(message: string): number[] {
@@ -40,7 +41,7 @@ function txRejected(log: string) {
 function makePrivacy(withIdentity = true) {
   const auth = new WillowAuth(API_URL);
   if (withIdentity) auth.setIdentity(DID, PRIVATE_KEY, KEY_ID);
-  return new PrivacyOperations(API_URL, auth, PRIVATE_KEY, KEY_ID);
+  return new PrivacyOperations(API_URL, auth, PRIVATE_KEY, KEY_ID, undefined, new NonceAllocator());
 }
 
 const grant: EncryptedKeyGrant = {
@@ -52,6 +53,17 @@ const grant: EncryptedKeyGrant = {
   granted_by: DID,
   granted_at: 1700000000,
 };
+
+/** The lines `grant` is signed under in a grant or a rotation. */
+const GRANT_LINES = [
+  'Grantee: did:willow:reader',
+  'GranteeKey: did:willow:reader#key-1',
+  'KeyEpoch: 1',
+  'EphemeralKey: 010203',
+  'EncryptedKey: 040506',
+  `GrantedBy: ${DID}`,
+  'GrantedAt: 1700000000',
+];
 
 beforeEach(() => jest.clearAllMocks());
 
@@ -96,8 +108,17 @@ describe('PrivacyOperations — write operations broadcast through /tx/submit', 
     // signature is an array of numbers (Rust Vec<u8>), never a hex string.
     expect(Array.isArray(tx.signature)).toBe(true);
     expect(tx.signature.every((b: number) => Number.isInteger(b) && b >= 0 && b <= 255)).toBe(true);
+    // Signed over every field of the grant and the nonce it carries.
     expect(tx.signature).toEqual(
-      sigArray(`GrantSubgroveKey:private-data:${grant.grantee_did}:${DID}:5`),
+      sigArray(
+        [
+          'GrantSubgroveKey',
+          'Subgrove: private-data',
+          `Sender: ${DID}`,
+          ...GRANT_LINES,
+          'Nonce: 5',
+        ].join('\n'),
+      ),
     );
   });
 
@@ -134,7 +155,19 @@ describe('PrivacyOperations — write operations broadcast through /tx/submit', 
     expect(tx.new_grants).toEqual([grant]);
     expect(tx.sender_did).toBe(DID);
     expect(Array.isArray(tx.signature)).toBe(true);
-    expect(tx.signature).toEqual(sigArray(`RotateSubgroveKey:private-data:2:${DID}:1`));
+    expect(tx.signature).toEqual(
+      sigArray(
+        [
+          'RotateSubgroveKey',
+          'Subgrove: private-data',
+          `Sender: ${DID}`,
+          'NewEpoch: 2',
+          'Grants: 1',
+          ...GRANT_LINES,
+          'Nonce: 1',
+        ].join('\n'),
+      ),
+    );
   });
 
   it('maps a consensus rejection (code !== 0) to BROADCAST_FAILED', async () => {

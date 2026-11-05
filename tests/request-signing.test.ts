@@ -302,19 +302,31 @@ describe('request signing: through the client', () => {
     expect(a.headers['X-Nonce']).not.toBe(b.headers['X-Nonce']);
   });
 
-  it('keeps writes on the older form, over the path alone', async () => {
-    mockFetch.mockImplementation(async () => jsonResponse({ success: true }));
+  it('keeps transaction submission on the older form, over the path alone', async () => {
+    mockFetch.mockImplementation(async () =>
+      jsonResponse({ success: true, data: { tx_hash: 'AB12', code: 0, log: '' } }),
+    );
     const client = vectorClient();
-    await client.data.storeData('sg', { k: 1 });
-    await client.data.updateData('sg', 'k', { v: 2 });
-    await client.data.deleteData('sg', 'k');
-    const reqs = received();
-    expect(reqs.map((r) => `${r.method} ${r.target}`)).toEqual([
-      'POST /data/sg',
-      'PUT /data/sg/k',
-      'DELETE /data/sg/k',
-    ]);
-    for (const req of reqs) expect(verifiesAsOlderForm(req)).toBe(true);
+    await client.files.delete('sg', 'k', {
+      ...client.auth.transactionSigner(),
+      ownerDid: client.auth.getDid()!,
+      nonce: 1,
+    });
+    const [req] = received();
+    expect(`${req.method} ${req.target}`).toBe('POST /tx/submit');
+    expect(verifiesAsOlderForm(req)).toBe(true);
+  });
+
+  it('sends no request for a data write, which the API serves only as a transaction', async () => {
+    const client = vectorClient();
+    for (const write of [
+      () => client.data.storeData('sg', { k: 1 }),
+      () => client.data.updateData('sg', 'k', { v: 2 }),
+      () => client.data.deleteData('sg', 'k'),
+    ]) {
+      await expect(write()).rejects.toMatchObject({ code: 'UNSUPPORTED_OPERATION' });
+    }
+    expect(received()).toHaveLength(0);
   });
 
   it('sends X-API-Key with signed reads', async () => {

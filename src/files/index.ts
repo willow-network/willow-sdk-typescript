@@ -15,13 +15,19 @@ import { bytesToHex, randomBytes } from '@noble/hashes/utils';
 import { xchacha20poly1305 } from '@noble/ciphers/chacha';
 import { WillowError } from '../types';
 import {
+  BroadcastResult,
   createTransactionWrapper,
   deleteFileManifestSignMessage,
   DeleteFileManifestTx,
   storeFileManifestSignMessage,
   StoreFileManifestTx,
+  Transaction,
+  TransactionSubmitError,
+  unregisterStorageNodeSignMessage,
+  UnregisterStorageNodeTx,
 } from '../consensus/types';
-import { submitTxToApi, SubmitTxOptions } from '../internal/tx';
+import type { NonceAllocator } from '../consensus/nonces';
+import { submitTxToApi } from '../internal/tx';
 import { RequestSigner, resolveRequest } from '../internal/http';
 
 const DEFAULT_CHUNK_SIZE = 262_144; // 256 KB
@@ -53,11 +59,38 @@ export interface FileSigningOptions {
   publicKeyId: string;
   signFunction: (message: string, privateKey: string) => string;
   /**
-   * The nonce the transaction carries. The signature covers it. A write the
+   * The nonce the transaction carries. The signature covers it. Leave it out
+   * and the write takes the lowest free nonce from the operations' nonce
+   * source (`WillowClient.files` uses `client.consensus`), as every other
+   * write does; or take one with `client.consensus.nextNonce(did)` and pass
+   * it. Either way, with a nonce source the outcome is recorded with its
+   * allocator: an accepted write holds the nonce, a refusal at CheckTx gives
+   * it back unless the refusal says it is held, used, or spent. A write the
    * chain refuses in its block after its signature and nonce verify still
-   * spends it; to retry, sign again under the next free nonce.
+   * spends it; to retry, sign again under a fresh nonce.
    */
-  nonce: number;
+  nonce?: number;
+}
+
+/**
+ * Where `FileOperations` takes and settles transaction nonces: a
+ * `ConsensusClient` (`WillowClient` passes its own).
+ */
+export interface FileNonceSource {
+  /** Take the next free nonce for `did`. */
+  nextNonce(did: string): Promise<number>;
+  /** The allocator the nonces come from, which the outcome is settled with. */
+  readonly nonces: NonceAllocator;
+}
+
+/** The chain refuses an unsigned transaction: refuse to send one. */
+function requireSigning(signing: FileSigningOptions | undefined, what: string): void {
+  if (!signing) {
+    throw new WillowError(
+      `${what} is a transaction the chain accepts only signed; pass signing options`,
+      'SIGNING_REQUIRED',
+    );
+  }
 }
 
 function concatBytes(chunks: Uint8Array[]): Uint8Array {
@@ -75,15 +108,21 @@ function concatBytes(chunks: Uint8Array[]): Uint8Array {
 export class FileOperations {
   private apiUrl: string;
   private getAuthHeaders: RequestSigner;
+  private nonceSource?: FileNonceSource;
 
   /**
    * @param getAuthHeaders - Makes the headers for each request to the API,
    *   given its method and its path and query exactly as sent
    *   (`WillowClient` passes `WillowAuth.getAuthHeaders`, the older form).
+   * @param nonceSource - Takes the nonce of a write whose signing options
+   *   leave it out, and records each write's outcome with its allocator
+   *   (`WillowClient` passes its `ConsensusClient`). Without one, every write
+   *   needs `signing.nonce`.
    */
-  constructor(apiUrl: string, getAuthHeaders: RequestSigner) {
+  constructor(apiUrl: string, getAuthHeaders: RequestSigner, nonceSource?: FileNonceSource) {
     this.apiUrl = apiUrl;
     this.getAuthHeaders = getAuthHeaders;
+    this.nonceSource = nonceSource;
   }
 
   /** GET a path on the API, signed over its path exactly as sent. */
@@ -97,9 +136,9 @@ export class FileOperations {
   /**
    * Upload a file to a FileStorage subgrove.
    *
-   * @param signing - When provided, the manifest transaction is properly signed.
-   *   Without signing options, the transaction is broadcast unsigned (requires
-   *   server-side signing or a permissive test environment).
+   * @param signing - Signs the manifest transaction. The chain refuses an
+   *   unsigned one, so without it this throws `SIGNING_REQUIRED` and sends
+   *   nothing.
    */
   async upload(
     subgroveId: string,
@@ -107,8 +146,9 @@ export class FileOperations {
     filename: string,
     data: Uint8Array,
     storageNodeEndpoint: string,
-    signing?: FileSigningOptions,
+    signing: FileSigningOptions,
   ): Promise<FileManifest> {
+    requireSigning(signing, 'A file manifest');
     const chunkSize = DEFAULT_CHUNK_SIZE;
     const chunks = chunkData(data, chunkSize);
     const chunkCount = chunks.length;
@@ -120,30 +160,27 @@ export class FileOperations {
 
     // Submit StoreFileManifestTx to consensus, signed over every field it
     // carries, nonce included.
-    const manifest: StoreFileManifestTx = {
-      subgroveId,
-      fileKey,
-      filename,
-      contentType: guessContentType(filename),
-      totalSize: data.length,
-      contentHash,
-      chunkCount,
-      chunkSize,
-      chunkMerkleRoot,
-      ownerDid: signing?.ownerDid ?? '',
-      publicKeyId: signing?.publicKeyId ?? '',
-      nonce: signing?.nonce ?? 0,
-    };
-    manifest.signature = signing
-      ? signing.signFunction(storeFileManifestSignMessage(manifest), signing.privateKey)
-      : '';
-    const txResult = await this.submitTx(createTransactionWrapper('StoreFileManifest', manifest));
-    if (!txResult.success) {
-      throw new WillowError(
-        `Failed to submit file manifest: ${txResult.rawLog || txResult.errorMessage || 'unknown error'}`,
-        'TX_SUBMIT_FAILED',
-      );
-    }
+    await this.submitSigned(
+      'Failed to submit file manifest',
+      signing.ownerDid,
+      signing,
+      'StoreFileManifest',
+      (nonce): StoreFileManifestTx => ({
+        subgroveId,
+        fileKey,
+        filename,
+        contentType: guessContentType(filename),
+        totalSize: data.length,
+        contentHash,
+        chunkCount,
+        chunkSize,
+        chunkMerkleRoot,
+        ownerDid: signing.ownerDid,
+        publicKeyId: signing.publicKeyId,
+        nonce,
+      }),
+      storeFileManifestSignMessage,
+    );
 
     // Upload chunks to storage node
     for (let i = 0; i < chunks.length; i++) {
@@ -249,72 +286,131 @@ export class FileOperations {
 
   /**
    * Delete a file (submits DeleteFileManifestTx to consensus).
+   *
+   * @param signing - Signs the transaction. The chain refuses an unsigned
+   *   one, so without it this throws `SIGNING_REQUIRED` and sends nothing.
    */
   async delete(
     subgroveId: string,
     fileKey: string,
-    signing?: FileSigningOptions,
+    signing: FileSigningOptions,
   ): Promise<void> {
-    const deleteTx: DeleteFileManifestTx = {
-      subgroveId,
-      fileKey,
-      ownerDid: signing?.ownerDid ?? '',
-      publicKeyId: signing?.publicKeyId ?? '',
-      nonce: signing?.nonce ?? 0,
-    };
-    deleteTx.signature = signing
-      ? signing.signFunction(deleteFileManifestSignMessage(deleteTx), signing.privateKey)
-      : '';
-    const result = await this.submitTx(createTransactionWrapper('DeleteFileManifest', deleteTx));
-    if (!result.success) {
-      throw new WillowError(
-        `Failed to delete file: ${result.rawLog || result.errorMessage || 'unknown error'}`,
-        'TX_SUBMIT_FAILED',
-      );
-    }
+    requireSigning(signing, 'A file delete');
+    await this.submitSigned(
+      'Failed to delete file',
+      signing.ownerDid,
+      signing,
+      'DeleteFileManifest',
+      (nonce): DeleteFileManifestTx => ({
+        subgroveId,
+        fileKey,
+        ownerDid: signing.ownerDid,
+        publicKeyId: signing.publicKeyId,
+        nonce,
+      }),
+      deleteFileManifestSignMessage,
+    );
   }
 
   /**
-   * Unregister a storage node (submits UnregisterStorageNode to consensus).
+   * Unregister a storage node (submits UnregisterStorageNode to consensus),
+   * signed over the node DID and the nonce
+   * ({@link unregisterStorageNodeSignMessage}). The signing identity is the
+   * node's DID; `signing.ownerDid` is not used. The chain refuses an
+   * unsigned removal, so without `signing` this throws `SIGNING_REQUIRED`
+   * and sends nothing.
    */
   async unregisterStorageNode(
     nodeDid: string,
-    signing?: FileSigningOptions,
+    signing: FileSigningOptions,
   ): Promise<void> {
-    const signMessage = `unregister_storage_node:${nodeDid}`;
-    const signature = signing
-      ? signing.signFunction(signMessage, signing.privateKey)
-      : '';
-    const tx = createTransactionWrapper('UnregisterStorageNode', {
+    requireSigning(signing, "A storage node's removal");
+    await this.submitSigned(
+      'Failed to unregister storage node',
       nodeDid,
-      signature,
-      publicKeyId: signing?.publicKeyId ?? '',
-      nonce: signing?.nonce ?? 0,
-    });
-    const result = await this.submitTx(tx);
-    if (!result.success) {
-      throw new WillowError(
-        `Failed to unregister storage node: ${result.rawLog || result.errorMessage || 'unknown error'}`,
-        'TX_SUBMIT_FAILED',
-      );
-    }
+      signing,
+      'UnregisterStorageNode',
+      (nonce): UnregisterStorageNodeTx => ({
+        nodeDid,
+        publicKeyId: signing.publicKeyId,
+        nonce,
+      }),
+      unregisterStorageNodeSignMessage,
+    );
   }
 
   /**
-   * Submit a tx through `/tx/submit`, folding transport-level failures
-   * (which `submitTxToApi` throws to enable retries elsewhere) into a
-   * `TX_SUBMIT_FAILED` WillowError so file callers see one error type.
+   * Sign a write under its nonce and submit it through `/tx/submit`.
+   *
+   * Its fields are checked (by building its message) before a nonce is
+   * taken. The nonce is `signing.nonce`, or else one taken from the nonce
+   * source for `did`. With a source, the nonce is held while the write is in
+   * flight and the outcome settled with its allocator: accepted holds it, a
+   * refusal at CheckTx gives it back unless it says the nonce is held, used,
+   * or spent, and a transport failure keeps it held (the write may yet land).
+   * A transport failure, a pending answer, or a refusal throws a `TX_SUBMIT_FAILED`
+   * {@link TransactionSubmitError} carrying the DID, the nonce, the signed
+   * body, and (for a refusal) the chain's answer, so the write can be posted
+   * again under the same nonce (`client.consensus.resubmit(error)`).
    */
-  private async submitTx(txWrapper: Record<string, unknown>) {
-    const opts: SubmitTxOptions = { headers: this.getAuthHeaders('POST', '/tx/submit') };
-    try {
-      return await submitTxToApi(this.apiUrl, txWrapper, opts);
-    } catch (error) {
+  private async submitSigned<T extends { signature?: string }>(
+    failure: string,
+    did: string,
+    signing: FileSigningOptions,
+    txType: string,
+    unsigned: (nonce: number) => T,
+    signMessage: (tx: T) => string,
+  ): Promise<BroadcastResult> {
+    signMessage(unsigned(signing.nonce ?? 0));
+    const source = this.nonceSource;
+    const taken = signing.nonce === undefined;
+    let nonce: number;
+    if (signing.nonce !== undefined) {
+      nonce = signing.nonce;
+    } else if (source) {
+      nonce = await source.nextNonce(did);
+    } else {
       throw new WillowError(
-        `Failed to submit transaction: ${error instanceof Error ? error.message : String(error)}`,
-        'TX_SUBMIT_FAILED',
+        'A file write needs a nonce: pass signing.nonce (take one with client.consensus.nextNonce), ' +
+          'or give FileOperations a nonce source (WillowClient.files has one)',
+        'NONCE_REQUIRED',
       );
     }
+
+    let transaction: Record<string, unknown>;
+    let headers: Record<string, string>;
+    try {
+      const tx = unsigned(nonce);
+      tx.signature = signing.signFunction(signMessage(tx), signing.privateKey);
+      transaction = createTransactionWrapper(txType, tx as unknown as Transaction);
+      headers = this.getAuthHeaders('POST', '/tx/submit');
+    } catch (error) {
+      if (taken) source!.nonces.release(did, nonce);
+      throw error;
+    }
+
+    source?.nonces.hold(did, nonce);
+    let result: BroadcastResult;
+    try {
+      result = await submitTxToApi(this.apiUrl, transaction, { headers });
+    } catch (error) {
+      throw new TransactionSubmitError(
+        `Failed to submit transaction: ${error instanceof Error ? error.message : String(error)}`,
+        'TX_SUBMIT_FAILED',
+        { did, nonce, transaction },
+      );
+    }
+    source?.nonces.settle(did, nonce, result);
+    if (!result.success) {
+      throw new TransactionSubmitError(
+        result.pending
+          ? `${failure}: ${result.errorMessage}`
+          : `${failure}: ${result.rawLog || result.errorMessage || 'unknown error'}`,
+        'TX_SUBMIT_FAILED',
+        { did, nonce, transaction, result },
+      );
+    }
+    return result;
   }
 }
 

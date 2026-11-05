@@ -12,6 +12,7 @@ import {
   verifySecp256k1,
 } from '../src/auth';
 import { ConsensusClient } from '../src/consensus/client';
+import { NonceAllocator } from '../src/consensus/nonces';
 import {
   createSignMessage,
   DataStoreTx,
@@ -204,7 +205,7 @@ describe('signed data and file write messages: refusals', () => {
   });
 
   it('signs a line break inside the data, which is hashed', () => {
-    const msg = storeDataSignMessage({ ...store, data: '"a\\nb\nc"' });
+    const msg = storeDataSignMessage({ ...store, data: '{"t":"a\\nb",\n"u":1}' });
     expect(msg.split('\n')).toHaveLength(6);
   });
 
@@ -351,7 +352,7 @@ describe('signed writes in flight', () => {
   });
 
   function client() {
-    return new ConsensusClient({ apiUrl: 'http://api.test', consensusRpcUrl: 'http://rpc.test' });
+    return new ConsensusClient({ apiUrl: 'http://api.test', consensusRpcUrl: 'http://rpc.test', nonceAllocator: new NonceAllocator() });
   }
 
   const ed = { privateKey: SEED, publicKeyId: KAT.public_key_id };

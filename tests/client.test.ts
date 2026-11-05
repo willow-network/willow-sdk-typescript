@@ -1,5 +1,7 @@
 import { WillowClient } from '../src/client';
-import { generateEd25519KeyPair, getEd25519PublicKey } from '../src/auth';
+import { generateEd25519KeyPair, verifyEd25519 } from '../src/auth';
+import { createDidFromPublicKey } from '../src/utils';
+import { bytesToHex } from '../src/internal/bytes';
 
 // Mock fetch — every SDK HTTP call (auth, data, root hash) goes through it.
 global.fetch = jest.fn();
@@ -19,7 +21,8 @@ describe('WillowClient', () => {
 
   // Test keys
   const { privateKey: testPrivateKey, publicKey: testPublicKey } = generateEd25519KeyPair();
-  const testDid = 'did:willow:test:123';
+  // A Willow DID as the chain takes one (no ':' after the method).
+  const testDid = 'did:willow:test-123';
   const testPublicKeyId = `${testDid}#key-1`;
 
   function lastRequest(): { url: string; init: RequestInit } {
@@ -45,27 +48,67 @@ describe('WillowClient', () => {
   });
 
   describe('registerDid', () => {
-    it('should register a DID document', async () => {
-      const didDoc = {
-        id: testDid,
-        publicKeys: [{
-          id: testPublicKeyId,
-          type: 'Ed25519VerificationKey2020',
-          publicKeyHex: testPublicKey,
-        }],
-        created: Date.now(),
-        updated: Date.now(),
-      };
-
-      mockFetch.mockResolvedValueOnce(jsonResponse({ success: true, data: didDoc }));
+    it('sends a RegisterDid transaction signed by the new DID, not a REST call', async () => {
+      const didDoc = { ...createDidFromPublicKey(testPublicKey), created: 1, updated: 2 };
+      const keyId = didDoc.publicKeys[0].id;
+      client.auth.setIdentity(didDoc.id, testPrivateKey, keyId);
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ success: true, data: { tx_hash: 'AB12', code: 0, log: '' } }),
+      );
 
       const result = await client.registerDid(didDoc);
-      expect(result).toEqual(didDoc);
+      expect(result.success).toBe(true);
+      expect(result.txHash).toBe('AB12');
 
+      // One request: a registration is the DID's first transaction, at nonce 1.
+      expect(mockFetch).toHaveBeenCalledTimes(1);
       const { url, init } = lastRequest();
-      expect(url).toBe('http://localhost:3031/did');
+      expect(url).toBe('http://localhost:3031/tx/submit');
       expect(init.method).toBe('POST');
-      expect(JSON.parse(init.body as string)).toEqual(didDoc);
+      const tx = JSON.parse(init.body as string).RegisterDid;
+      expect(tx.nonce).toBe(1);
+      expect(tx.public_key_id).toBe(keyId);
+      expect(tx.did_document).toEqual({
+        id: didDoc.id,
+        public_keys: [
+          {
+            id: keyId,
+            type: 'Ed25519VerificationKey2018',
+            controller: didDoc.id,
+            public_key_base58: null,
+            public_key_hex: testPublicKey,
+          },
+        ],
+        authentication: [keyId],
+        service: [],
+        created: 1,
+        updated: 2,
+        proof: null,
+      });
+      // Signed over the document's JSON text as the chain writes it.
+      expect(
+        verifyEd25519(
+          JSON.stringify(tx.did_document),
+          bytesToHex(Uint8Array.from(tx.signature)),
+          testPublicKey,
+        ),
+      ).toBe(true);
+    });
+
+    it('refuses to register a DID other than the identity', async () => {
+      client.auth.setIdentity(testDid, testPrivateKey, testPublicKeyId);
+      const didDoc = createDidFromPublicKey(testPublicKey);
+      await expect(client.registerDid(didDoc)).rejects.toMatchObject({
+        code: 'IDENTITY_MISMATCH',
+      });
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('auth.registerDid names the transaction path instead of calling a missing route', async () => {
+      await expect(
+        client.auth.registerDid(createDidFromPublicKey(testPublicKey)),
+      ).rejects.toMatchObject({ code: 'UNSUPPORTED_OPERATION' });
+      expect(mockFetch).not.toHaveBeenCalled();
     });
   });
 
@@ -107,62 +150,33 @@ describe('WillowClient', () => {
       client.auth.setIdentity(testDid, testPrivateKey, testPublicKeyId);
     });
 
-    describe('store', () => {
-      it('should store data with auth headers', async () => {
-        mockFetch.mockResolvedValueOnce(jsonResponse({ success: true }));
-
-        await client.data.storeData('dataset1', {
-          key1: { value: 'test' },
-        });
-
-        const { url, init } = lastRequest();
-        expect(url).toBe('http://localhost:3031/data/dataset1');
-        expect(init.method).toBe('POST');
-        expect(JSON.parse(init.body as string)).toEqual({ key1: { value: 'test' } });
-        expect(init.headers).toMatchObject({
-          'X-DID': testDid,
-          'X-Public-Key-ID': testPublicKeyId,
-          'X-Signature': expect.any(String),
-          'X-Timestamp': expect.any(String),
-        });
-      });
+    // The API serves no data writes; each is a transaction. These name the
+    // supported path and send nothing.
+    it.each([
+      ['data.storeData', (c: WillowClient) => c.data.storeData('dataset1', { key1: 1 })],
+      [
+        'data.batchStore',
+        (c: WillowClient) => c.data.batchStore('dataset1', [{ key: 'key1', value: 1 }]),
+      ],
+      ['data.updateData', (c: WillowClient) => c.data.updateData('dataset1', 'key1', {})],
+      ['data.deleteData', (c: WillowClient) => c.data.deleteData('dataset1', 'key1')],
+      ['update', (c: WillowClient) => c.update('dataset1', 'key1', {})],
+      ['delete', (c: WillowClient) => c.delete('dataset1', 'key1')],
+      [
+        'collection().batchStore',
+        (c: WillowClient) => c.collection('dataset1').batchStore([{ key: 'k', value: 1 }]),
+      ],
+    ])('%s throws UNSUPPORTED_OPERATION without a request', async (_name, call) => {
+      const err = await call(client).catch((e: unknown) => e);
+      expect(err).toMatchObject({ code: 'UNSUPPORTED_OPERATION' });
+      expect((err as Error).message).toMatch(/transaction/);
+      expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    describe('update', () => {
-      it('should update data with auth headers', async () => {
-        mockFetch.mockResolvedValueOnce(jsonResponse({ success: true }));
-
-        await client.data.updateData('dataset1', 'key1', { value: 'updated' });
-
-        const { url, init } = lastRequest();
-        expect(url).toBe('http://localhost:3031/data/dataset1/key1');
-        expect(init.method).toBe('PUT');
-        expect(JSON.parse(init.body as string)).toEqual({ value: 'updated' });
-        expect(init.headers).toMatchObject({
-          'X-DID': testDid,
-          'X-Public-Key-ID': testPublicKeyId,
-          'X-Signature': expect.any(String),
-          'X-Timestamp': expect.any(String),
-        });
-      });
-    });
-
-    describe('delete', () => {
-      it('should delete data with auth headers', async () => {
-        mockFetch.mockResolvedValueOnce(jsonResponse({ success: true }));
-
-        await client.data.deleteData('dataset1', 'key1');
-
-        const { url, init } = lastRequest();
-        expect(url).toBe('http://localhost:3031/data/dataset1/key1');
-        expect(init.method).toBe('DELETE');
-        expect(init.headers).toMatchObject({
-          'X-DID': testDid,
-          'X-Public-Key-ID': testPublicKeyId,
-          'X-Signature': expect.any(String),
-          'X-Timestamp': expect.any(String),
-        });
-      });
+    it('data.storeData names the per-key path', async () => {
+      await expect(client.data.storeData('dataset1', { key1: 1 })).rejects.toThrow(
+        /WillowClient\.store\(subgroveId, key, value\)/,
+      );
     });
   });
 
@@ -186,10 +200,39 @@ describe('WillowClient', () => {
         readers: [testDid],
       };
 
-      mockFetch.mockResolvedValueOnce(jsonResponse({ success: true, data: datasetRequest }));
+      mockFetch
+        // The devnet's CometBFT RPC answers the account's nonce state: base 4,
+        // none used above it.
+        .mockResolvedValueOnce(
+          jsonResponse({ result: { response: { code: 0, value: 'AAAAAAAAAAQAAAA=' } } }),
+        )
+        .mockResolvedValueOnce(
+          jsonResponse({ success: true, data: { tx_hash: 'CD34', code: 0, log: '' } }),
+        );
 
       const result = await client.data.registerDataset(datasetRequest);
-      expect(result).toEqual(datasetRequest);
+      expect(result.success).toBe(true);
+      expect(result.txHash).toBe('CD34');
+      const query = JSON.parse(mockFetch.mock.calls[0][1]!.body as string);
+      expect(mockFetch.mock.calls[0][0]).toBe('http://localhost:26657');
+      expect(query.method).toBe('abci_query');
+      expect(query.params.path).toBe(`/store/account_nonce_state/${testDid}`);
+
+      // Sent as a RegisterSubgrove transaction; the API has no REST route.
+      const { url, init } = lastRequest();
+      expect(url).toBe('http://localhost:3031/tx/submit');
+      const tx = JSON.parse(init.body as string).RegisterSubgrove;
+      expect(tx.subgrove_id).toBe('test-dataset');
+      expect(tx.owner_did).toBe(testDid);
+      expect(tx.nonce).toBe(5);
+      expect(tx.mode).toEqual({
+        DataStorage: {
+          name: 'Test Dataset',
+          writers: [testDid],
+          free_readers: [testDid],
+          read_pricing: null,
+        },
+      });
     });
   });
 

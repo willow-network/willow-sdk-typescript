@@ -9,7 +9,7 @@ import { ed25519 } from '@noble/curves/ed25519';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
 import { LightBlock, Header, Commit, ValidatorSet, CommitSig, TrustThreshold, VerificationResult, LightClientError, GroveDBQueryProof, getTrustFraction, bytesToHex } from './types';
-import { verifyGroveDBProof } from '../grovedb';
+import { verifyGroveDBProof, verifyKeyAbsence } from '../grovedb';
 import { WillowLogger, silentLogger } from '../internal/logger';
 
 /**
@@ -277,11 +277,20 @@ export class HeaderVerifier {
 }
 
 /**
- * Verifies GroveDB proofs against trusted headers
+ * Verifies GroveDB proofs against trusted headers. Each check verifies the
+ * proof and compares its root to the trusted one, and binds what it is asked
+ * about to the proof: a value to its key and path, an absence to the place
+ * its key would have.
  */
 export class ProofVerifier {
   /**
-   * Verify a GroveDB query proof against a trusted app hash
+   * Verify a GroveDB query proof against a trusted app hash. The proof must
+   * verify to `trustedAppHash`, and each entry of `queryResult` (or of
+   * `proof.queryResult` when none is given) must be the bytes of an Item the
+   * proof proves, as the `KV` node grovedb proves an Item in. It does not tie those values to a path, nor show that
+   * they are a query's whole result (membership only): to check one key at
+   * a known path, use {@link verifyInclusionProof}; to verify a query's
+   * result, `verifyQuerySelection`.
    */
   async verifyQueryProof(
     proof: GroveDBQueryProof,
@@ -289,20 +298,30 @@ export class ProofVerifier {
     queryResult?: Uint8Array[]
   ): Promise<VerificationResult> {
     try {
-      // Extract query result from proof if not provided
-      if (!queryResult) {
-        queryResult = proof.queryResult || [];
-      }
+      const values = queryResult ?? proof.queryResult ?? [];
+      const verification = verifyGroveDBProof(proof.proof);
 
-      // Verify the proof reconstructs to the trusted app hash
-      const computedRoot = await this.verifyGroveDbProof(proof.proof, queryResult);
-
-      if (!this.arraysEqual(computedRoot, trustedAppHash)) {
+      if (!this.arraysEqual(verification.rootHash, trustedAppHash)) {
         return {
           success: false,
-          error: `Root hash mismatch: computed ${bytesToHex(computedRoot)} !== trusted ${bytesToHex(trustedAppHash)}`,
+          error: `Root hash mismatch: computed ${bytesToHex(verification.rootHash)} !== trusted ${bytesToHex(trustedAppHash)}`,
           height: proof.height
         };
+      }
+
+      // Each Item a KV node proves: a reference's value (KVRefValueHash) is
+      // the element it points to, not one stored at its key.
+      const proven = verification.results.flatMap((r) =>
+        r.nodeType === 'KV' && r.element?.type === 'Item' ? [r.element.value] : []
+      );
+      for (let i = 0; i < values.length; i++) {
+        if (!proven.some((v) => this.arraysEqual(v, values[i]))) {
+          return {
+            success: false,
+            error: `Query result ${i} is not a value the proof proves`,
+            height: proof.height
+          };
+        }
       }
 
       return {
@@ -320,58 +339,69 @@ export class ProofVerifier {
   }
 
   /**
-   * Verify a GroveDB proof and return the computed root hash.
+   * Verify that `key` holds the Item `value` (its bytes) at `path`: the proof
+   * verifies to `trustedRoot`, descends to `path` with no lower layer off it,
+   * and proves at `path` an Item at `key` whose bytes are `value`, as the
+   * `KV` node grovedb proves an Item in. False for any other proof,
+   * including a valid one of another key or path, and one that gives a
+   * reference at the key (whose value is the element it points to).
    *
-   * Decodes the bincode-encoded proof, walks each Merk layer, and returns
-   * the cryptographically correct root. The caller compares this against a
-   * trusted root (e.g. a light-client-verified app hash) to establish
-   * authenticity.
-   */
-  private async verifyGroveDbProof(proofBytes: Uint8Array, _queryResult: Uint8Array[]): Promise<Uint8Array> {
-    return verifyGroveDBProof(proofBytes).rootHash;
-  }
-
-  /**
-   * Verify that a key-value pair is included in the tree
+   * @param path - The GroveDB path of the subtree holding `key` (e.g. the
+   *   UTF-8 bytes of `["subgroves", id, "data"]`). Required: a key is only
+   *   meaningful at its path.
    */
   async verifyInclusionProof(
     key: Uint8Array,
     value: Uint8Array,
     proofBytes: Uint8Array,
-    trustedRoot: Uint8Array
+    trustedRoot: Uint8Array,
+    path: Uint8Array[]
   ): Promise<boolean> {
-    // For full inclusion proof verification, use server-assisted verification
-    // This requires parsing the GroveDB proof format
-    const queryProof: GroveDBQueryProof = {
-      proof: proofBytes,
-      pathQuery: { key },
-      height: 0,
-      queryResult: [value]
-    };
-
-    const result = await this.verifyQueryProof(queryProof, trustedRoot, [value]);
-    return result.success;
+    requirePath(path);
+    try {
+      const verification = verifyGroveDBProof(proofBytes, { expectedPath: path });
+      if (!this.arraysEqual(verification.rootHash, trustedRoot)) return false;
+      // The value is the payload of the Item grovedb proves at the key, as a
+      // KV node: a reference (KVRefValueHash) carries the element it points
+      // to, which is not stored at the key.
+      return verification.results.some(
+        (r) =>
+          this.pathEqual(r.path, path) &&
+          this.arraysEqual(r.key, key) &&
+          r.nodeType === 'KV' &&
+          r.element?.type === 'Item' &&
+          this.arraysEqual(r.element.value, value)
+      );
+    } catch {
+      return false;
+    }
   }
 
   /**
-   * Verify that a key is absent from the tree
+   * Verify that `key` is absent at `path`: the proof verifies to
+   * `trustedRoot` and shows where `key` would be in the subtree at `path`
+   * with nothing there (see `verifyKeyAbsence` in the GroveDB module). False
+   * for any other proof, including one in which `key` is present.
+   *
+   * @param path - The GroveDB path of the subtree `key` would be in.
+   *   Required: a key is only absent at a path.
    */
   async verifyAbsenceProof(
     key: Uint8Array,
     proofBytes: Uint8Array,
-    trustedRoot: Uint8Array
+    trustedRoot: Uint8Array,
+    path: Uint8Array[]
   ): Promise<boolean> {
-    // Absence proofs in GroveDB show that a key doesn't exist
-    // For full verification, use server-assisted verification
-    const queryProof: GroveDBQueryProof = {
-      proof: proofBytes,
-      pathQuery: { key },
-      height: 0,
-      queryResult: []
-    };
+    requirePath(path);
+    try {
+      return this.arraysEqual(verifyKeyAbsence(proofBytes, path, key), trustedRoot);
+    } catch {
+      return false;
+    }
+  }
 
-    const result = await this.verifyQueryProof(queryProof, trustedRoot, []);
-    return result.success;
+  private pathEqual(a: Uint8Array[], b: Uint8Array[]): boolean {
+    return a.length === b.length && a.every((segment, i) => this.arraysEqual(segment, b[i]));
   }
 
   /**
@@ -383,5 +413,11 @@ export class ProofVerifier {
       if (a[i] !== b[i]) return false;
     }
     return true;
+  }
+}
+
+function requirePath(path: unknown): void {
+  if (!Array.isArray(path) || !path.every((segment) => segment instanceof Uint8Array)) {
+    throw new LightClientError('A GroveDB path (an array of byte arrays) is required', 'PATH_REQUIRED');
   }
 }

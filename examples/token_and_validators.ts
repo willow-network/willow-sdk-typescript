@@ -90,8 +90,9 @@ async function main() {
   // A real deployment funds `did` (>= the did_registration fee, printed below)
   // before registering, since the fee is paid from the DID's own balance.
   try {
-    await client.registerDid(didDocument);
+    // The DID's registration is signed by its own key.
     client.auth.setIdentity(did, privateKey, publicKeyId);
+    await client.registerDid(didDocument);
     console.log(`Authenticated as: ${did}\n`);
   } catch (error) {
     console.log(`Note: ${error}\n`);

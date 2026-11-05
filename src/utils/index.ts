@@ -116,7 +116,11 @@ export function createDidFromPublicKey(
     publicKeys: [
       {
         id: publicKeyId,
-        type: algorithm === 'Ed25519' ? 'Ed25519' : 'EcdsaSecp256k1VerificationKey2019',
+        // The key types the chain derives a DID from and verifies with.
+        type:
+          algorithm === 'Ed25519'
+            ? 'Ed25519VerificationKey2018'
+            : 'EcdsaSecp256k1VerificationKey2019',
         publicKeyHex:
           algorithm === 'secp256k1'
             ? bytesToHex(toCompressedSecp256k1(publicKey))

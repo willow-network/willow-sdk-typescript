@@ -48,6 +48,14 @@ function concat(chunks: Uint8Array[]): Uint8Array {
 
 beforeEach(() => jest.clearAllMocks());
 
+const SIGNING = {
+  ownerDid: 'did:willow:owner',
+  privateKey: 'pk',
+  publicKeyId: 'did:willow:owner#key-1',
+  signFunction: () => 'ab'.repeat(64),
+  nonce: 3,
+};
+
 describe('FileOperations.upload', () => {
   const data = new TextEncoder().encode('{"hello":"world"}');
 
@@ -57,7 +65,7 @@ describe('FileOperations.upload', () => {
       .mockResolvedValue(jsonResponse({ ok: true }));
 
     const { ops, getAuthHeaders } = makeOps();
-    const manifest = await ops.upload('sg', 'file-1', 'doc.json', data, NODE_URL);
+    const manifest = await ops.upload('sg', 'file-1', 'doc.json', data, NODE_URL, SIGNING);
 
     const [url, init] = mockFetch.mock.calls[0];
     expect(url).toBe(`${API_URL}/tx/submit`);
@@ -99,7 +107,7 @@ describe('FileOperations.upload', () => {
 
     const { ops } = makeOps();
     const big = new Uint8Array(262_144 + 10); // 2 chunks
-    const manifest = await ops.upload('sg', 'file-2', 'blob.bin', big, NODE_URL);
+    const manifest = await ops.upload('sg', 'file-2', 'blob.bin', big, NODE_URL, SIGNING);
 
     expect(manifest.chunk_count).toBe(2);
     expect(mockFetch).toHaveBeenCalledTimes(3);
@@ -117,7 +125,7 @@ describe('FileOperations.upload', () => {
 
     const { ops } = makeOps();
     const err = await ops
-      .upload('sg', 'file-1', 'doc.json', data, NODE_URL)
+      .upload('sg', 'file-1', 'doc.json', data, NODE_URL, SIGNING)
       .catch((e) => e);
     expect(err).toBeInstanceOf(WillowError);
     expect(err.code).toBe('TX_SUBMIT_FAILED');
@@ -130,7 +138,7 @@ describe('FileOperations.upload', () => {
 
     const { ops } = makeOps();
     const err = await ops
-      .upload('sg', 'file-1', 'doc.json', data, NODE_URL)
+      .upload('sg', 'file-1', 'doc.json', data, NODE_URL, SIGNING)
       .catch((e) => e);
     expect(err).toBeInstanceOf(WillowError);
     expect(err.code).toBe('TX_SUBMIT_FAILED');
@@ -148,12 +156,28 @@ describe('FileOperations.upload', () => {
 
     const { ops } = makeOps();
     const err = await ops
-      .upload('sg', 'file-1', 'doc.json', data, NODE_URL)
+      .upload('sg', 'file-1', 'doc.json', data, NODE_URL, SIGNING)
       .catch((e) => e);
     expect(err).toBeInstanceOf(WillowError);
     expect(err.code).toBe('CHUNK_UPLOAD_FAILED');
     expect(err.statusCode).toBe(507);
     expect(err.message).toMatch(/disk full/);
+  });
+});
+
+describe('FileOperations transactions need signing', () => {
+  it('refuses to send an unsigned manifest, delete, or storage-node removal', async () => {
+    const { ops } = makeOps();
+    const data = new Uint8Array([1, 2, 3]);
+    const unsigned = undefined as unknown as typeof SIGNING;
+    for (const send of [
+      () => ops.upload('sg', 'file-1', 'doc.json', data, NODE_URL, unsigned),
+      () => ops.delete('sg', 'file-1', unsigned),
+      () => ops.unregisterStorageNode('did:willow:node', unsigned),
+    ]) {
+      await expect(send()).rejects.toMatchObject({ code: 'SIGNING_REQUIRED' });
+    }
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });
 
@@ -296,7 +320,7 @@ describe('FileOperations.delete', () => {
     mockFetch.mockResolvedValueOnce(txRejected('not the owner'));
 
     const { ops } = makeOps();
-    const err = await ops.delete('sg', 'file-1').catch((e) => e);
+    const err = await ops.delete('sg', 'file-1', SIGNING).catch((e) => e);
     expect(err).toBeInstanceOf(WillowError);
     expect(err.code).toBe('TX_SUBMIT_FAILED');
     expect(err.message).toMatch(/not the owner/);

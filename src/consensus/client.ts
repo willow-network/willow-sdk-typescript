@@ -4,11 +4,25 @@
  * Provides direct transaction broadcasting to CometBFT consensus layer.
  */
 
-import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, RegisterDidTx, RegisterSubgroveTx, RegisterSubgroveOptions, SubgroveMode, RetentionWindow, Signer, SignFunction, StoreFileManifestFields, TransferTx, DataStoreTx, StoreFileManifestTx, DeleteFileManifestTx, DeregisterSubgroveTx, SubmitAnchorTx, Transaction, createTransactionWrapper, createSignMessage } from './types';
+import { ConsensusConfig, BroadcastResult, TransactionStatus, ConsensusError, TransactionSubmitError, SignedSubmission, RegisterDidTx, RegisterSubgroveTx, RegisterSubgroveOptions, SubgroveMode, RetentionWindow, Signer, SignFunction, StoreFileManifestFields, TransferTx, UintInput, DataStoreTx, StoreFileManifestTx, DeleteFileManifestTx, DeregisterSubgroveTx, SubmitAnchorTx, Transaction, createTransactionWrapper, createSignMessage } from './types';
 import { canonicalizeAnchorBody, computeAnchorMerkleRoot, sha256Hex } from './anchor-canonical';
 import { submitTxToApi } from '../internal/tx';
-import { signEd25519 } from '../auth';
+import { NonceAllocator, AccountNonceState, NONCE_WINDOW, isUsed, parseAccountNonceStateBase64 } from './nonces';
+import { signEd25519, signSecp256k1, algorithmFromKeyType } from '../auth';
+import { didDocumentKeyType } from './wire';
 import { WillowLogger, silentLogger } from '../internal/logger';
+import { bytesToBase64, hexToBytes } from '../internal/bytes';
+
+/**
+ * A failure of a signed write that was sent, as a {@link TransactionSubmitError}
+ * carrying the DID, nonce, and signed body (its code and message kept).
+ */
+function submissionError(error: unknown, submission: SignedSubmission): TransactionSubmitError {
+  if (error instanceof TransactionSubmitError) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  const code = error instanceof ConsensusError && error.code ? error.code : 'TX_SUBMIT_FAILED';
+  return new TransactionSubmitError(message, code, submission);
+}
 
 /** Misconfiguration (no consensusRpcUrl) must surface, never degrade to a fallback. */
 function isRpcUrlMissingError(error: unknown): boolean {
@@ -36,14 +50,32 @@ function resolveSigner(
 }
 
 /**
+ * A transaction hash as CometBFT's JSON-RPC `tx` method reads it: the base64
+ * of its 32 bytes, as CometBFT's own clients send it (`tendermint-rpc`
+ * encodes it so). The hex `/tx/submit` returns is read as base64 there, and
+ * matches no transaction.
+ */
+function txHashParam(txHash: string): string {
+  const hex = typeof txHash === 'string' ? txHash.replace(/^0x/i, '') : '';
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
+    throw new ConsensusError(
+      `Transaction hash ${JSON.stringify(txHash)} is not 32 bytes of hex`,
+      'INVALID_TX_HASH',
+    );
+  }
+  return bytesToBase64(hexToBytes(hex));
+}
+
+/**
  * CometBFT consensus client for direct transaction broadcasting
  *
  * Enables full-featured blockchain interactions without relying on data nodes.
  */
 export class ConsensusClient {
   private config: ConsensusConfig;
-  private nonceCache: Map<string, number> = new Map();
   private logger: WillowLogger;
+  /** Hands out this client's transaction nonces, per DID. */
+  readonly nonces: NonceAllocator;
 
   constructor(config: ConsensusConfig) {
     this.config = {
@@ -53,10 +85,20 @@ export class ConsensusClient {
       retryDelaySecs: config.retryDelaySecs ?? 1,
     };
     this.logger = config.logger ?? silentLogger;
+    this.nonces = config.nonceAllocator ?? NonceAllocator.shared(config.apiUrl ?? '');
   }
 
   /**
-   * Register a DID on the blockchain
+   * Register a DID on the blockchain by a RegisterDid transaction.
+   *
+   * `didDocument` is the SDK's `DidDocument` (from `createDidFromPublicKey`
+   * or `createDidFromWallet`) or the chain's own shape. It is sent as the
+   * chain's `DidDocument`, and signed over that document's JSON text (see
+   * `registerDidSignMessage`). The signer is a key in the document, and
+   * signs with that key's algorithm: a signer without a `signFunction` takes
+   * the SDK's for the key's type, and one whose `signFunction` is the SDK's
+   * for the other algorithm is refused (`ALGORITHM_MISMATCH`). A DID's
+   * registration is its first transaction, so its nonce is 1.
    */
   async registerDid(didDocument: any, signer: Signer): Promise<BroadcastResult>;
   /** @deprecated Pass a {@link Signer} options object instead of positional key material. */
@@ -73,14 +115,43 @@ export class ConsensusClient {
     signFunction?: SignFunction
   ): Promise<BroadcastResult> {
     const signer = resolveSigner(signerOrPrivateKey, publicKeyId, signFunction);
+    const given =
+      typeof signerOrPrivateKey === 'string' ? signFunction : signerOrPrivateKey.signFunction;
+    const keyAlgorithm = algorithmFromKeyType(didDocumentKeyType(didDocument, signer.publicKeyId));
+    if (keyAlgorithm !== undefined) {
+      const sdkFunction = keyAlgorithm === 'secp256k1' ? signSecp256k1 : signEd25519;
+      const otherFunction = keyAlgorithm === 'secp256k1' ? signEd25519 : signSecp256k1;
+      if (given === otherFunction) {
+        throw new ConsensusError(
+          `The key ${signer.publicKeyId} is ${keyAlgorithm}, but the signer signs with the other algorithm`,
+          'ALGORITHM_MISMATCH',
+        );
+      }
+      if (given === undefined) signer.signFunction = sdkFunction;
+    }
     const tx: RegisterDidTx = {
       didDocument,
       signature: '', // Will be filled by signing
       publicKeyId: signer.publicKeyId,
-      nonce: await this.getNextNonce(didDocument.id || '')
+      // The chain accepts a DID registration only at nonce 1.
+      nonce: 1,
     };
 
-    return this.signAndBroadcast('RegisterDid', tx, signer.privateKey, signer.signFunction);
+    const transaction = this.signTransaction('RegisterDid', tx, signer.privateKey, signer.signFunction);
+    // Nonce 1 is the new DID's while the registration is pending.
+    const did = typeof didDocument?.id === 'string' ? didDocument.id : undefined;
+    let sent = false;
+    let result: BroadcastResult;
+    try {
+      result = await this.broadcastTransaction(transaction, () => {
+        sent = true;
+        if (did) this.nonces.hold(did, 1);
+      });
+    } catch (error) {
+      throw did && sent ? submissionError(error, { did, nonce: 1, transaction }) : error;
+    }
+    if (did && (result.success || result.pending)) this.nonces.hold(did, 1);
+    return did && !result.success ? { ...result, submission: { did, nonce: 1, transaction } } : result;
   }
 
   /**
@@ -126,7 +197,7 @@ export class ConsensusClient {
       ? { mode, retentionWindow, initialFunding }
       : (publicKeyIdOrOptions as RegisterSubgroveOptions | undefined) ?? {};
 
-    const tx: RegisterSubgroveTx = {
+    return this.submitWithNonce(ownerDid, 'RegisterSubgrove', signer, (nonce): RegisterSubgroveTx => ({
       subgroveId,
       name: options.name,
       schema,
@@ -136,19 +207,23 @@ export class ConsensusClient {
       initialFunding: options.initialFunding,
       signature: '',
       publicKeyId: signer.publicKeyId,
-      nonce: await this.getNextNonce(ownerDid)
-    };
-
-    return this.signAndBroadcast('RegisterSubgrove', tx, signer.privateKey, signer.signFunction);
+      nonce,
+    }));
   }
 
   /**
-   * Transfer tokens between DIDs
+   * Transfer tokens between DIDs.
+   *
+   * `amount` is in the token's smallest unit (1 WILL is 10^18), a u128: pass
+   * a bigint or a decimal string for an amount above 2^53 - 1 (1000 WILL is
+   * `10n ** 21n`). It is sent and signed as its exact digits. A number that
+   * is not a safe integer, or a value outside u128, is refused
+   * (`INVALID_SIGNED_FIELD`) before a nonce is taken.
    */
   async transfer(
     fromDid: string,
     toDid: string,
-    amount: number,
+    amount: UintInput,
     signer: Signer,
     memo?: string
   ): Promise<BroadcastResult>;
@@ -156,7 +231,7 @@ export class ConsensusClient {
   async transfer(
     fromDid: string,
     toDid: string,
-    amount: number,
+    amount: UintInput,
     privateKey: string,
     publicKeyId: string,
     signFunction: SignFunction,
@@ -165,7 +240,7 @@ export class ConsensusClient {
   async transfer(
     fromDid: string,
     toDid: string,
-    amount: number,
+    amount: UintInput,
     signerOrPrivateKey: Signer | string,
     publicKeyIdOrMemo?: string,
     signFunction?: SignFunction,
@@ -179,21 +254,24 @@ export class ConsensusClient {
     );
     const txMemo = positional ? memo : publicKeyIdOrMemo;
 
-    const tx: TransferTx = {
+    return this.submitWithNonce(fromDid, 'Transfer', signer, (nonce): TransferTx => ({
       fromDid,
       toDid,
       amount,
       memo: txMemo,
       signature: '',
       publicKeyId: signer.publicKeyId,
-      nonce: await this.getNextNonce(fromDid)
-    };
-
-    return this.signAndBroadcast('Transfer', tx, signer.privateKey, signer.signFunction);
+      nonce,
+    }));
   }
 
   /**
-   * Store data on the blockchain
+   * Store data on the blockchain: one key's value, by a StoreData
+   * transaction. `data` must be a JSON object (it is sent as its
+   * `JSON.stringify` text): the chain refuses anything else in the block,
+   * which spends the nonce, so anything else (`undefined`, `null`, an array,
+   * a string, a number) is refused (`INVALID_SIGNED_FIELD`) before a nonce
+   * is taken.
    */
   async storeData(
     subgroveId: string,
@@ -222,17 +300,15 @@ export class ConsensusClient {
     signFunction?: SignFunction
   ): Promise<BroadcastResult> {
     const signer = resolveSigner(signerOrPrivateKey, publicKeyId, signFunction);
-    const tx: DataStoreTx = {
+    return this.submitWithNonce(ownerDid, 'DataStore', signer, (nonce): DataStoreTx => ({
       subgroveId,
       key,
       data: JSON.stringify(data),
       ownerDid,
       signature: '',
       publicKeyId: signer.publicKeyId,
-      nonce: await this.getNextNonce(ownerDid)
-    };
-
-    return this.signAndBroadcast('DataStore', tx, signer.privateKey, signer.signFunction);
+      nonce,
+    }));
   }
 
   /**
@@ -294,14 +370,12 @@ export class ConsensusClient {
       signer = resolveSigner(signerOrFileKey as Signer);
     }
 
-    const tx: StoreFileManifestTx = {
+    return this.submitWithNonce(fields.ownerDid, 'StoreFileManifest', signer, (nonce): StoreFileManifestTx => ({
       ...fields,
       signature: '',
       publicKeyId: signer.publicKeyId,
-      nonce: await this.getNextNonce(fields.ownerDid)
-    };
-
-    return this.signAndBroadcast('StoreFileManifest', tx, signer.privateKey, signer.signFunction);
+      nonce,
+    }));
   }
 
   /**
@@ -331,16 +405,14 @@ export class ConsensusClient {
     signFunction?: SignFunction
   ): Promise<BroadcastResult> {
     const signer = resolveSigner(signerOrPrivateKey, publicKeyId, signFunction);
-    const tx: DeleteFileManifestTx = {
+    return this.submitWithNonce(ownerDid, 'DeleteFileManifest', signer, (nonce): DeleteFileManifestTx => ({
       subgroveId,
       fileKey,
       ownerDid,
       signature: '',
       publicKeyId: signer.publicKeyId,
-      nonce: await this.getNextNonce(ownerDid)
-    };
-
-    return this.signAndBroadcast('DeleteFileManifest', tx, signer.privateKey, signer.signFunction);
+      nonce,
+    }));
   }
 
   /**
@@ -367,15 +439,13 @@ export class ConsensusClient {
     signFunction?: SignFunction
   ): Promise<BroadcastResult> {
     const signer = resolveSigner(signerOrPrivateKey, publicKeyId, signFunction);
-    const tx: DeregisterSubgroveTx = {
+    return this.submitWithNonce(ownerDid, 'DeregisterSubgrove', signer, (nonce): DeregisterSubgroveTx => ({
       subgroveId,
       ownerDid,
       signature: '',
       publicKeyId: signer.publicKeyId,
-      nonce: await this.getNextNonce(ownerDid)
-    };
-
-    return this.signAndBroadcast('DeregisterSubgrove', tx, signer.privateKey, signer.signFunction);
+      nonce,
+    }));
   }
 
   /**
@@ -447,7 +517,7 @@ export class ConsensusClient {
     });
     const anchorHash = sha256Hex(canonical);
 
-    const tx: SubmitAnchorTx = {
+    return this.submitWithNonce(fields.did, 'SubmitAnchor', signer, (nonce): SubmitAnchorTx => ({
       did: fields.did,
       anchorId: fields.anchorId,
       sequenceRange: fields.sequenceRange,
@@ -460,21 +530,26 @@ export class ConsensusClient {
       isGenesis: fields.isGenesis,
       signature: '',
       publicKeyId: signer.publicKeyId,
-      nonce: await this.getNextNonce(fields.did),
-    };
-
-    return this.signAndBroadcast('SubmitAnchor', tx, signer.privateKey, signer.signFunction);
+      nonce,
+    }));
   }
 
   /**
-   * Get the status of a transaction
+   * The status of a transaction, read from CometBFT by its hash (`txHash`,
+   * 32 bytes as hex, as `/tx/submit` returns it): SUCCESS or FAILED once it
+   * is in a block (a transaction refused in its block is FAILED), NOT_FOUND
+   * until then.
+   *
+   * @throws ConsensusError `INVALID_TX_HASH` for a hash that is not 32 bytes
+   *   of hex, before anything is sent.
    */
   async getTransactionStatus(txHash: string): Promise<TransactionStatus> {
+    const hash = txHashParam(txHash);
     try {
       // Query transaction from CometBFT
-      const result = await this.queryTransaction(txHash);
+      const result = await this.queryTransaction(hash);
 
-      if (!result) {
+      if (!result?.tx_result) {
         return TransactionStatus.NOT_FOUND;
       }
 
@@ -492,9 +567,11 @@ export class ConsensusClient {
   /**
    * Wait for a transaction to be confirmed.
    *
-   * Resolves with SUCCESS or FAILED once the transaction lands in a block.
+   * Resolves with SUCCESS or FAILED once the transaction lands in a block: a
+   * transaction refused in its block lands too, as FAILED, so check which.
    * Throws a ConsensusError with code `TX_CONFIRM_TIMEOUT` if the
-   * transaction is still unconfirmed when the timeout elapses.
+   * transaction is still unconfirmed when the timeout elapses, and
+   * `INVALID_TX_HASH` for a hash that is not 32 bytes of hex.
    */
   async waitForTransaction(
     txHash: string,
@@ -551,14 +628,103 @@ export class ConsensusClient {
   // Private methods
 
   /**
-   * Sign a transaction and broadcast it
+   * Take a nonce for `did`, build the transaction under it, sign, and
+   * broadcast, then record the outcome with the nonce allocator: an accepted
+   * write holds its nonce; one refused at CheckTx gives it back unless the
+   * refusal says the nonce is held, used, or spent. The transaction's fields
+   * are checked before a nonce is taken; a write that fails before it is sent
+   * gives its nonce back. Each send attempt renews the nonce's hold, so no
+   * other write takes it while this one is in flight; one whose submission
+   * failed in transport keeps it until its hold runs out (it may yet land),
+   * and throws a {@link TransactionSubmitError} carrying the DID, nonce, and
+   * signed body, to {@link resubmit}.
    */
-  private async signAndBroadcast(
+  private async submitWithNonce(
+    did: string,
+    txType: string,
+    signer: Required<Signer>,
+    build: (nonce: number) => Transaction,
+  ): Promise<BroadcastResult> {
+    // Refuse a field the chain refuses before reading or taking a nonce.
+    createSignMessage(txType, build(0));
+    const nonce = await this.nextNonce(did);
+    let transaction: Record<string, unknown>;
+    try {
+      transaction = this.signTransaction(txType, build(nonce), signer.privateKey, signer.signFunction);
+    } catch (error) {
+      this.nonces.release(did, nonce);
+      throw error;
+    }
+    return this.sendSigned({ did, nonce, transaction });
+  }
+
+  /**
+   * Post a signed write again, under the nonce it was signed with: the retry
+   * of a write that never landed (its submission failed in transport, or the
+   * chain refused it at CheckTx without spending its nonce). Pass the
+   * {@link TransactionSubmitError} a write threw, or its `did`, `nonce`, and
+   * `transaction`. Whichever attempt lands first spends the nonce, and the
+   * other is refused, so the write runs at most once. A repeat of one the
+   * mempool already holds returns `pending` (its outcome unknown; see
+   * {@link isNonceUsed}), as does a 4xx, which answers this post only: an
+   * earlier one may still land. A result that is not `success` carries the
+   * submission again.
+   *
+   * The nonce is held while the post is in flight and settled with the
+   * allocator after, as for a new write; a transport failure throws a
+   * {@link TransactionSubmitError} again.
+   */
+  async resubmit(submission: SignedSubmission): Promise<BroadcastResult> {
+    return this.sendSigned(
+      { did: submission.did, nonce: submission.nonce, transaction: submission.transaction },
+      true,
+    );
+  }
+
+  /**
+   * Post a signed write and settle its nonce: each attempt renews the hold,
+   * an answer settles it, and a transport failure keeps it held and throws
+   * the submission. A new write that fails before anything is sent gives its
+   * nonce back; a `repeat` (a resubmission) doesn't, as its earlier attempt
+   * may yet land, and a 4xx to it is pending.
+   */
+  private async sendSigned(
+    submission: SignedSubmission,
+    repeat = false,
+  ): Promise<BroadcastResult> {
+    const { did, nonce, transaction } = submission;
+    let sent = false;
+    let result: BroadcastResult;
+    try {
+      result = await this.broadcastTransaction(
+        transaction,
+        () => {
+          sent = true;
+          this.nonces.hold(did, nonce);
+        },
+        repeat,
+      );
+    } catch (error) {
+      if (!sent) {
+        if (!repeat) this.nonces.release(did, nonce);
+        throw error;
+      }
+      throw submissionError(error, submission);
+    }
+    this.nonces.settle(did, nonce, result);
+    // A write that didn't go through carries what was sent, to confirm or post again.
+    return result.success ? result : { ...result, submission };
+  }
+
+  /**
+   * Sign a transaction and return the body to post (`{ <Kind>: { … } }`).
+   */
+  private signTransaction(
     txType: string,
     transaction: Transaction,
     privateKey: string,
-    signFunction: SignFunction
-  ): Promise<BroadcastResult> {
+    signFunction: SignFunction,
+  ): Record<string, unknown> {
     // Create canonical message for signing
     const signMessageText = createSignMessage(txType, transaction);
 
@@ -569,10 +735,7 @@ export class ConsensusClient {
     (transaction as any).signature = signatureHex;
 
     // Create transaction wrapper
-    const txWrapper = createTransactionWrapper(txType, transaction);
-
-    // Broadcast transaction
-    return this.broadcastTransaction(txWrapper);
+    return createTransactionWrapper(txType, transaction);
   }
 
   /**
@@ -583,8 +746,20 @@ export class ConsensusClient {
    * to CometBFT's `broadcast_tx_sync`. The chain's on-the-wire format is
    * bincode — letting the API server handle the conversion keeps the SDK on
    * JSON without implementing a bincode encoder per language.
+   *
+   * A transport failure is retried with the same signed body
+   * (`maxRetries`), after a wait of `retryDelaySecs` times the attempt's
+   * number, so a retry does not meet at once a rate limit or the copy the
+   * failed post may have left; `onAttempt` runs before each attempt. A post
+   * that threw may have reached CometBFT, so a 4xx to a later one (or to any
+   * post of a `repeat`, a resubmission) is pending, not a refusal: it
+   * answers that request only, and the earlier post may still land.
    */
-  private async broadcastTransaction(transaction: any): Promise<BroadcastResult> {
+  private async broadcastTransaction(
+    transaction: Record<string, unknown>,
+    onAttempt?: () => void,
+    repeat = false,
+  ): Promise<BroadcastResult> {
     if (!this.config.apiUrl) {
       throw new ConsensusError(
         'apiUrl is required for transaction submission. Set it in the SDK config.',
@@ -592,11 +767,14 @@ export class ConsensusClient {
       );
     }
 
+    let earlier = repeat;
     for (let attempt = 0; attempt <= this.config.maxRetries!; attempt++) {
+      onAttempt?.();
       try {
         return await submitTxToApi(this.config.apiUrl, transaction, {
           apiKey: this.config.apiKey,
           timeoutMs: this.config.requestTimeoutSecs! * 1000,
+          repeat: earlier,
         });
       } catch (error) {
         if (attempt === this.config.maxRetries) {
@@ -607,7 +785,9 @@ export class ConsensusClient {
             'TX_SUBMIT_FAILED'
           );
         }
-        // fall through to retry
+        // This post may have reached CometBFT before it failed.
+        earlier = true;
+        await this.sleep(this.config.retryDelaySecs! * 1000 * (attempt + 1));
       }
     }
     throw new ConsensusError('tx submit: exhausted retries', 'TX_SUBMIT_FAILED');
@@ -674,12 +854,10 @@ export class ConsensusClient {
     throw new ConsensusError('Unexpected end of retry loop');
   }
 
-  /**
-   * Query a transaction by hash
-   */
-  private async queryTransaction(txHash: string): Promise<any | undefined> {
+  /** Query a transaction by its hash, given as {@link txHashParam} writes it. */
+  private async queryTransaction(hash: string): Promise<any | undefined> {
     try {
-      const result = await this.rpcRequest('tx', { hash: txHash, prove: false });
+      const result = await this.rpcRequest('tx', { hash, prove: false });
       return result;
     } catch (error) {
       if (isRpcUrlMissingError(error)) throw error;
@@ -688,36 +866,101 @@ export class ConsensusClient {
   }
 
   /**
-   * Get the next nonce for a DID. Falls back to the in-memory cache only
-   * if a prior call populated it — if the API is unreachable on first use
-   * the error is propagated rather than fabricating nonce=1, which would
-   * silently submit txs with a stale nonce.
+   * Whether the chain has used `nonce` for `did`: a transaction signed with
+   * it has been included in a block. That does not say the write applied: a
+   * transaction refused in its block spends its nonce too, so read the state
+   * the write changes to confirm it. For a submission whose outcome is
+   * `pending`, an unused nonce means it has not landed yet, and
+   * {@link resubmit} may post it again. With a CometBFT RPC URL it reads
+   * which nonces in the window are used; without one, only the base, so a
+   * nonce used above the base reads as unused until the base passes it.
    */
-  private async getNextNonce(did: string): Promise<number> {
-    try {
-      const currentNonce = await this.getAccountNonce(did);
-      const nextNonce = currentNonce + 1;
-      this.nonceCache.set(did, nextNonce);
-      return nextNonce;
-    } catch (error) {
-      const cached = this.nonceCache.get(did);
-      if (cached === undefined) {
-        throw error;
-      }
-      this.logger.warn('Failed to fetch nonce from API, using cache:', error);
-      const nextNonce = cached + 1;
-      this.nonceCache.set(did, nextNonce);
-      return nextNonce;
-    }
+  async isNonceUsed(did: string, nonce: number): Promise<boolean> {
+    return isUsed(await this.readNonceState(did), nonce);
   }
 
   /**
-   * Get the current nonce for an account from the blockchain
+   * Take the next nonce for a DID from the nonce allocator ({@link nonces}),
+   * against the account's nonce state as just read. If the read fails after
+   * the state was read before (a transient API failure), the newest state
+   * seen is used; on first use the error propagates rather than fabricating
+   * a nonce.
+   *
+   * This client's own writes call it, and so does `FileOperations` given
+   * this client (as `WillowClient`'s is). For a transaction neither builds,
+   * take the nonce here and report the submission's outcome with
+   * `nonces.settle(did, nonce, result)`; the nonce is held until it lands or
+   * 120 s pass.
+   */
+  async nextNonce(did: string): Promise<number> {
+    let chain: AccountNonceState;
+    try {
+      chain = await this.readNonceState(did);
+    } catch (error) {
+      if (!this.nonces.hasState(did)) throw error;
+      this.logger.warn('Failed to read the account nonce, using the last state seen:', error);
+      return this.nonces.take(did);
+    }
+    return this.nonces.take(did, chain);
+  }
+
+  /**
+   * An account's nonce state: the base and, with a CometBFT RPC URL, which of
+   * the 24 nonces above it are used (ABCI query
+   * `/store/account_nonce_state/{did}`); else the base alone from the API's
+   * `/account/{did}/nonce`.
+   */
+  private async readNonceState(did: string): Promise<AccountNonceState> {
+    if (this.config.consensusRpcUrl) {
+      try {
+        return await this.queryNonceState(did);
+      } catch (error) {
+        if (!this.config.apiUrl) throw error;
+        this.logger.warn('Failed to read the nonce state over RPC, reading the base from the API:', error);
+      }
+    }
+    return { base: await this.getAccountNonce(did), used: 0 };
+  }
+
+  /** ABCI query `/store/account_nonce_state/{did}`, one attempt. */
+  private async queryNonceState(did: string): Promise<AccountNonceState> {
+    const response = await fetch(this.config.consensusRpcUrl!, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(this.config.apiKey ? { 'X-API-Key': this.config.apiKey } : {})
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'abci_query',
+        params: { path: `/store/account_nonce_state/${did}`, data: '', height: '0', prove: false },
+      }),
+      signal: AbortSignal.timeout(this.config.requestTimeoutSecs! * 1000)
+    });
+    if (!response.ok) {
+      throw new ConsensusError(`Failed to read the nonce state: HTTP ${response.status}`);
+    }
+    const body = await response.json() as { result?: { response?: { code?: number; value?: string | null; log?: string } } };
+    const answer = body.result?.response;
+    if (!answer || typeof answer !== 'object') {
+      throw new ConsensusError('Failed to read the nonce state: malformed response');
+    }
+    if ((answer.code ?? 0) !== 0) {
+      throw new ConsensusError(`Failed to read the nonce state: ${answer.log ?? `code ${answer.code}`}`);
+    }
+    return parseAccountNonceStateBase64(answer.value ?? '');
+  }
+
+  /**
+   * Get the current nonce (the base) for an account from the API
    */
   private async getAccountNonce(did: string): Promise<number> {
     if (!this.config.apiUrl) {
-      // No API URL configured, use cache
-      return this.nonceCache.get(did) || 0;
+      throw new ConsensusError(
+        'apiUrl is required to read the account nonce. Set it in the SDK config.',
+        'API_URL_REQUIRED'
+      );
     }
 
     const response = await fetch(
@@ -742,7 +985,11 @@ export class ConsensusClient {
       throw new ConsensusError(data.error || 'Failed to fetch nonce');
     }
 
-    return data.data.nonce;
+    const base = data.data.nonce;
+    if (!Number.isSafeInteger(base) || base < 0 || base > Number.MAX_SAFE_INTEGER - NONCE_WINDOW) {
+      throw new ConsensusError(`Failed to fetch nonce: ${String(base)} is not a nonce this SDK can send`);
+    }
+    return base;
   }
 
   /**

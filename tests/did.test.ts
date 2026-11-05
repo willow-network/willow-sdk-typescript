@@ -58,7 +58,9 @@ describe('Self-certifying Willow DIDs', () => {
       expect(doc.id).toBe(EXPECTED_DID);
       expect(doc.publicKeys).toHaveLength(1);
       expect(doc.publicKeys[0].id).toBe(`${EXPECTED_DID}#key-1`);
-      expect(doc.publicKeys[0].type).toBe('Ed25519');
+      // The chain derives a DID from, and verifies with, only
+      // Ed25519VerificationKey2018 and EcdsaSecp256k1VerificationKey2019 keys.
+      expect(doc.publicKeys[0].type).toBe('Ed25519VerificationKey2018');
       expect(doc.publicKeys[0].publicKeyHex).toBe(PUBKEY_HEX);
     });
   });

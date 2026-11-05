@@ -8,6 +8,7 @@ import { MerkOp, MerkNode, CryptoHash, GroveDBVerificationError, ProvedKeyValue 
 import { Tree, compareBytes } from './tree';
 import { MerkDecoder } from './merk-decoder';
 import { valueHash } from './hash';
+import { bytesToHex } from './bincode';
 
 /**
  * Result of executing a Merk proof
@@ -19,6 +20,11 @@ export interface MerkExecutionResult {
   resultSet: ProvedKeyValue[];
   /** Remaining limit after execution (if limit was set) */
   limit: number | null;
+  /**
+   * Hex keys of every node in the proof that carries a value, whatever the
+   * limit: the keys a lower layer may hang under.
+   */
+  valueKeys: Set<string>;
 }
 
 /**
@@ -71,7 +77,8 @@ export function executeOps(
   }
 
   // Pop two nodes and attach one as a child of the other. The four tree ops
-  // differ only in pop order and which side the child lands on.
+  // differ only in pop order and which side the child lands on. `attach`
+  // refuses a Hash parent: its hash would not cover the child.
   function attachChild(parentFirst: boolean, left: boolean): void {
     const first = pop();
     const second = pop();
@@ -152,9 +159,19 @@ export function executeMerkProofWithQuery(
   _leftToRight: boolean = true
 ): MerkExecutionResult {
   const resultSet: ProvedKeyValue[] = [];
+  const valueKeys = new Set<string>();
   let currentLimit = limit;
 
   const visitNode = (node: MerkNode) => {
+    if (
+      node.type === 'KV' ||
+      node.type === 'KVValueHash' ||
+      node.type === 'KVValueHashFeatureType' ||
+      node.type === 'KVRefValueHash'
+    ) {
+      valueKeys.add(bytesToHex(node.key));
+    }
+
     // Check if we've hit the limit
     if (currentLimit !== null && currentLimit <= 0) {
       return;
@@ -214,7 +231,8 @@ export function executeMerkProofWithQuery(
   return {
     rootHash: tree.hash(),
     resultSet,
-    limit: currentLimit
+    limit: currentLimit,
+    valueKeys
   };
 }
 

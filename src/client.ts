@@ -1,14 +1,17 @@
 import { WillowAuth, SignatureAlgorithm, algorithmFromKeyType } from "./auth";
-import { WillowData } from "./data";
+import { WillowData, registerSubgroveRequest } from "./data";
 import { FileOperations } from "./files";
 import { EthOperations } from "./eth-state";
 import { VerifiableRpcOperations } from "./verifiable-rpc";
 import { ConsensusClient } from "./consensus";
-import { BroadcastResult, RegisterSubgroveOptions, Signer, SubgroveMode } from "./consensus/types";
+import { didDocumentKeyType } from "./consensus/wire";
+import { BroadcastResult, RegisterSubgroveOptions, Signer } from "./consensus/types";
+import { writeNotAccepted } from "./internal/tx";
 import { WillowIndexers } from "./indexers";
 import { WillowSubscriptions } from "./subscriptions";
 import {
   WillowConfig,
+  WillowError,
   DidDocument,
   RegisterSubgroveRequest,
   DataRecord,
@@ -80,44 +83,60 @@ export class WillowClient {
       indexerUrl: config.indexerUrl,
     });
 
+    this.consensus = new ConsensusClient({
+      consensusRpcUrl: cometUrl,
+      apiUrl: config.apiUrl,
+      apiKey: config.apiKey,
+      logger: config.logger,
+      nonceAllocator: config.nonceAllocator,
+    });
+
     this.data = new WillowData(
       config.apiUrl,
       this.auth,
       this.indexers,
       cometUrl,
       config.proofVerificationOptions,
-      { logger: config.logger, lightClient: config.lightClient },
+      { logger: config.logger, lightClient: config.lightClient, consensus: this.consensus },
     );
     this.subscriptions = new WillowSubscriptions(config.apiUrl, this.indexers, {
       webSocket: config.webSocket,
     });
 
-    this.files = new FileOperations(config.apiUrl, (method, path) =>
-      this.auth.getAuthHeaders(method, path),
+    // File writes take their nonces from, and settle them with, the same
+    // allocator as every other write.
+    this.files = new FileOperations(
+      config.apiUrl,
+      (method, path) => this.auth.getAuthHeaders(method, path),
+      this.consensus,
     );
     // Only indexers serve `/verifiable-rpc/*`; without `indexerUrl` these
     // throw INDEXER_URL_REQUIRED rather than asking the API.
     this.eth = new EthOperations(config.indexerUrl ?? "", undefined, config.apiKey);
     this.verifiableRpc = new VerifiableRpcOperations(config.indexerUrl ?? "");
-
-    this.consensus = new ConsensusClient({
-      consensusRpcUrl: cometUrl,
-      apiUrl: config.apiUrl,
-      apiKey: config.apiKey,
-      logger: config.logger,
-    });
-
   }
 
   /**
    * Initialize the client with authentication.
    *
-   * @param algorithm - Optional per-request signature algorithm. Self-certifying
-   *   Willow DIDs no longer encode the algorithm in the id, so a secp256k1
-   *   (Ethereum/wallet) identity must be signalled some other way. When omitted,
-   *   `init` derives it from the resolved DID document's key type (the
-   *   authoritative source); pass it explicitly to override or when supplying
-   *   your own `publicKeyId` skips the DID-document lookup.
+   * Reads the DID document from the API unless both `publicKeyId` and
+   * `algorithm` are given. Without `publicKeyId` it takes the document's
+   * first key. Without `algorithm` it takes the algorithm of that key's type
+   * in the document, the authoritative signal: self-certifying Willow DIDs
+   * don't encode the algorithm, and a `0x`-prefixed 64-hex key may be either
+   * kind. With a key id, a lookup that fails in any way (a DID the API
+   * doesn't know, a network error, a 5xx, a 400), or a document that doesn't
+   * list the key, leaves the algorithm to be guessed from the key's format,
+   * as `auth.setIdentity` does, and `init` completes. A wrong guess fails
+   * closed: a transaction is not signed with a guessed secp256k1
+   * (`ALGORITHM_REQUIRED`), and a secp256k1 key written as 64 hex digits
+   * without `0x`, which is guessed Ed25519, signs nothing the DID's key
+   * verifies, so the chain refuses its every write and the API answers its
+   * every signed read 401 until the algorithm is given.
+   * Without a key id the document is required, and a failed lookup throws.
+   *
+   * @param algorithm - The identity's signature algorithm. When given, it
+   *   wins over the document's.
    */
   async init(
     privateKey?: string,
@@ -134,31 +153,74 @@ export class WillowClient {
     }
 
     let resolvedAlgorithm = algorithm;
-    if (!publicKeyId) {
-      const didDoc = await this.auth.getDidDocument(this.config.did);
-      // The API serves the chain's document, whose keys are `public_keys`.
-      const publicKeys =
-        didDoc.publicKeys ??
-        (didDoc as unknown as { public_keys?: DidDocument["publicKeys"] }).public_keys ??
-        [];
-      if (publicKeys.length === 0) {
-        throw new Error("No public keys found in DID document");
+    if (!publicKeyId || resolvedAlgorithm === undefined) {
+      const publicKeys = await this.documentKeys(this.config.did, !publicKeyId);
+      if (!publicKeyId) {
+        if (publicKeys.length === 0) {
+          throw new Error("No public keys found in DID document");
+        }
+        publicKeyId = publicKeys[0].id;
       }
-      publicKeyId = publicKeys[0].id;
       // The on-chain DID document's key type is the authoritative algorithm
       // signal for self-certifying ids. An explicit `algorithm` still wins.
+      const keyId = publicKeyId;
       resolvedAlgorithm =
-        resolvedAlgorithm ?? algorithmFromKeyType(publicKeys[0].type);
+        resolvedAlgorithm ?? algorithmFromKeyType(publicKeys.find((k) => k?.id === keyId)?.type);
     }
 
     this.auth.setIdentity(this.config.did, key, publicKeyId, resolvedAlgorithm);
   }
 
   /**
-   * Register a new DID
+   * The keys of `did`'s document as the API serves it (the chain's document,
+   * whose keys are `public_keys`). When the document is needed only for a
+   * key's algorithm (`required` false), a lookup that fails in any way gives
+   * no keys rather than throwing, and the algorithm is guessed.
    */
-  async registerDid(didDocument: DidDocument): Promise<DidDocument> {
-    return this.auth.registerDid(didDocument);
+  private async documentKeys(did: string, required: boolean): Promise<DidDocument["publicKeys"]> {
+    let didDoc: DidDocument;
+    try {
+      didDoc = await this.auth.getDidDocument(did);
+    } catch (error) {
+      if (!required) return [];
+      throw error;
+    }
+    const keys =
+      didDoc?.publicKeys ??
+      (didDoc as unknown as { public_keys?: DidDocument["publicKeys"] } | undefined)?.public_keys ??
+      [];
+    return Array.isArray(keys) ? keys : [];
+  }
+
+  /**
+   * Register a DID by a RegisterDid transaction, signed by the identity set
+   * with `auth.setIdentity` (the DID being registered, and a key in its
+   * document) with the algorithm of that key in the document. An identity
+   * whose algorithm was guessed takes the key's; one given another is
+   * refused (`ALGORITHM_MISMATCH`).
+   *
+   * The document is sent as the chain's `DidDocument`: each key in
+   * `publicKeys` is controlled by the DID and listed for authentication. The
+   * DID must already hold the registration fee. Returns the consensus
+   * `BroadcastResult`. A registration refused at CheckTx, or whose outcome
+   * is pending, throws a `TransactionSubmitError` (`TX_SUBMIT_FAILED`)
+   * carrying the DID, nonce, signed body, and `result`.
+   */
+  async registerDid(didDocument: DidDocument): Promise<BroadcastResult> {
+    this.requireIdentity();
+    if (this.auth.getDid() !== didDocument.id) {
+      throw new WillowError(
+        `The identity (${this.auth.getDid()}) is not the DID being registered (${didDocument.id}); ` +
+          'set the identity to the new DID and one of its keys first.',
+        'IDENTITY_MISMATCH',
+      );
+    }
+    // Sign with the algorithm of the document's key, which the chain verifies.
+    const keyType = didDocumentKeyType(didDocument, this.auth.getPublicKeyId()!);
+    const signer = this.auth.transactionSigner(algorithmFromKeyType(keyType));
+    const result = await this.consensus.registerDid(didDocument, signer);
+    if (!result.success) throw writeNotAccepted('registerDid', result);
+    return result;
   }
 
   /**
@@ -180,27 +242,7 @@ export class WillowClient {
     options?: RegisterSubgroveOptions,
   ): Promise<BroadcastResult> {
     this.requireIdentity();
-    const mode: SubgroveMode =
-      options?.mode ?? {
-        DataStorage: {
-          name: request.name,
-          writers: request.writers,
-          free_readers: request.readers,
-        },
-      };
-    const result = await this.consensus.registerSubgrove(
-      request.dataset_id,
-      JSON.stringify(request.schema ?? {}),
-      this.auth.getDid()!,
-      this.signer(),
-      { name: request.name, ...options, mode },
-    );
-    if (!result.success) {
-      throw new Error(
-        `registerSubgrove failed: ${result.errorMessage ?? result.rawLog ?? 'unknown'}`,
-      );
-    }
-    return result;
+    return registerSubgroveRequest(this.consensus, this.auth, request, options);
   }
 
   /** @deprecated Use {@link registerSubgrove} — "subgrove" is the on-chain term. */
@@ -219,18 +261,31 @@ export class WillowClient {
    * so a second register of the same subgrove_id is a no-op. The server
    * bumps `deployment_epoch` on deregister, which indexers watch for to
    * restart their pipelines on the next loop tick.
+   *
+   * Returns the consensus `BroadcastResult`. A deregistration refused at
+   * CheckTx, or whose outcome is pending, throws a `TransactionSubmitError`
+   * (`TX_SUBMIT_FAILED`) carrying the DID, nonce, signed body, and `result`,
+   * as `store` and `registerSubgrove` do.
    */
   async deregisterSubgrove(subgroveId: string): Promise<BroadcastResult> {
     this.requireIdentity();
-    return this.consensus.deregisterSubgrove(
+    const result = await this.consensus.deregisterSubgrove(
       subgroveId,
       this.auth.getDid()!,
       this.signer(),
     );
+    if (!result.success) throw writeNotAccepted('deregisterSubgrove', result);
+    return result;
   }
 
   /**
-   * Store data via a consensus transaction.
+   * Store data via a consensus transaction. `value` must be a JSON object;
+   * anything else is refused (`INVALID_SIGNED_FIELD`) before a nonce is
+   * taken, as the chain refuses it. A write refused at CheckTx, or
+   * whose outcome is pending (`result.pending`), throws a
+   * `TransactionSubmitError` (`TX_SUBMIT_FAILED`) carrying the DID, nonce,
+   * signed body, and `result`, to confirm it or post it again
+   * (`consensus.resubmit(error)`).
    */
   async store(
     datasetId: string,
@@ -245,11 +300,7 @@ export class WillowClient {
       this.auth.getDid()!,
       this.signer(),
     );
-    if (!result.success) {
-      throw new Error(
-        `store failed: ${result.errorMessage ?? result.rawLog ?? 'unknown'}`,
-      );
-    }
+    if (!result.success) throw writeNotAccepted('store', result);
   }
 
   /**
@@ -273,18 +324,25 @@ export class WillowClient {
   }
 
   /**
-   * Update data via a consensus transaction (same as store — idempotent upsert).
+   * Changing an existing key takes an UpdateData transaction, which this SDK
+   * does not build (a StoreData of an existing key is refused in its block).
+   * Write new keys with {@link store}.
+   *
+   * @deprecated Always throws `UNSUPPORTED_OPERATION`.
    */
   async update(
     datasetId: string,
     key: string,
     value: any,
   ): Promise<void> {
-    return this.store(datasetId, key, value);
+    return this.data.updateData(datasetId, key, value);
   }
 
   /**
-   * Delete data by key.
+   * Deleting a key takes a DeleteData transaction, which this SDK does not
+   * build.
+   *
+   * @deprecated Always throws `UNSUPPORTED_OPERATION`.
    */
   async delete(datasetId: string, key: string): Promise<void> {
     return this.data.deleteData(datasetId, key);
@@ -301,13 +359,14 @@ export class WillowClient {
   }
 
   /**
-   * Get the verified root hash from the blockchain consensus
+   * The root hash the API reports at `GET /state/root-hash/verified`.
    *
-   * This method retrieves the root hash that has been committed to the blockchain
-   * and verified by the consensus mechanism. This is the most secure way to get
-   * the root hash as it ensures the state has been agreed upon by the network.
+   * The SDK does not verify it: it is the API's answer, as trustworthy as the
+   * API. The verified reads (`get`, `query`) don't use it; they check each
+   * proof's root against the light client's root for the proof's block
+   * height.
    *
-   * @returns The verified root hash from the blockchain
+   * @returns The root hash the API reports
    * @throws Error if the root hash cannot be retrieved
    */
   async getRootHash(): Promise<string> {
@@ -360,7 +419,11 @@ export class WillowClient {
   }
 
   /**
-   * Query indexed data with automatic proof verification (secure by default)
+   * Query indexed data with automatic proof verification (secure by
+   * default): the result is verified as the query's whole result. A query
+   * whose result the SDK can't verify throws `QUERY_NOT_VERIFIABLE` before
+   * anything is sent, and data at the verified root whose selection it can't
+   * reproduce throws `QUERY_RESULT_NOT_VERIFIABLE` (see `WillowData.query`).
    */
   async query(
     datasetId: string,
@@ -380,10 +443,13 @@ export class WillowClient {
   }
 
   /**
-   * Execute a SQL query against a subgrove.
+   * Execute a SQL query against a subgrove. The result is unverified: the SDK
+   * checks nothing on this path, from a validator or an indexer, and a
+   * `proof` the response carries (`includeProof`) is returned as the API sent
+   * it, not checked.
    *
-   * Routes to an indexer (history + analytics) or the validator (chain-tip,
-   * consensus-verified) based on `options.source`. See `QuerySource` in
+   * Routes to an indexer (history + analytics) or the validator's API
+   * (chain-tip data) based on `options.source`. See `QuerySource` in
    * `./types` for details.
    */
   async sqlQuery(
@@ -395,10 +461,13 @@ export class WillowClient {
   }
 
   /**
-   * Execute a GraphQL query against a subgrove.
+   * Execute a GraphQL query against a subgrove. The result is unverified: the
+   * SDK checks nothing on this path, from a validator or an indexer, and a
+   * proof the response carries (`includeProof`) is returned as the API sent
+   * it, not checked.
    *
-   * Routes to an indexer (history + analytics) or the validator (chain-tip,
-   * consensus-verified) based on `options.source`. See `QuerySource` in
+   * Routes to an indexer (history + analytics) or the validator's API
+   * (chain-tip data) based on `options.source`. See `QuerySource` in
    * `./types` for details.
    */
   async graphqlQuery(
@@ -417,12 +486,12 @@ export class WillowClient {
     }
   }
 
-  /** Builds a consensus Signer from the configured identity. Call requireIdentity() first. */
+  /**
+   * The configured identity as a consensus Signer, with the sign function of
+   * its algorithm (secp256k1 or Ed25519). Call requireIdentity() first.
+   */
   private signer(): Signer {
-    return {
-      privateKey: this.auth.getPrivateKey()!,
-      publicKeyId: this.auth.getPublicKeyId()!,
-    };
+    return this.auth.transactionSigner();
   }
 
   /**

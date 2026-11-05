@@ -9,6 +9,7 @@ import {
   DidDocument,
 } from '../types';
 import { HttpClient } from '../internal/http';
+import type { Signer, SignFunction } from '../consensus/types';
 import {
   base64ToBytes,
   bytesToBase64,
@@ -64,9 +65,10 @@ export function detectAlgorithm(did: string, privateKey?: string): SignatureAlgo
  * Because self-certifying Willow DIDs cannot reveal their algorithm from the id
  * string, the on-chain DID document's key `type` is the authoritative signal.
  * The SDK derives these types itself (see `createDidFromPublicKey` /
- * `createDidFromWallet` in `../utils`): Ed25519 keys use `'Ed25519'` and
- * secp256k1 keys use `'EcdsaSecp256k1VerificationKey2019'`. Other common W3C
- * spellings are accepted too. Returns `undefined` for unrecognized types so
+ * `createDidFromWallet` in `../utils`): Ed25519 keys use
+ * `'Ed25519VerificationKey2018'` and secp256k1 keys use
+ * `'EcdsaSecp256k1VerificationKey2019'`, the types the chain verifies. Other
+ * common W3C spellings are accepted too. Returns `undefined` for unrecognized types so
  * callers can fall back to {@link detectAlgorithm}.
  */
 export function algorithmFromKeyType(
@@ -81,6 +83,11 @@ export function algorithmFromKeyType(
     return 'Ed25519';
   }
   return undefined;
+}
+
+/** The SDK's sign function for an algorithm. */
+function signFunctionFor(algorithm: SignatureAlgorithm): SignFunction {
+  return algorithm === 'secp256k1' ? signSecp256k1 : signEd25519;
 }
 
 /**
@@ -337,6 +344,8 @@ export class WillowAuth {
   private privateKey?: string;
   private publicKeyId?: string;
   private algorithm?: SignatureAlgorithm;
+  /** Whether `algorithm` was given, not guessed by {@link detectAlgorithm}. */
+  private algorithmGiven = false;
   private apiKey?: string;
 
   constructor(apiUrl: string, apiKey?: string) {
@@ -367,16 +376,18 @@ export class WillowAuth {
   }
 
   /**
-   * Set identity for per-request signing.
+   * Set the identity that signs requests and transactions.
    * Call this once; all subsequent requests will be signed automatically.
    *
-   * @param algorithm - Signature algorithm for per-request auth. Pass this
-   *   explicitly for secp256k1 (Ethereum/wallet) identities: self-certifying
-   *   Willow DIDs no longer encode the algorithm in the id, so it cannot be
-   *   parsed from `did`. When omitted, falls back to best-effort
-   *   {@link detectAlgorithm} (Ed25519 for a typical Willow DID), preserving
-   *   backward-compatible behavior. `WillowClient.init()` supplies this
-   *   automatically from the on-chain DID document's key type.
+   * @param algorithm - The identity's signature algorithm, for its requests
+   *   and its transactions. Pass it for a secp256k1 (Ethereum/wallet)
+   *   identity: self-certifying Willow DIDs don't encode the algorithm, and
+   *   a `0x`-prefixed 64-hex key may be either kind. When omitted, it is
+   *   guessed by {@link detectAlgorithm} (Ed25519 for a typical Willow DID);
+   *   requests are signed with the guess, but a transaction is not signed
+   *   with a guessed secp256k1 (`ALGORITHM_REQUIRED`).
+   *   `WillowClient.init()`, given no algorithm, supplies it from the key's
+   *   type in the DID document on chain, with or without a key id.
    */
   setIdentity(
     did: string,
@@ -388,6 +399,7 @@ export class WillowAuth {
     this.privateKey = privateKey;
     this.publicKeyId = publicKeyId;
     this.algorithm = algorithm ?? detectAlgorithm(did, privateKey);
+    this.algorithmGiven = algorithm !== undefined;
   }
 
   /**
@@ -418,17 +430,81 @@ export class WillowAuth {
     return this.publicKeyId;
   }
 
+  /** The signature algorithm of the identity, once one is set. */
+  getAlgorithm(): SignatureAlgorithm | undefined {
+    return this.algorithm;
+  }
+
   /**
-   * Register a new DID document
+   * The function that signs a transaction's message with the identity's key:
+   * {@link signSecp256k1} for a secp256k1 identity, else {@link signEd25519}.
+   *
+   * @throws WillowError `ALGORITHM_REQUIRED` if the identity's algorithm is
+   *   a secp256k1 guessed from its key's format: pass the algorithm to
+   *   {@link setIdentity} or `WillowClient.init()`, or call
+   *   `WillowClient.init()` for a DID on chain whose document lists the key,
+   *   which reads it from the key's type.
    */
-  async registerDid(didDocument: DidDocument): Promise<DidDocument> {
-    const response = await this.api.post<ApiResponse<DidDocument>>('/did', didDocument);
+  getSignFunction(): SignFunction {
+    return signFunctionFor(this.transactionAlgorithm());
+  }
 
-    if (!response.success) {
-      throw new WillowError(response.error || 'Failed to register DID', 'REGISTRATION_FAILED');
+  /**
+   * The identity as a transaction {@link Signer}: its key, its key id, and
+   * the sign function of its algorithm.
+   *
+   * @param keyAlgorithm - The algorithm of the key the chain will verify the
+   *   signature with, when the caller knows it (the key of a DID document
+   *   being registered). An identity whose algorithm was guessed signs with
+   *   it; one whose algorithm was given must match it.
+   * @throws WillowError `NO_IDENTITY` if no identity is set,
+   *   `ALGORITHM_MISMATCH` if `keyAlgorithm` is not the algorithm given to
+   *   {@link setIdentity}, or `ALGORITHM_REQUIRED` (see
+   *   {@link getSignFunction}).
+   */
+  transactionSigner(keyAlgorithm?: SignatureAlgorithm): Required<Signer> {
+    const { privateKey, publicKeyId } = this.requireIdentity();
+    if (keyAlgorithm !== undefined) {
+      if (this.algorithmGiven && this.algorithm !== keyAlgorithm) {
+        throw new WillowError(
+          `The identity signs with ${this.algorithm}, but its key ${publicKeyId} is ${keyAlgorithm}`,
+          'ALGORITHM_MISMATCH',
+        );
+      }
+      return { privateKey, publicKeyId, signFunction: signFunctionFor(keyAlgorithm) };
     }
+    return { privateKey, publicKeyId, signFunction: this.getSignFunction() };
+  }
 
-    return response.data!;
+  /** The identity's algorithm for a transaction: never a guessed secp256k1. */
+  private transactionAlgorithm(): SignatureAlgorithm {
+    if (this.algorithm === 'secp256k1' && !this.algorithmGiven) {
+      throw new WillowError(
+        "The identity's algorithm was guessed from its key's format, which an Ed25519 key " +
+          "can share; pass 'secp256k1' or 'Ed25519' to setIdentity or WillowClient.init(), or " +
+          'call WillowClient.init() for a DID on chain whose document lists the key, before ' +
+          'signing a transaction',
+        'ALGORITHM_REQUIRED',
+      );
+    }
+    return this.algorithm ?? 'Ed25519';
+  }
+
+  /**
+   * The API serves no DID registration route: a DID is registered by a
+   * RegisterDid transaction sent through `POST /tx/submit`. Use
+   * `WillowClient.registerDid(didDocument)`, or
+   * `ConsensusClient.registerDid(didDocument, signer)`.
+   *
+   * @deprecated Always throws `UNSUPPORTED_OPERATION`.
+   */
+  async registerDid(_didDocument: DidDocument): Promise<DidDocument> {
+    throw new WillowError(
+      'The API has no DID registration route; a DID is registered by a RegisterDid ' +
+        'transaction. Use WillowClient.registerDid(didDocument) or ' +
+        'ConsensusClient.registerDid(didDocument, signer).',
+      'UNSUPPORTED_OPERATION',
+    );
   }
 
   /**
@@ -479,7 +555,7 @@ export class WillowAuth {
    * permission or a place on a free-reader list), and it can be replayed with
    * any body until the timestamp expires. The client signs its reads of
    * subgrove data with {@link signRequestWithNonce}, and its other signed
-   * requests (writes, key-grant reads, transaction submission) with this form.
+   * requests (key-grant reads and transaction submission) with this form.
    */
   signRequest(method: string, path: string): SignedRequestHeaders {
     const { did, privateKey, publicKeyId } = this.requireIdentity();

@@ -37,9 +37,20 @@ const ELEMENT_BIG_SUM_TREE = 5;
 const ELEMENT_COUNT_TREE = 6;
 const ELEMENT_COUNT_SUM_TREE = 7;
 
+/**
+ * Decode an element's bytes. The whole input must be one element: grovedb
+ * writes an element's exact serialization, so trailing bytes are refused
+ * rather than ignored (they would let other bytes pass as this element).
+ */
 export function deserializeElement(bytes: Uint8Array): Element {
   const reader = new BincodeReader(bytes);
-  return readElement(reader);
+  const element = readElement(reader);
+  if (reader.hasMore()) {
+    throw new GroveDBVerificationError(
+      `Trailing bytes after element: ${reader.remaining()} bytes at offset ${reader.position()}`,
+    );
+  }
+  return element;
 }
 
 function readElement(reader: BincodeReader): Element {

@@ -26,10 +26,11 @@ jest.mock('../src/grovedb', () => {
 
 import { verifyGroveDBProof } from '../src/grovedb';
 import { verifyQueryProof, verifyItemProof } from '../src/proof';
+import { isExactJsonNumber, firstInexactNumber } from '../src/proof/shared';
 
 const mockVerify = verifyGroveDBProof as jest.MockedFunction<typeof verifyGroveDBProof>;
 
-/** A verification result with one proven Item whose bytes are `text`. */
+/** A verification result with one proven Item whose bytes are `text`, as grovedb proves one (a KV node). */
 function provenItem(text: string, key = 'k', pathSegments: string[] = []): GroveDBVerificationResult {
   const enc = new TextEncoder();
   return {
@@ -40,6 +41,7 @@ function provenItem(text: string, key = 'k', pathSegments: string[] = []): Grove
         key: enc.encode(key),
         value: enc.encode(text),
         element: { type: 'Item', value: enc.encode(text), flags: null } as any,
+        nodeType: 'KV',
       },
     ],
   } as GroveDBVerificationResult;
@@ -55,6 +57,7 @@ function provenRawItem(bytes: Uint8Array, key = 'k'): GroveDBVerificationResult 
         key: new TextEncoder().encode(key),
         value: bytes,
         element: { type: 'Item', value: bytes, flags: null } as any,
+        nodeType: 'KV',
       },
     ],
   } as GroveDBVerificationResult;
@@ -63,20 +66,24 @@ function provenRawItem(bytes: Uint8Array, key = 'k'): GroveDBVerificationResult 
 beforeEach(() => jest.clearAllMocks());
 
 describe('verifyQueryProof — number-fidelity binding', () => {
-  it('rejects a big-int precision collision (proven 2^53, server sent 2^53+1)', async () => {
+  it('rejects a big-int precision collision (proven 2^53+1, which JSON.parse reads as 2^53)', async () => {
     // Both 9007199254740992 and 9007199254740993 JSON.parse to 2^53; a naive
-    // deep-equal would bind the server's distinct value. Reject it.
-    mockVerify.mockReturnValue(provenItem('{"n":9007199254740992}'));
+    // deep-equal would bind 2^53 to the proven 2^53+1. Reject it.
+    mockVerify.mockReturnValue(provenItem('{"n":9007199254740993}'));
     await expect(
-      verifyQueryProof('00', [{ n: 9007199254740993 } as any]),
+      verifyQueryProof('00', [JSON.parse('{"n":9007199254740993}')]),
     ).rejects.toThrow(/not committed by the proof/);
+    await expect(verifyItemProof('00', 'k', { n: 2 ** 53 })).rejects.toThrow(
+      /holds the number 9007199254740993, which JavaScript can't carry exactly/,
+    );
   });
 
-  it('rejects an unsafe integer even against an identical JS value (no false bind)', async () => {
-    mockVerify.mockReturnValue(provenItem('{"n":9007199254740992}'));
-    await expect(
-      verifyQueryProof('00', [{ n: 9007199254740992 } as any]),
-    ).rejects.toThrow(/not committed by the proof/);
+  it('binds an integer beyond 2^53 - 1 whose digits are the ones JavaScript writes for its double', async () => {
+    for (const n of [2 ** 53, 1e18, 2 ** 64, -(2 ** 60)]) {
+      mockVerify.mockReturnValue(provenItem(JSON.stringify({ n })));
+      await expect(verifyQueryProof('00', [{ n }])).resolves.toBe(ROOT_HEX);
+      await expect(verifyItemProof('00', 'k', { n })).resolves.toBe(ROOT_HEX);
+    }
   });
 
   it('binds a safe-integer document', async () => {
@@ -102,6 +109,100 @@ describe('verifyQueryProof — number-fidelity binding', () => {
     mockVerify.mockReturnValue(provenItem('{"x":1.5}'));
     await expect(verifyQueryProof('00', [{ x: 1.5 } as any])).resolves.toBe(ROOT_HEX);
   });
+});
+
+describe('a number JavaScript cannot carry exactly never binds', () => {
+  // 0.12345678901234567890 and 0.12345678901234568 parse to one double.
+  const LONG = '0.12345678901234567890';
+
+  it('a decimal whose double is written as another value, or that underflows', async () => {
+    for (const text of [LONG, '1.0000000000000000001', '0.33333333333333331', '4.9406564584124654e-324', '1e-400']) {
+      mockVerify.mockReturnValue(provenItem(`{"x":${text}}`));
+      const value = JSON.parse(`{"x":${text}}`);
+      await expect(verifyItemProof('00', 'k', value)).rejects.toThrow(
+        new RegExp(`holds the number ${text.replace(/[.+-]/g, '\\$&')}, which JavaScript can't carry exactly`),
+      );
+      await expect(verifyQueryProof('00', [value])).rejects.toThrow(/not committed by the proof/);
+    }
+  });
+
+  it('binds decimals of at most 15 significant digits, and digits in a string', async () => {
+    for (const text of ['0.123456789012345', '1.5e-300', '-0.000001', '123456789.123456', '1.50000000000000000000']) {
+      mockVerify.mockReturnValue(provenItem(`{"x":[${text}],"s":"${LONG}"}`));
+      await expect(verifyItemProof('00', 'k', JSON.parse(`{"x":[${text}],"s":"${LONG}"}`))).resolves.toBe(ROOT_HEX);
+    }
+  });
+
+  it('binds every number JavaScript writes, at 16 and 17 significant digits too', async () => {
+    // What `client.store` sends for these values, and the API stores and returns.
+    const written = [1.1 * 1.1, 1 / 3, 0.1 + 0.2, -123456789.1234567, 1e-320, 2 ** -1022].map(String);
+    expect(written.slice(0, 3)).toEqual(['1.2100000000000002', '0.3333333333333333', '0.30000000000000004']);
+    for (const text of [...written, '1.0', '1e2', '1E+2', '0.10']) {
+      mockVerify.mockReturnValue(provenItem(`{"x":${text}}`));
+      const value = JSON.parse(`{"x":${text}}`);
+      await expect(verifyItemProof('00', 'k', value)).resolves.toBe(ROOT_HEX);
+      await expect(verifyQueryProof('00', [value])).resolves.toBe(ROOT_HEX);
+    }
+  });
+
+  it('isExactJsonNumber and firstInexactNumber', () => {
+    expect(isExactJsonNumber('9007199254740991')).toBe(true);
+    expect(isExactJsonNumber('-9007199254740991')).toBe(true);
+    expect(isExactJsonNumber('9007199254740992')).toBe(true); // 2^53
+    expect(isExactJsonNumber('9007199254740993')).toBe(false); // parses to 2^53
+    expect(isExactJsonNumber('1e20')).toBe(true);
+    expect(isExactJsonNumber('1000000000000000000')).toBe(true);
+    expect(isExactJsonNumber('18446744073709552000')).toBe(true); // 2^64, as JavaScript writes it
+    expect(isExactJsonNumber('18446744073709551616')).toBe(false); // parses to the double written 18446744073709552000
+    expect(isExactJsonNumber('0.0')).toBe(true);
+    expect(isExactJsonNumber('1e400')).toBe(false);
+    expect(isExactJsonNumber('2.5e-308')).toBe(true);
+    expect(isExactJsonNumber('2.2250738585072014e-308')).toBe(true); // 2^-1022, as JavaScript writes it
+    expect(isExactJsonNumber('1e-308')).toBe(true);
+    expect(isExactJsonNumber('1.2100000000000002')).toBe(true);
+    expect(isExactJsonNumber('1.21000000000000020')).toBe(true); // the same value
+    expect(isExactJsonNumber('1.2100000000000003')).toBe(false); // parses to the double written 1.2100000000000004
+    expect(isExactJsonNumber('0.33333333333333331')).toBe(false); // parses to 0.3333333333333333
+    expect(isExactJsonNumber('100')).toBe(true);
+    expect(isExactJsonNumber('1.0')).toBe(true);
+    expect(isExactJsonNumber('1e2')).toBe(true);
+    expect(firstInexactNumber(`{"a":"1e-400","b\\"":[1,${LONG}],"c":2}`)).toBe(LONG);
+    expect(firstInexactNumber('{"a":"\\"0.12345678901234567890"}')).toBeUndefined();
+    expect(firstInexactNumber('{"a":1.2100000000000002,"b":[0.30000000000000004]}')).toBeUndefined();
+  });
+});
+
+describe('a number with a long run of zeros is read in linear time', () => {
+  // 65,400 zeros between two ones: a document that fits one KV node. Stripping
+  // the zeros by a backtracking regex took seconds, before the root was checked.
+  const ZEROS = '0'.repeat(65_400);
+  const FRACTION = `1.${ZEROS}1`;
+  const INTEGER = `1${ZEROS}1`;
+  const timed = async (run: () => unknown): Promise<number> => {
+    const start = performance.now();
+    await run();
+    return performance.now() - start;
+  };
+
+  it('isExactJsonNumber', async () => {
+    expect(await timed(() => expect(isExactJsonNumber(FRACTION)).toBe(false))).toBeLessThan(1000);
+    expect(await timed(() => expect(isExactJsonNumber(INTEGER)).toBe(false))).toBeLessThan(1000);
+    expect(isExactJsonNumber(`1.5${ZEROS}`)).toBe(true);
+    expect(isExactJsonNumber(`${ZEROS}1`)).toBe(true);
+  }, 30_000);
+
+  it('firstInexactNumber', async () => {
+    const text = `{"a":${FRACTION}}`;
+    expect(await timed(() => expect(firstInexactNumber(text)).toBe(FRACTION))).toBeLessThan(1000);
+  }, 30_000);
+
+  it('verifyItemProof', async () => {
+    mockVerify.mockReturnValue(provenItem(`{"a":${FRACTION}}`));
+    const elapsed = await timed(() =>
+      expect(verifyItemProof('00', 'k', { a: 1 })).rejects.toThrow(/which JavaScript can't carry exactly/),
+    );
+    expect(elapsed).toBeLessThan(1000);
+  }, 30_000);
 });
 
 describe('verifyQueryProof — prototype pollution safety', () => {

@@ -4,7 +4,6 @@ import {
   DataRecord,
   ProofResponse,
   RegisterSubgroveRequest,
-  DatasetRegistration,
   WillowLightClientOptions,
   QueryRequest,
   QueryResponse,
@@ -17,9 +16,22 @@ import {
   SqlQueryOptions,
   SqlQueryResult,
   QuerySource,
+  VerifiedData,
 } from "../types";
 import { WillowAuth } from "../auth";
-import { verifyQueryProof, verifyItemProof, ProofVerificationOptions } from "../proof";
+import {
+  verifyQueryProof,
+  subgroveDataPath,
+  ProofVerificationOptions,
+} from "../proof";
+import { verifySubgroveItem } from "../proof/binding";
+import {
+  checkQueryResult,
+  provenQueryData,
+  querySelection,
+} from "../proof/query-selection";
+import { enforceExpectedRoot } from "../proof/shared";
+import { verifyKeyAbsence, hashToHex, hexToBytes } from "../grovedb";
 import { LightClient, LightClientConfig } from "../light-client";
 import {
   ComputedFieldRegistry,
@@ -33,6 +45,81 @@ import {
 } from "../indexers";
 import { HttpClient, HttpError, RequestSigner } from "../internal/http";
 import { WillowLogger, silentLogger } from "../internal/logger";
+import { ConsensusClient } from "../consensus/client";
+import { serializeSchema } from "../consensus/schema";
+import { writeNotAccepted } from "../internal/tx";
+import type {
+  BroadcastResult,
+  RegisterSubgroveOptions,
+  SubgroveMode,
+} from "../consensus/types";
+
+/**
+ * Register a subgrove from a {@link RegisterSubgroveRequest} by a
+ * RegisterSubgrove transaction signed by `auth`'s identity, which owns it.
+ *
+ * The request's `name`, `writers`, and `readers` become a `DataStorage` mode
+ * (`readers` maps to the on-chain `free_readers`) unless `options.mode` is
+ * given. A DataStorage or FileStorage schema is sent in the chain's shape
+ * ({@link serializeSchema}), and one the chain can't take is refused before
+ * anything is signed. Throws `IDENTITY_MISMATCH` when the request's
+ * `owner_did` is not the identity. A registration refused at CheckTx, or
+ * whose outcome is pending, throws a `TransactionSubmitError`
+ * (`TX_SUBMIT_FAILED`) carrying the DID, nonce, signed body, and `result`.
+ */
+export async function registerSubgroveRequest(
+  consensus: Pick<ConsensusClient, "registerSubgrove">,
+  auth: WillowAuth,
+  request: RegisterSubgroveRequest,
+  options?: RegisterSubgroveOptions,
+): Promise<BroadcastResult> {
+  const signer = auth.transactionSigner();
+  if (request.owner_did && request.owner_did !== auth.getDid()) {
+    throw new WillowError(
+      `The request's owner (${request.owner_did}) is not the identity (${auth.getDid()}), ` +
+        "which owns the subgrove it registers; set the owner's identity first.",
+      "IDENTITY_MISMATCH",
+    );
+  }
+  const mode: SubgroveMode =
+    options?.mode ?? {
+      DataStorage: {
+        name: request.name,
+        writers: request.writers,
+        free_readers: request.readers,
+      },
+    };
+  // A data or file subgrove's schema goes in the chain's shape; the chain
+  // reads no other mode's schema, which goes as it is.
+  const storage =
+    typeof mode === "object" &&
+    mode !== null &&
+    ("DataStorage" in mode || "FileStorage" in mode);
+  const schema = storage
+    ? serializeSchema(request.schema)
+    : JSON.stringify(request.schema ?? {});
+  const result = await consensus.registerSubgrove(
+    request.dataset_id,
+    schema,
+    auth.getDid()!,
+    signer,
+    { name: request.name, ...options, mode },
+  );
+  if (!result.success) throw writeNotAccepted("registerSubgrove", result);
+  return result;
+}
+
+/**
+ * The API takes no data writes over REST (its data-write routes answer 501):
+ * each is a transaction sent through `POST /tx/submit`.
+ */
+function noDataWriteRoute(what: string, instead: string): WillowError {
+  return new WillowError(
+    `The API does not take data writes over REST (its ${what} route answers 501); data is ` +
+      `written by transactions sent through POST /tx/submit. ${instead}`,
+    "UNSUPPORTED_OPERATION",
+  );
+}
 
 export class ValidatorHasNoDataError extends WillowError {
   constructor(subgroveId: string, reason: string) {
@@ -54,11 +141,45 @@ export class NoIndexersReachableError extends WillowError {
   }
 }
 
+/**
+ * How many blocks a verified read's proof may be behind the chain's latest
+ * height, unless `lightClient.maxProofLagBlocks` says otherwise.
+ */
+export const DEFAULT_MAX_PROOF_LAG_BLOCKS = 20;
+
+/** A proof verification failure, as the verified reads report it. */
+function verificationFailed(error: unknown): WillowError {
+  if (error instanceof WillowError) return error;
+  return new WillowError(
+    `Proof verification failed: ${error instanceof Error ? error.message : String(error)}`,
+    "PROOF_VERIFICATION_FAILED",
+  );
+}
+
+/**
+ * An object to return values by key in, with no prototype: no key a caller
+ * reads in it is inherited, and a key named `__proto__` is set as a key.
+ */
+function keyedResults(): Record<string, DataRecord> {
+  return Object.create(null) as Record<string, DataRecord>;
+}
+
+/** Set `key` to `value` as an own property, whatever the key's name. */
+function setResult(results: Record<string, DataRecord>, key: string, value: DataRecord): void {
+  Object.defineProperty(results, key, { value, enumerable: true, writable: true, configurable: true });
+}
+
 export interface WillowDataOptions {
   /** Logger for verification diagnostics. Defaults to `silentLogger`. */
   logger?: WillowLogger;
   /** Overrides for the auto-created light client (chain ID, endpoints, …). */
   lightClient?: WillowLightClientOptions;
+  /**
+   * The consensus client that sends this client's transactions
+   * (`registerSubgrove`). `WillowClient` passes its own; without one, one is
+   * made for `apiUrl`.
+   */
+  consensus?: ConsensusClient;
 }
 
 export class WillowData {
@@ -73,17 +194,13 @@ export class WillowData {
   private proofOptions?: ProofVerificationOptions;
   private logger: WillowLogger;
   private lightClientOptions?: WillowLightClientOptions;
+  private consensus?: ConsensusClient;
   /**
    * Signs a read of subgrove data (`/data`, `/proof`, `/query`, `/sql`,
    * `/graphql`): X-API-Key, plus the nonce form with an identity set. Only
    * that form carries the DID's read rights.
    */
   private signRead: RequestSigner;
-  /**
-   * Signs any other request in the older form, which the API accepts in the
-   * seconds after a restart and with more clock skew than the nonce form.
-   */
-  private signOther: RequestSigner;
 
   constructor(
     apiUrl: string,
@@ -100,10 +217,20 @@ export class WillowData {
     this.api = new HttpClient({ baseURL: apiUrl });
     this.auth = auth;
     this.signRead = (method, target, body) => auth.getSignedHeaders(method, target, body);
-    this.signOther = (method, target) => auth.getAuthHeaders(method, target);
     this.computedFieldRegistry = new ComputedFieldRegistry();
     this.logger = options?.logger ?? silentLogger;
     this.lightClientOptions = options?.lightClient;
+    this.consensus = options?.consensus;
+  }
+
+  private consensusClient(): ConsensusClient {
+    this.consensus ??= new ConsensusClient({
+      apiUrl: this.apiUrl,
+      apiKey: this.auth.getApiKey(),
+      consensusRpcUrl: this.cometbftRpcUrl,
+      logger: this.logger,
+    });
+    return this.consensus;
   }
 
   /**
@@ -199,72 +326,68 @@ export class WillowData {
   }
 
   /**
-   * Register a subgrove via the REST API.
+   * Register a subgrove by a RegisterSubgrove transaction signed by the
+   * auth identity, which owns it (see {@link registerSubgroveRequest}).
+   * Returns the consensus `BroadcastResult`; throws when it is refused.
    */
   async registerSubgrove(
     request: RegisterSubgroveRequest,
-  ): Promise<DatasetRegistration> {
-    // Convert to the API's expected format (subgrove endpoint for compatibility)
-    const subgroveRequest = {
-      subgrove_id: request.dataset_id,
-      name: request.name,
-      schema: request.schema,
-      owner_did: request.owner_did,
-      writers: request.writers,
-      readers: request.readers,
-    };
-
-    const response = await this.api.post<ApiResponse<DatasetRegistration>>(
-      "/register/subgrove",
-      subgroveRequest,
-      { sign: this.signOther },
-    );
-
-    if (!response.success) {
-      throw new WillowError(
-        response.error || "Failed to register dataset",
-        "DATASET_REGISTRATION_FAILED",
-      );
-    }
-
-    return response.data!;
+    options?: RegisterSubgroveOptions,
+  ): Promise<BroadcastResult> {
+    return registerSubgroveRequest(this.consensusClient(), this.auth, request, options);
   }
 
   /** @deprecated Use {@link registerSubgrove} — "subgrove" is the on-chain term. */
   async registerDataset(
     request: RegisterSubgroveRequest,
-  ): Promise<DatasetRegistration> {
-    return this.registerSubgrove(request);
+    options?: RegisterSubgroveOptions,
+  ): Promise<BroadcastResult> {
+    return this.registerSubgrove(request, options);
   }
 
   /**
-   * Store data (batch operation)
+   * The API's `POST /data/:subgrove` answers 501: data is written by a StoreData
+   * transaction per key. Use `WillowClient.store(subgroveId, key, value)` (or
+   * `ConsensusClient.storeData`) for each key.
+   *
+   * @deprecated Always throws `UNSUPPORTED_OPERATION`.
    */
   async storeData(
-    datasetId: string,
-    data: Record<string, any>,
+    _datasetId: string,
+    _data: Record<string, any>,
   ): Promise<void> {
-    const response = await this.api.post<ApiResponse>(
-      `/data/${datasetId}`,
-      data,
-      { sign: this.signOther },
+    throw noDataWriteRoute(
+      "POST /data/:subgrove",
+      "Store each key with WillowClient.store(subgroveId, key, value), one StoreData " +
+        "transaction per key, and send a write that depends on another only after the " +
+        "first has landed.",
     );
-
-    if (!response.success) {
-      throw new WillowError(
-        response.error || "Failed to store data",
-        "STORE_FAILED",
-      );
-    }
   }
 
   /**
-   * Get data by key with automatic proof verification (secure by default)
+   * Get data by key with automatic proof verification (secure by default):
+   * the value must be the one the proof proves at the key, and the proof's
+   * root the light client's root for the proof's block height, which must be
+   * at most `lightClient.maxProofLagBlocks` behind the chain's latest and at
+   * most one block ahead of it. An answer
+   * that carries no value is refused (`PROOF_VERIFICATION_FAILED`). See
+   * {@link getVerifiedData} for the root and height.
    */
   async getData(
     datasetId: string,
     key: string,
   ): Promise<DataRecord> {
+    return (await this.getVerifiedData(datasetId, key)).data;
+  }
+
+  /**
+   * {@link getData}, with the root and block height the value was verified
+   * against.
+   */
+  async getVerifiedData(
+    datasetId: string,
+    key: string,
+  ): Promise<VerifiedData> {
     // First get the data
     const response = await this.api.get<ApiResponse<DataRecord>>(
       `/data/${datasetId}/${key}`,
@@ -279,72 +402,140 @@ export class WillowData {
       );
     }
 
-    const data = response.data!;
+    const data = response.data;
 
-    // Now get the proof for verification
     try {
-      const proofResponse = await this.api.get<ApiResponse<ProofResponse>>(
-        `/proof/${datasetId}/${key}`,
-        { sign: this.signRead },
+      // A success that carries no value has nothing to bind to the proof: it
+      // is refused, not returned as `undefined` or read as an absent key.
+      if (data === undefined) {
+        throw new Error(`The API's answer for key "${key}" carries no value`);
+      }
+      const proofData = await this.fetchProof(datasetId, key);
+      // Verify the proof, binding the returned value to the Item it proves at
+      // the key, and compute the root hash.
+      const computedRootHash = verifySubgroveItem(
+        proofData.proof,
+        datasetId,
+        key,
+        data,
+        this.proofOptions?.expectedRootHash,
       );
-
-      if (proofResponse.success && proofResponse.data?.proof) {
-        const proofData = proofResponse.data;
-
-        // Verify the proof and compute root hash
-        const path = ["subgroves", datasetId, "data"];
-        const computedRootHash = await verifyItemProof(
-          proofData.proof,
-          key,
-          data,
-          path,
-          this.proofOptions,
-        );
-
-        // Get verified root hash at the SAME block height as the proof.
-        // This avoids the timing mismatch where the chain advances between
-        // fetching the proof and fetching the latest verified header.
-        const lightClient = await this.getOrCreateLightClient();
-        const verifiedRootHash = proofData.height
-          ? await lightClient.getVerifiedRootHashAtHeight(proofData.height)
-          : await lightClient.getVerifiedRootHash();
-
-        // Compare computed root with verified root
-        if (computedRootHash.toLowerCase() !== verifiedRootHash.toLowerCase()) {
-          this.logger.error(
-            `Root hash mismatch: computed=${computedRootHash}, verified=${verifiedRootHash}, height=${proofData.height}`,
-          );
-          throw new WillowError(
-            "Proof verification failed: root hash mismatch",
-            "PROOF_VERIFICATION_FAILED",
-          );
-        }
-      } else {
-        // Fail closed: the server returned data without a proof, so we cannot
-        // verify it. Returning it anyway would silently break the "secure by
-        // default" contract. Callers who knowingly trust the endpoint should
-        // use `getDataUnverified`.
-        throw new WillowError(
-          `No proof returned for key "${key}" — cannot verify the data. ` +
-            "Use `getDataUnverified` to fetch without verification.",
-          "MISSING_PROOF",
-        );
-      }
+      const verified = await this.verifyRootAtHeight(computedRootHash, proofData.height);
+      return { data, rootHash: verified.rootHash, height: verified.height };
     } catch (error) {
-      if (error instanceof WillowError) {
-        throw error;
-      }
-      // Any other error during proof fetch or verification is a verification
-      // failure — a previous version swallowed these, which meant the caller
-      // thought they had cryptographic verification when they didn't. If you
-      // explicitly want data without verification, use `getDataUnverified`.
+      // Any error during proof fetch or verification is a verification
+      // failure. If you explicitly want data without verification, use
+      // `getDataUnverified`.
+      throw verificationFailed(error);
+    }
+  }
+
+  /**
+   * `GET /proof/:subgrove/:key`. Fails closed: a response without a proof
+   * can't verify anything, so it throws `MISSING_PROOF` (use
+   * `getDataUnverified` to read without verification).
+   */
+  private async fetchProof(datasetId: string, key: string): Promise<ProofResponse> {
+    const proofResponse = await this.api.get<ApiResponse<ProofResponse>>(
+      `/proof/${datasetId}/${key}`,
+      { sign: this.signRead },
+    );
+    if (!proofResponse.success || !proofResponse.data?.proof) {
       throw new WillowError(
-        `Proof verification failed: ${error instanceof Error ? error.message : String(error)}`,
+        `No proof returned for key "${key}" — cannot verify the data. ` +
+          "Use `getDataUnverified` to fetch without verification.",
+        "MISSING_PROOF",
+      );
+    }
+    return proofResponse.data;
+  }
+
+  /**
+   * Check a proof's root against the light client's root for the proof's
+   * block height, and return both. The API chooses the height it proves at,
+   * so a height more than `lightClient.maxProofLagBlocks` behind the chain's
+   * latest (as the light client's endpoints report it), or more than one
+   * block ahead of it, is refused (`PROOF_HEIGHT_OUT_OF_RANGE`), as is a
+   * proof that names no height. A root is read from the header after the
+   * proof's height, which the light client waits for: a height further ahead
+   * would hold each read until that wait times out on every endpoint.
+   */
+  private async verifyRootAtHeight(
+    computedRootHash: string,
+    height: unknown,
+  ): Promise<{ rootHash: string; height: number }> {
+    if (typeof height !== "number" || !Number.isSafeInteger(height) || height <= 0) {
+      throw new WillowError(
+        `The proof names no block height (${JSON.stringify(height)}), so its root can't be checked ` +
+          "against the chain's",
         "PROOF_VERIFICATION_FAILED",
       );
     }
+    const lightClient = await this.getOrCreateLightClient();
+    const maxLag = this.maxProofLagBlocks();
+    const latest = await lightClient.getLatestChainHeight();
+    if (height - latest > 1) {
+      throw new WillowError(
+        `The proof is of the state at height ${height}, ${height - latest} blocks ahead of the ` +
+          `chain's latest (${latest}); at most 1 is accepted`,
+        "PROOF_HEIGHT_OUT_OF_RANGE",
+      );
+    }
+    if (latest - height > maxLag) {
+      throw new WillowError(
+        `The proof is of the state at height ${height}, ${latest - height} blocks behind the ` +
+          `chain's latest (${latest}); at most ${maxLag} is accepted (lightClient.maxProofLagBlocks)`,
+        "PROOF_HEIGHT_OUT_OF_RANGE",
+      );
+    }
+    const verifiedRootHash = await lightClient.getVerifiedRootHashAtHeight(height);
+    if (computedRootHash.toLowerCase() !== verifiedRootHash.toLowerCase()) {
+      this.logger.error(
+        `Root hash mismatch: computed=${computedRootHash}, verified=${verifiedRootHash}, height=${height}`,
+      );
+      throw new WillowError(
+        "Proof verification failed: root hash mismatch",
+        "PROOF_VERIFICATION_FAILED",
+      );
+    }
+    return { rootHash: verifiedRootHash, height };
+  }
 
-    return data;
+  private maxProofLagBlocks(): number {
+    const configured = this.lightClientOptions?.maxProofLagBlocks;
+    if (configured === undefined) return DEFAULT_MAX_PROOF_LAG_BLOCKS;
+    if (!Number.isSafeInteger(configured) || configured < 0) {
+      throw new WillowError(
+        `lightClient.maxProofLagBlocks must be a non-negative integer, not ${configured}`,
+        "INVALID_CONFIG",
+      );
+    }
+    return configured;
+  }
+
+  /**
+   * Verify that `key` is absent from the subgrove's data: the API's proof of
+   * the key must prove it absent, at a root the light client verifies.
+   */
+  private async verifyAbsent(datasetId: string, key: string): Promise<void> {
+    try {
+      const proofData = await this.fetchProof(datasetId, key);
+      const encoder = new TextEncoder();
+      const rootHash = hashToHex(
+        verifyKeyAbsence(
+          hexToBytes(proofData.proof),
+          subgroveDataPath(datasetId).map((segment) => encoder.encode(segment)),
+          encoder.encode(key),
+        ),
+      );
+      const expected = this.proofOptions?.expectedRootHash;
+      if (expected && expected.toLowerCase().replace(/^0x/, "") !== rootHash) {
+        throw new Error(`Root hash mismatch: computed=${rootHash}, expected=${expected}`);
+      }
+      await this.verifyRootAtHeight(rootHash, proofData.height);
+    } catch (error) {
+      throw verificationFailed(error);
+    }
   }
 
   /**
@@ -371,45 +562,37 @@ export class WillowData {
   }
 
   /**
-   * Update data by key
+   * The API's `PUT /data/:subgrove/:key` answers 501: an existing key is changed
+   * by an UpdateData transaction, which this SDK does not build.
+   *
+   * @deprecated Always throws `UNSUPPORTED_OPERATION`.
    */
   async updateData(
-    datasetId: string,
-    key: string,
-    data: any,
+    _datasetId: string,
+    _key: string,
+    _data: any,
   ): Promise<void> {
-    const response = await this.api.put<ApiResponse>(
-      `/data/${datasetId}/${key}`,
-      data,
-      { sign: this.signOther },
+    throw noDataWriteRoute(
+      "PUT /data/:subgrove/:key",
+      "An existing key is changed by an UpdateData transaction, which this SDK does " +
+        "not build.",
     );
-
-    if (!response.success) {
-      throw new WillowError(
-        response.error || "Failed to update data",
-        "UPDATE_FAILED",
-      );
-    }
   }
 
   /**
-   * Delete data by key
+   * The API's `DELETE /data/:subgrove/:key` answers 501: a key is deleted by a
+   * DeleteData transaction, which this SDK does not build.
+   *
+   * @deprecated Always throws `UNSUPPORTED_OPERATION`.
    */
   async deleteData(
-    datasetId: string,
-    key: string,
+    _datasetId: string,
+    _key: string,
   ): Promise<void> {
-    const response = await this.api.delete<ApiResponse>(
-      `/data/${datasetId}/${key}`,
-      { sign: this.signOther },
+    throw noDataWriteRoute(
+      "DELETE /data/:subgrove/:key",
+      "A key is deleted by a DeleteData transaction, which this SDK does not build.",
     );
-
-    if (!response.success) {
-      throw new WillowError(
-        response.error || "Failed to delete data",
-        "DELETE_FAILED",
-      );
-    }
   }
 
   /**
@@ -435,7 +618,11 @@ export class WillowData {
   }
 
   /**
-   * Batch operations helper
+   * The API serves no batch write: data is written by a StoreData
+   * transaction per key. Use `WillowClient.store(subgroveId, key, value)` for
+   * each record.
+   *
+   * @deprecated Always throws `UNSUPPORTED_OPERATION`.
    */
   async batchStore(
     datasetId: string,
@@ -450,22 +637,31 @@ export class WillowData {
   }
 
   /**
-   * Query helper - get multiple records with verification
+   * Get several keys, each verified as {@link getData} verifies it. A key the
+   * API reports absent is left out of the result only when its proof proves
+   * it absent at a root the light client verifies; otherwise this throws.
+   *
+   * The result has no prototype: each key is an own property, so a key named
+   * `__proto__` is returned as a key, and a key left out reads as
+   * `undefined` (`"toString" in result` is false). Copy it with spread or
+   * `Object.fromEntries`: `Object.assign` and `copy[key] = result[key]` set
+   * the copy's prototype for a key named `__proto__`. Each key is verified
+   * at its own proof's height, which the result does not carry.
    */
   async getMultiple(
     datasetId: string,
     keys: string[],
   ): Promise<Record<string, DataRecord>> {
-    const results: Record<string, DataRecord> = {};
+    const results = keyedResults();
 
     // In production, we'd want to batch these or have a bulk endpoint
     await Promise.all(
       keys.map(async (key) => {
         try {
-          results[key] = await this.getData(datasetId, key);
+          setResult(results, key, await this.getData(datasetId, key));
         } catch (error) {
-          // Ignore not found errors in bulk operations
-          if (error instanceof WillowError && error.statusCode === 404) {
+          if (error instanceof WillowError && error.code === "DATA_NOT_FOUND") {
+            await this.verifyAbsent(datasetId, key);
             return;
           }
           throw error;
@@ -477,19 +673,20 @@ export class WillowData {
   }
 
   /**
-   * Query helper - get multiple records without verification
+   * Query helper - get multiple records without verification. The result
+   * has no prototype, as {@link getMultiple}'s.
    */
   async getMultipleUnverified(
     datasetId: string,
     keys: string[],
   ): Promise<Record<string, DataRecord>> {
-    const results: Record<string, DataRecord> = {};
+    const results = keyedResults();
 
     // In production, we'd want to batch these or have a bulk endpoint
     await Promise.all(
       keys.map(async (key) => {
         try {
-          results[key] = await this.getDataUnverified(datasetId, key);
+          setResult(results, key, await this.getDataUnverified(datasetId, key));
         } catch (error) {
           // Ignore not found errors in bulk operations
           if (error instanceof WillowError && error.statusCode === 404) {
@@ -504,34 +701,48 @@ export class WillowData {
   }
 
   /**
-   * Get the verified root hash using the light client.
+   * Query indexed data with automatic proof verification (secure by default).
    *
-   * Uses the light client for trustless verification. Auto-initializes
-   * with trust-on-first-use if no light client is configured.
+   * The result is verified as the query's whole result: the API proves the
+   * subgrove's entire data tree, and the SDK runs the API's selection over it
+   * (the one exact-match filter, the sort, `offset`, and `limit`, default
+   * 100) and requires the returned `documents` and `total` to be exactly that
+   * (see `verifyQuerySelection`). The selection is the one in the body sent,
+   * read when it is sent, so changing `query` afterwards does not change what
+   * the result is checked against. The proof must reveal the whole data
+   * tree, and its root must be the light client's root for the proof's block
+   * height, which must be at most `lightClient.maxProofLagBlocks` behind
+   * the chain's latest and at most one block ahead of it, before the
+   * selection is run; the result carries `verifiedRootHash` and
+   * `verifiedHeight`.
    *
-   * @private
-   */
-  private async getVerifiedRootHash(): Promise<string> {
-    const lightClient = await this.getOrCreateLightClient();
-    return lightClient.getVerifiedRootHash();
-  }
-
-  /**
-   * Query indexed data with automatic proof verification (secure by default)
+   * A query whose selection can't be verified throws `QUERY_NOT_VERIFIABLE`
+   * before anything is sent: a filter on more than one field (the API
+   * applies only one), a filter operator such as `$gt` (the API applies
+   * none), or `search`. Use `queryUnverified` for those. Data at the verified
+   * root whose selection the SDK can't reproduce (a sort over values that are
+   * not all numbers or all strings, say) throws `QUERY_RESULT_NOT_VERIFIABLE`
+   * (a `QueryResultNotVerifiableError` carrying the root). The API's sort
+   * calls a missing field, `null`, a boolean, an array, or an object equal to
+   * anything, so a sort on a field some selected document lacks (or holds as
+   * one of those) throws on every page, unless the selected documents hold
+   * at most one number and one string there: filter on a field that selects
+   * only documents holding the sort field as a number (or all as a string),
+   * or use `queryUnverified`.
    */
   async query(
     datasetId: string,
     query: QueryRequest,
   ): Promise<QueryResponse> {
-    // Always include proof by default for security
-    const queryWithProof: QueryRequest = {
-      ...query,
-      include_proof: true,
-    };
+    // The body as it is sent (with the proof always asked for), read once:
+    // the selection is checked against it, not the caller's object later.
+    const sent = JSON.parse(JSON.stringify({ ...query, include_proof: true })) as QueryRequest;
+    // Refuse a query whose result can't be verified before sending it.
+    const selection = querySelection(sent);
 
     const response = await this.api.post<ApiResponse<QueryResponse>>(
       `/query/${datasetId}`,
-      queryWithProof,
+      sent,
       { sign: this.signRead },
     );
 
@@ -543,48 +754,7 @@ export class WillowData {
     }
 
     const result = response.data!;
-
-    // Verify proof if present
-    if (result.proof) {
-      try {
-        // Verify the proof and compute root hash
-        const computedRootHash = await verifyQueryProof(
-          result.proof,
-          result.documents,
-          this.proofOptions,
-        );
-
-        // Get verified root hash at the same block height as the proof
-        // to avoid timing mismatches on live chains.
-        const proofHeight = (result as any).height as number | undefined;
-        const lightClient = await this.getOrCreateLightClient();
-        const verifiedRootHash = proofHeight
-          ? await lightClient.getVerifiedRootHashAtHeight(proofHeight)
-          : await lightClient.getVerifiedRootHash();
-
-        // Compare computed root with verified root
-        if (computedRootHash.toLowerCase() !== verifiedRootHash.toLowerCase()) {
-          this.logger.error(
-            `Query proof verification failed: computed=${computedRootHash}, verified=${verifiedRootHash}, height=${proofHeight}`,
-          );
-          throw new WillowError(
-            "Proof verification failed: root hash mismatch",
-            "PROOF_VERIFICATION_FAILED",
-          );
-        }
-
-        // Add verified root hash to response
-        (result as any).verifiedRootHash = verifiedRootHash;
-      } catch (error) {
-        if (error instanceof WillowError) {
-          throw error;
-        }
-        throw new WillowError(
-          `Proof verification failed: ${error instanceof Error ? error.message : String(error)}`,
-          "PROOF_VERIFICATION_FAILED",
-        );
-      }
-    } else {
+    if (!result.proof) {
       // Fail closed: include_proof was requested but the server returned no
       // proof, so the documents are unverified. Use `queryUnverified` to opt
       // out of verification explicitly.
@@ -595,13 +765,38 @@ export class WillowData {
       );
     }
 
+    let verified: QueryResponse;
+    try {
+      // The whole data tree and its root first; the selection runs only over
+      // data at a verified root.
+      const data = provenQueryData(datasetId, result);
+      enforceExpectedRoot(data.rootHash, this.proofOptions?.expectedRootHash);
+      const { rootHash, height } = await this.verifyRootAtHeight(
+        data.rootHash,
+        (result as { height?: unknown }).height,
+      );
+      checkQueryResult(data, selection, result);
+      // Only what was verified: the API's other fields are left out.
+      verified = {
+        documents: result.documents,
+        total: result.total,
+        offset: result.offset,
+        limit: result.limit,
+        proof: result.proof,
+        verifiedRootHash: rootHash,
+        verifiedHeight: height,
+      };
+    } catch (error) {
+      throw verificationFailed(error);
+    }
+
     // Apply computed fields if registered for this dataset
     const computedFields = this.computedFieldRegistry.get(datasetId);
     if (computedFields) {
-      return applyComputedFieldsToResponse(result, computedFields);
+      return applyComputedFieldsToResponse(verified, computedFields);
     }
 
-    return result;
+    return verified;
   }
 
   /**
@@ -646,7 +841,9 @@ export class WillowData {
   // ============================================================================
 
   /**
-   * Get checkpoint state root for proof verification.
+   * The state root the API reports for a checkpoint. The SDK does not verify
+   * it: it is the API's own record of what an indexer submitted, not a root
+   * from consensus.
    *
    * @param subgroveId - The subgrove ID
    * @param checkpointId - The checkpoint ID (hex string)
@@ -672,35 +869,33 @@ export class WillowData {
   }
 
   /**
-   * Query historical indexed data from a verified checkpoint.
+   * Query historical indexed data at a checkpoint, unverified.
    *
-   * This method queries historical data from indexer nodes that have preserved
-   * checkpoint data. The response includes proof information that can be
-   * verified against the checkpoint's state root.
+   * The API forwards the query to indexer nodes that keep the checkpoint's
+   * data and returns what one of them answers. Nothing in the result is
+   * verified: the checkpoint's state root and the data both come from the
+   * API, and the response carries no proof the SDK can check. The method
+   * only checks that the response's `state_root` is the one the API reports
+   * for the checkpoint.
    *
    * @param subgroveId - The subgrove ID
    * @param checkpointId - The checkpoint ID (hex string)
    * @param query - The query parameters
-   * @returns Historical query response with provider info and verification data
+   * @returns Historical query response with provider info
    *
    * @example
    * ```typescript
-   * // Query historical data
    * const response = await client.data.queryHistorical(
    *   'my-subgrove',
    *   '0abc...', // checkpoint ID
    *   {
    *     path: [[97, 112, 112], [100, 97, 116, 97]], // UTF-8 bytes for path segments
    *     key: [107, 101, 121], // UTF-8 bytes for key
-   *     include_proof: true
    *   }
    * );
    *
-   * // Verify the response
    * if (response.success) {
-   *   // Use response.state_root to verify the proof client-side
    *   console.log('Provider:', response.provider_did);
-   *   console.log('State root:', response.state_root);
    * } else if (response.can_reindex) {
    *   console.log('Data unavailable, can request re-indexing');
    * }
@@ -711,7 +906,6 @@ export class WillowData {
     checkpointId: string,
     query: HistoricalQueryRequest,
   ): Promise<HistoricalQueryResponse> {
-    // First, verify the checkpoint exists and get its state root
     const checkpoint = await this.getCheckpointStateRoot(
       subgroveId,
       checkpointId,
@@ -736,7 +930,8 @@ export class WillowData {
       throw error;
     }
 
-    // Verify the returned state root matches the checkpoint
+    // The response's state root must be the one the API reports for the
+    // checkpoint (both come from the API; this is a consistency check).
     if (result.state_root !== checkpoint.state_root) {
       throw new WillowError(
         "State root mismatch: query response does not match checkpoint",
@@ -748,72 +943,32 @@ export class WillowData {
   }
 
   /**
-   * Query historical data and verify the proof against checkpoint state root.
+   * A historical query can't be verified, so this always throws
+   * `UNSUPPORTED_OPERATION` without sending anything. The checkpoint's state
+   * root comes from the same API that serves the result, not from consensus,
+   * so a proof checked against it shows nothing; and the API returns no proof
+   * for a historical query. Use {@link queryHistorical}, whose result is
+   * unverified.
    *
-   * This is the fully secure method for historical queries. It:
-   * 1. Gets the checkpoint state root from consensus
-   * 2. Executes the query through an indexer
-   * 3. Verifies the returned proof against the checkpoint state root
-   *
-   * @param subgroveId - The subgrove ID
-   * @param checkpointId - The checkpoint ID (hex string)
-   * @param query - The query parameters (include_proof is forced to true)
-   * @returns Verified historical data
-   *
-   * @throws {WillowError} If proof verification fails
+   * @deprecated Always throws `UNSUPPORTED_OPERATION`.
    */
   async queryHistoricalVerified(
-    subgroveId: string,
-    checkpointId: string,
-    query: HistoricalQueryRequest,
+    _subgroveId: string,
+    _checkpointId: string,
+    _query: HistoricalQueryRequest,
   ): Promise<HistoricalQueryResponse> {
-    // Force proof inclusion for verification
-    const queryWithProof: HistoricalQueryRequest = {
-      ...query,
-      include_proof: true,
-    };
-
-    const result = await this.queryHistorical(
-      subgroveId,
-      checkpointId,
-      queryWithProof,
+    throw new WillowError(
+      "A historical query can't be verified: the checkpoint's state root comes from the API that " +
+        "serves the result, not from consensus, and the API returns no proof for it. Use " +
+        "queryHistorical, whose result is unverified.",
+      "UNSUPPORTED_OPERATION",
     );
-
-    // Verify the proof against the checkpoint state root
-    if (result.proof) {
-      // Convert data to DataRecord[] format for verification
-      const documents = Array.isArray(result.data)
-        ? result.data
-        : [result.data];
-
-      // Verify proof and get computed root hash
-      const computedRoot = await verifyQueryProof(result.proof, documents, this.proofOptions);
-
-      // Compare with the checkpoint's state root (both should be hex strings)
-      const normalizedComputed = computedRoot.toLowerCase().replace(/^0x/, "");
-      const normalizedExpected = result.state_root
-        .toLowerCase()
-        .replace(/^0x/, "");
-
-      if (normalizedComputed !== normalizedExpected) {
-        throw new WillowError(
-          `Historical proof verification failed: computed root ${computedRoot} does not match checkpoint state root ${result.state_root}`,
-          "PROOF_VERIFICATION_FAILED",
-        );
-      }
-    } else {
-      // Proof was requested but not returned
-      throw new WillowError(
-        "Historical query did not return proof data despite include_proof=true",
-        "MISSING_PROOF",
-      );
-    }
-
-    return result;
   }
 
   /**
-   * Execute a SQL query against a subgrove with optional Merkle proof.
+   * Execute a SQL query against a subgrove. The result is unverified: the SDK
+   * checks nothing on this path, and a `proof` the response carries
+   * (`options.includeProof`) is returned as the API sent it, not checked.
    *
    * Routes to the validator (chain-tip) or an indexer (full history) based
    * on `options.source`. Defaults to `'auto'`: prefers an indexer when one
@@ -843,11 +998,12 @@ export class WillowData {
   }
 
   /**
-   * Execute a GraphQL query against a subgrove.
+   * Execute a GraphQL query against a subgrove. The result is unverified: the
+   * SDK checks nothing on this path, and a proof the response carries
+   * (`options.includeProof`) is returned as the API sent it, not checked.
    *
-   * Routes to the validator (chain-tip, consensus-verified) or an indexer
-   * (full history, analytics-friendly) based on `options.source`. Defaults
-   * to `'auto'`.
+   * Routes to the validator (chain-tip) or an indexer (full history,
+   * analytics-friendly) based on `options.source`. Defaults to `'auto'`.
    *
    * @param subgroveId - Subgrove ID to query
    * @param query - GraphQL query string
@@ -979,9 +1135,18 @@ export interface QueryResponseExt extends QueryResponse {
 }
 
 /**
- * Add verification method to QueryResponse
+ * Add a `verifyProof` method to a QueryResponse, which checks membership
+ * only: each document is a value the proof proves (as `verifyQueryProof`),
+ * not that the documents are the query's whole result. `client.query`
+ * verifies the whole result (`verifyQuerySelection`). Pass the
+ * subgrove the query was made against to bind the documents to that
+ * subgrove's data ({@link subgroveDataPath}); without it they bind to a value
+ * proven at any path in the proof.
  */
-export function extendQueryResponse(response: QueryResponse): QueryResponseExt {
+export function extendQueryResponse(
+  response: QueryResponse,
+  subgroveId?: string,
+): QueryResponseExt {
   return {
     ...response,
     async verifyProof(): Promise<string> {
@@ -991,7 +1156,11 @@ export function extendQueryResponse(response: QueryResponse): QueryResponseExt {
           "NO_PROOF",
         );
       }
-      return verifyQueryProof(response.proof, response.documents);
+      return verifyQueryProof(
+        response.proof,
+        response.documents,
+        subgroveId === undefined ? undefined : { path: subgroveDataPath(subgroveId) },
+      );
     },
   };
 }

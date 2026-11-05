@@ -23,6 +23,7 @@
 
 import {
   WillowClient,
+  TransactionStatus,
   generateEd25519KeyPair,
   createDidFromPublicKey,
   QueryRequest,
@@ -43,8 +44,9 @@ async function main() {
   console.log('Setting up identity...');
   // A real deployment funds `did` (>= the registration fee) before registering.
   try {
-    await client.registerDid(didDocument);
+    // The DID's registration is signed by its own key.
     client.auth.setIdentity(did, privateKey, publicKeyId);
+    await client.registerDid(didDocument);
     console.log(`Authenticated as: ${did}\n`);
   } catch (error) {
     console.log(`Note: ${error}\n`);
@@ -72,8 +74,10 @@ async function main() {
     console.log(`   Note: ${error}\n`);
   }
 
-  // 2. Batch store
-  console.log('2. Batch store multiple items...');
+  // 2. Store several items. Each key is its own StoreData transaction; the
+  //    client gives writes in flight together distinct nonces (up to 24 per
+  //    identity), so they can be sent at once.
+  console.log('2. Store several items...');
   const batchProducts = [
     { key: 'prod-002', value: { id: 'prod-002', name: 'Wireless Mouse', category: 'electronics', price: 49.99, stock: 200 } },
     { key: 'prod-003', value: { id: 'prod-003', name: 'USB-C Cable', category: 'accessories', price: 19.99, stock: 500 } },
@@ -81,8 +85,21 @@ async function main() {
     { key: 'prod-005', value: { id: 'prod-005', name: 'Mechanical Keyboard', category: 'electronics', price: 149.99, stock: 75 } },
   ];
   try {
-    await products.batchStore(batchProducts);
-    console.log(`   Batch stored ${batchProducts.length} products\n`);
+    const results = await Promise.all(
+      batchProducts.map(({ key, value }) =>
+        client.consensus.storeData(datasetId, key, value, did, client.auth.transactionSigner()),
+      ),
+    );
+    for (const result of results) {
+      // A write refused at CheckTx, or whose outcome is pending, has no tx
+      // hash to wait on; its `submission` can be confirmed or posted again.
+      if (!result.success) throw new Error(`a write did not go through: ${result.errorMessage}`);
+      // A write refused in its block lands too, as FAILED.
+      if ((await client.consensus.waitForTransaction(result.txHash!)) !== TransactionStatus.SUCCESS) {
+        throw new Error(`a write was refused in its block: ${result.txHash}`);
+      }
+    }
+    console.log(`   Stored ${batchProducts.length} products\n`);
   } catch (error) {
     console.log(`   Note: ${error}\n`);
   }
@@ -144,31 +161,33 @@ async function main() {
     console.log(`       Note: ${error}`);
   }
 
-  console.log('\n   6b. Products between $50-$500:');
+  // The API applies one exact-match filter and a sort, and no filter
+  // operator or search: a verified query asking for one throws
+  // QUERY_NOT_VERIFIABLE. Narrow the verified result yourself.
+  console.log('\n   6b. Electronics between $50-$500, sorted by price:');
   try {
-    const priceQuery: QueryRequest = {
-      filters: { price: { $gte: 50, $lte: 500 } },
+    const sortedQuery: QueryRequest = {
+      filters: { category: 'electronics' },
       sort: { field: 'price', order: 'asc' },
-      limit: 10,
     };
-    const results = await products.query(priceQuery);
-    console.log(`       Found ${results.documents.length} products in price range`);
-    results.documents.forEach((doc: any) => {
+    const results = await products.query(sortedQuery);
+    const inRange = results.documents.filter((doc: any) => doc.price >= 50 && doc.price <= 500);
+    console.log(`       Found ${inRange.length} products in price range`);
+    inRange.forEach((doc: any) => {
       console.log(`       - ${doc.name}: $${doc.price}`);
     });
   } catch (error) {
     console.log(`       Note: ${error}`);
   }
 
-  console.log('\n   6c. Search for "keyboard":');
+  console.log('\n   6c. Electronics whose name mentions "keyboard":');
   try {
-    const searchQuery: QueryRequest = {
-      search: { field: 'name', query: 'keyboard' },
-      limit: 10,
-    };
-    const results = await products.query(searchQuery);
-    console.log(`       Found ${results.documents.length} matching products`);
-    results.documents.forEach((doc: any) => {
+    const results = await products.query({ filters: { category: 'electronics' } });
+    const matching = results.documents.filter((doc: any) =>
+      String(doc.name).toLowerCase().includes('keyboard'),
+    );
+    console.log(`       Found ${matching.length} matching products`);
+    matching.forEach((doc: any) => {
       console.log(`       - ${doc.name}`);
     });
   } catch (error) {
@@ -195,44 +214,11 @@ async function main() {
   }
   console.log();
 
-  // 7. Update item
-  console.log('7. Update item...');
-  try {
-    await products.update('prod-001', {
-      id: 'prod-001',
-      name: 'Laptop Pro',
-      category: 'electronics',
-      price: 1199.99,
-      stock: 45,
-      tags: ['laptop', 'computer', 'portable', 'on-sale'],
-      on_sale: true,
-      updated_at: Date.now(),
-    });
-    console.log('   Updated prod-001 (price reduced to $1199.99, on_sale=true)\n');
-  } catch (error) {
-    console.log(`   Note: ${error}\n`);
-  }
+  // Changing or deleting an existing key takes an UpdateData or DeleteData
+  // transaction, which this SDK does not build.
 
-  console.log('   Verifying update...');
-  try {
-    const updated = await products.get('prod-001');
-    console.log(`   New price: $${updated.price}`);
-    console.log(`   On sale: ${updated.on_sale}\n`);
-  } catch (error) {
-    console.log(`   Note: ${error}\n`);
-  }
-
-  // 8. Delete item
-  console.log('8. Delete item...');
-  try {
-    await products.delete('prod-005');
-    console.log('   Deleted: prod-005 (Mechanical Keyboard)\n');
-  } catch (error) {
-    console.log(`   Note: ${error}\n`);
-  }
-
-  // 9. Get proof separately (returns the hex string directly)
-  console.log('9. Get proof for item...');
+  // 7. Get proof separately (returns the hex string directly)
+  console.log('7. Get proof for item...');
   try {
     const proofHex = await products.getProof('prod-001');
     console.log(`   Proof: ${proofHex.length / 2} bytes`);
@@ -244,19 +230,15 @@ async function main() {
   console.log('Data Operations Summary');
   console.log('=======================');
   console.log('CRUD:');
-  console.log('  - store(key, value): create or overwrite');
-  console.log('  - batchStore(items): store many atomically');
+  console.log('  - store(key, value): create a key (one transaction)');
   console.log('  - get(key): retrieve with proof verification (secure)');
   console.log('  - getUnverified(key): retrieve without verification (fast)');
-  console.log('  - getMultiple(keys): batch retrieve');
-  console.log('  - update(key, value): update existing item');
-  console.log('  - delete(key): remove item\n');
+  console.log('  - getMultiple(keys): batch retrieve (an absent key must be proven absent)\n');
 
-  console.log('Query:');
-  console.log('  - query({ filters }): filter by field values');
-  console.log('  - query({ filters: { field: { $gte, $lte } } }): range');
-  console.log('  - query({ search: { field, query } }): text search');
-  console.log('  - query({ sort, limit, offset }): pagination\n');
+  console.log('Query (verified as the whole result):');
+  console.log('  - query({ filters: { field: value } }): one exact-match field');
+  console.log('  - query({ sort, limit, offset }): sort and pagination');
+  console.log('  - ranges and text matches: filter the verified documents yourself\n');
 
   console.log('Data operations example complete!');
 }

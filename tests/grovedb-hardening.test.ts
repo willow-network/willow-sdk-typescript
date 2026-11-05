@@ -8,6 +8,9 @@ import * as path from 'path';
 
 import {
   verifyGroveDBProof,
+  verifyProofAgainstRoot,
+  quickVerify,
+  executeMerkProof,
   decodeGroveDBProof,
   decodeMerkOps,
   executeMerkProofWithQuery,
@@ -21,6 +24,7 @@ import {
   GroveDBVerificationError,
   VarintError,
 } from '../src/grovedb';
+import { verifyItemProof, verifyQueryProof } from '../src/proof';
 
 const fx = JSON.parse(
   fs.readFileSync(path.join(__dirname, 'fixtures', 'grovedb', 'partial-proof-live.json'), 'utf8'),
@@ -186,6 +190,21 @@ describe('value-bearing leaf binding', () => {
     expect(() => verifyGroveDBProof(forged)).toThrow(/does not hash to its committed valueHash/);
   });
 
+  it('surfaces tree-shaped bytes on a value hash only as a tree, which binds nothing', async () => {
+    // A tree's value hash can't be re-derived from its bytes alone, so the
+    // leaf check skips tree elements; their bytes must then never stand for a
+    // value. Tree(Some("x"), None) in place of the committed Item:
+    const treeBytes = new Uint8Array([0x02, 0x01, 0x01, 0x78, 0x00]);
+    const proof = wrapAsGroveDBProof(encodeKVValueHashLeaf(key, treeBytes, committedHash));
+    // Unbound: surfaced as a subtree with neither bytes nor an element.
+    const { results } = verifyGroveDBProof(proof);
+    expect(results.map((r) => [r.tree, r.value, r.element])).toEqual([[true, null, null]]);
+    const proofHex = Buffer.from(proof).toString('hex');
+    await expect(verifyItemProof(proofHex, 'balance', 1000)).rejects.toThrow(/not the KV node/);
+    await expect(verifyItemProof(proofHex, 'balance', treeBytes)).rejects.toThrow(/not the KV node/);
+    await expect(verifyQueryProof(proofHex, [{ balance: 1000 }])).rejects.toThrow(/not committed/);
+  });
+
   it('accepts the honest leaf and surfaces the real value at the same root', () => {
     const honestMerk = encodeKVValueHashLeaf(key, realValue, committedHash);
     const honest = wrapAsGroveDBProof(honestMerk);
@@ -193,5 +212,60 @@ describe('value-bearing leaf binding', () => {
     expect(hashToHex(rootHash)).toBe(hashToHex(executeMerkProofWithQuery(honestMerk).rootHash));
     const match = results.find((r) => r.value && hashEquals(r.value, realValue));
     expect(match).toBeDefined();
+  });
+});
+
+describe('opaque proof nodes', () => {
+  // A Hash node stands for a whole pruned subtree: merk's Tree::hash returns
+  // its stored hash and ignores children, so nothing may be attached to it.
+  const bob = JSON.parse(
+    fs.readFileSync(path.join(__dirname, 'fixtures', 'grovedb', 'nested_single_key_user_bob.json'), 'utf8'),
+  ) as { path: string[]; key: string; proof_hex: string; expected_root_hex: string };
+  const enc = (s: string) => new TextEncoder().encode(s);
+  const bobPath = bob.path.map(enc);
+
+  // The fixture's root as a Hash node with a made-up subtree under it, down to
+  // a different value for user:bob at the fixture's path.
+  const HASH_PARENT =
+    '005401b3919503bca50efc2b8ae6fc643d4c57a2c527e04b0bfa102b9079c3084a0269040973756267726f76657300050201017800908ee3ea4f90b0786f56fdb9e4ee07aca782ade89e30fc861aab53d85076968011010973756267726f7665732f04066d792d73756200050201017800c0443d5e00404774059bfea49101762310601b326a01442b418c493fbd5a9ed201066d792d7375622d04046461746100050201017800624d3ac133927b2263aa2c62ffd1e63a4069944eef70edaf6a0bdd2276653a9b010464617461240308757365723a626f62001800157b2262616c616e6365223a3939393939393939397d000001';
+
+  const hashNode = [0x01, ...new Array(32).fill(0xab)]; // Push(Hash)
+  const kvNode = [0x03, 1, 1, 0, 0]; // Push(KV(key 0x01, empty value))
+  const kvHashNode = [0x02, ...new Array(32).fill(0xcd)]; // Push(KVHash)
+  const kvDigestNode = [0x05, 1, 2, ...new Array(32).fill(0xef)]; // Push(KVDigest(key 0x02))
+
+  it('refuses a proof that hangs a subtree under a Hash node', () => {
+    const forged = hexToBytes(HASH_PARENT);
+    expect(() =>
+      verifyProofAgainstRoot(forged, hexToBytes(bob.expected_root_hex), { expectedPath: bobPath }),
+    ).toThrow(/hash node can't have children/);
+    expect(() => verifyGroveDBProof(forged)).toThrow(GroveDBVerificationError);
+    expect(() => quickVerify(forged)).toThrow(/hash node can't have children/);
+  });
+
+  it.each([
+    ['Child', [...hashNode, ...kvNode, 0x11]],
+    ['Parent', [...kvNode, ...hashNode, 0x10]],
+    ['ParentInverted', [...kvNode, ...hashNode, 0x12]],
+    ['ChildInverted', [...hashNode, ...kvNode, 0x13]],
+  ])('refuses %s attaching a child to a Hash node', (_op, ops) => {
+    expect(() => executeMerkProof(new Uint8Array(ops as number[]))).toThrow(
+      /hash node can't have children/,
+    );
+  });
+
+  it('lets KVHash and KVDigest nodes take children, which their hashes cover', () => {
+    expect(() => executeMerkProof(new Uint8Array([...kvNode, ...kvHashNode, 0x10]))).not.toThrow();
+    expect(() => executeMerkProof(new Uint8Array([...kvNode, ...kvDigestNode, 0x10]))).not.toThrow();
+    // A Hash node as a child is fine: it is a pruned sibling.
+    expect(() => executeMerkProof(new Uint8Array([...hashNode, ...kvNode, 0x10]))).not.toThrow();
+  });
+
+  it('still verifies the genuine proof at the same root', () => {
+    const r = verifyProofAgainstRoot(hexToBytes(bob.proof_hex), hexToBytes(bob.expected_root_hex), {
+      expectedPath: bobPath,
+    });
+    const hit = r.results.find((x) => new TextDecoder().decode(x.key) === bob.key);
+    expect(hit).toBeDefined();
   });
 });

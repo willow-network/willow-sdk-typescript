@@ -7,11 +7,20 @@
  */
 
 import { ApiResponse, WillowError } from "../types";
-import { WillowAuth, signEd25519 } from "../auth";
+import { WillowAuth } from "../auth";
 import { BroadcastResult } from "../consensus";
-import { Transaction, createTransactionWrapper } from "../consensus/types";
+import {
+  SignFunction,
+  TransactionSubmitError,
+  Transaction,
+  createTransactionWrapper,
+  grantSubgroveKeySignMessage,
+  revokeSubgroveKeySignMessage,
+  rotateSubgroveKeySignMessage,
+} from "../consensus/types";
 import { HttpClient, HttpError, RequestSigner } from "../internal/http";
 import { submitTxToApi } from "../internal/tx";
+import { NonceAllocator, NONCE_WINDOW } from "../consensus/nonces";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -131,26 +140,37 @@ export class PrivacyOperations {
   private auth: WillowAuth;
   private privateKey: string;
   private publicKeyId: string;
+  private signFunction?: SignFunction;
   private apiUrl: string;
   /**
    * Signs a key-grant read in the older form, over the path exactly as sent
    * (percent-encoded). These routes take that form; read rights don't apply.
    */
   private sign: RequestSigner;
+  /** Hands out this instance's transaction nonces, per DID. */
+  readonly nonces: NonceAllocator;
 
   /**
    * Create a new PrivacyOperations instance.
    *
    * @param apiUrl - Willow REST API base URL (e.g. "http://localhost:3031")
    * @param auth - WillowAuth instance with identity set (used for REST auth headers)
-   * @param privateKey - Ed25519 private key hex (used for signing consensus transactions)
+   * @param privateKey - Private key hex (used for signing consensus transactions)
    * @param publicKeyId - Public key ID for the DID (e.g. "did:willow:abc#key-1")
+   * @param signFunction - Signs a transaction's message with `privateKey`.
+   *   Defaults to the sign function of `auth`'s identity
+   *   (`auth.getSignFunction()`: secp256k1 or Ed25519).
+   * @param nonceAllocator - Hands out transaction nonces. Defaults to
+   *   `NonceAllocator.shared(apiUrl)`, shared with every other client of
+   *   that API URL in the process (a `WillowClient`'s among them).
    */
   constructor(
     apiUrl: string,
     auth: WillowAuth,
     privateKey: string,
     publicKeyId: string,
+    signFunction?: SignFunction,
+    nonceAllocator?: NonceAllocator,
   ) {
     this.apiUrl = apiUrl.replace(/\/+$/, "");
     this.api = new HttpClient({ baseURL: this.apiUrl });
@@ -158,6 +178,14 @@ export class PrivacyOperations {
     this.sign = (method, target) => auth.getAuthHeaders(method, target);
     this.privateKey = privateKey;
     this.publicKeyId = publicKeyId;
+    this.signFunction = signFunction;
+    this.nonces = nonceAllocator ?? NonceAllocator.shared(this.apiUrl);
+  }
+
+  /** Sign a transaction's message with this instance's key. */
+  private signMessage(message: string): string {
+    const sign = this.signFunction ?? this.auth.getSignFunction();
+    return sign(message, this.privateKey);
   }
 
   // ── Read operations (REST API) ─────────────────────────────────────
@@ -260,8 +288,12 @@ export class PrivacyOperations {
   /**
    * Grant a subgrove encryption key to a DID.
    *
-   * Builds a GrantSubgroveKey transaction, signs it with Ed25519, and
-   * broadcasts to the CometBFT consensus layer.
+   * Builds a GrantSubgroveKey transaction, signs every field of it and its
+   * nonce ({@link grantSubgroveKeySignMessage}), and submits it.
+   *
+   * The chain refuses a grant whose subgrove id is empty or holds a `:`
+   * (`INVALID_SUBGROVE_ID`), or whose grantee is not a Willow DID
+   * (`INVALID_DID`); such a grant is refused before a nonce is taken.
    *
    * @param subgroveId - Subgrove ID
    * @param grant - The encrypted key grant for the grantee
@@ -272,28 +304,29 @@ export class PrivacyOperations {
     grant: EncryptedKeyGrant,
   ): Promise<BroadcastResult> {
     const did = this.requireDid();
-    const nonce = await this.getNextNonce(did);
-
-    // Sign message format must match the Rust consensus handler:
-    // "GrantSubgroveKey:{subgrove_id}:{grantee_did}:{sender_did}:{nonce}"
-    const message = `GrantSubgroveKey:${subgroveId}:${grant.grantee_did}:${did}:${nonce}`;
-    const signature = signEd25519(message, this.privateKey);
-
-    return this.broadcastTransaction("GrantSubgroveKey", {
+    const unsigned = {
       subgroveId,
       encryptedKeyGrant: grant,
       senderDid: did,
-      signature,
       publicKeyId: this.publicKeyId,
-      nonce,
+    };
+    grantSubgroveKeySignMessage({ ...unsigned, nonce: 0 }); // refuses a field before a nonce is taken
+    return this.submitWithNonce(did, "GrantSubgroveKey", (nonce) => {
+      const tx = { ...unsigned, nonce };
+      return { ...tx, signature: this.signMessage(grantSubgroveKeySignMessage(tx)) };
     });
   }
 
   /**
    * Revoke a subgrove encryption key from a DID.
    *
-   * Builds a RevokeSubgroveKey transaction, signs it with Ed25519, and
-   * broadcasts to the CometBFT consensus layer.
+   * Builds a RevokeSubgroveKey transaction, signs it
+   * ({@link revokeSubgroveKeySignMessage}), and submits it.
+   *
+   * The chain refuses a revoke whose subgrove id is empty or holds a `:`
+   * (`INVALID_SUBGROVE_ID`), or whose revokee or sender (the identity) is not
+   * a Willow DID (`INVALID_DID`); such a revoke is refused before a nonce is
+   * taken.
    *
    * @param subgroveId - Subgrove ID
    * @param revokeDid - DID to revoke access from
@@ -304,32 +337,33 @@ export class PrivacyOperations {
     revokeDid: string,
   ): Promise<BroadcastResult> {
     const did = this.requireDid();
-    const nonce = await this.getNextNonce(did);
-
-    // Sign message format must match the Rust consensus handler:
-    // "RevokeSubgroveKey:{subgrove_id}:{revokee_did}:{sender_did}:{nonce}"
-    const message = `RevokeSubgroveKey:${subgroveId}:${revokeDid}:${did}:${nonce}`;
-    const signature = signEd25519(message, this.privateKey);
-
-    return this.broadcastTransaction("RevokeSubgroveKey", {
+    const unsigned = {
       subgroveId,
       revokeeDid: revokeDid,
       senderDid: did,
-      signature,
       publicKeyId: this.publicKeyId,
-      nonce,
+    };
+    revokeSubgroveKeySignMessage({ ...unsigned, nonce: 0 }); // refuses a field before a nonce is taken
+    return this.submitWithNonce(did, "RevokeSubgroveKey", (nonce) => {
+      const tx = { ...unsigned, nonce };
+      return { ...tx, signature: this.signMessage(revokeSubgroveKeySignMessage(tx)) };
     });
   }
 
   /**
    * Rotate the subgrove encryption key and re-grant to authorized DIDs.
    *
-   * Builds a RotateSubgroveKey transaction, signs it with Ed25519, and
-   * broadcasts to the CometBFT consensus layer.
+   * Builds a RotateSubgroveKey transaction, signs every field of it,
+   * every grant, and its nonce ({@link rotateSubgroveKeySignMessage}), and
+   * submits it.
    *
    * Only the subgrove owner can rotate keys. The new epoch must be
    * exactly current_epoch + 1. All existing grants are deleted and
    * replaced with the provided new grants.
+   *
+   * The chain refuses a rotation whose subgrove id is empty or holds a `:`
+   * (`INVALID_SUBGROVE_ID`), or with a grantee that is not a Willow DID
+   * (`INVALID_DID`); such a rotation is refused before a nonce is taken.
    *
    * @param subgroveId - Subgrove ID
    * @param newEpoch - New key epoch (must be current_epoch + 1)
@@ -342,21 +376,17 @@ export class PrivacyOperations {
     newGrants: EncryptedKeyGrant[],
   ): Promise<BroadcastResult> {
     const did = this.requireDid();
-    const nonce = await this.getNextNonce(did);
-
-    // Sign message format must match the Rust consensus handler:
-    // "RotateSubgroveKey:{subgrove_id}:{new_epoch}:{sender_did}:{nonce}"
-    const message = `RotateSubgroveKey:${subgroveId}:${newEpoch}:${did}:${nonce}`;
-    const signature = signEd25519(message, this.privateKey);
-
-    return this.broadcastTransaction("RotateSubgroveKey", {
+    const unsigned = {
       subgroveId,
       newEpoch,
       newGrants,
       senderDid: did,
-      signature,
       publicKeyId: this.publicKeyId,
-      nonce,
+    };
+    rotateSubgroveKeySignMessage({ ...unsigned, nonce: 0 }); // refuses a field before a nonce is taken
+    return this.submitWithNonce(did, "RotateSubgroveKey", (nonce) => {
+      const tx = { ...unsigned, nonce };
+      return { ...tx, signature: this.signMessage(rotateSubgroveKeySignMessage(tx)) };
     });
   }
 
@@ -377,11 +407,17 @@ export class PrivacyOperations {
   }
 
   /**
-   * Get the next nonce for a DID from the REST API.
-   * Propagates errors instead of silently falling back to nonce 1,
-   * which could cause transaction replay or rejection.
+   * Take the next nonce for a DID from the nonce allocator, against the base
+   * the REST API reports. A failed read propagates rather than fabricating a
+   * nonce.
    */
   private async getNextNonce(did: string): Promise<number> {
+    const base = await this.readNonceBase(did);
+    return this.nonces.take(did, { base, used: 0 });
+  }
+
+  /** The account's nonce base from `/account/{did}/nonce`. */
+  private async readNonceBase(did: string): Promise<number> {
     const response = await this.api
       .get<{
         success: boolean;
@@ -397,7 +433,18 @@ export class PrivacyOperations {
       });
 
     if (response.success && response.data !== undefined) {
-      return response.data.nonce + 1;
+      const base = response.data.nonce;
+      if (
+        !Number.isSafeInteger(base) ||
+        base < 0 ||
+        base > Number.MAX_SAFE_INTEGER - NONCE_WINDOW
+      ) {
+        throw new WillowError(
+          `Failed to fetch nonce for ${did}: ${String(base)} is not a nonce this SDK can send`,
+          "NONCE_FETCH_FAILED",
+        );
+      }
+      return base;
     }
 
     throw new WillowError(
@@ -407,34 +454,60 @@ export class PrivacyOperations {
   }
 
   /**
-   * Submit a wrapped transaction through the API server's `/tx/submit`.
+   * Take a nonce for `did`, build and sign the transaction under it, and
+   * submit it through the API server's `/tx/submit`; then record the outcome
+   * with the nonce allocator. An accepted write holds its nonce; one refused
+   * at CheckTx gives it back unless the refusal says the nonce is held, used,
+   * or spent. A write that fails before it is sent gives its nonce back; one
+   * whose submission failed in transport keeps it until its hold runs out.
+   * A transport failure, a refusal, or a pending answer throws a
+   * `BROADCAST_FAILED` {@link TransactionSubmitError} carrying the DID, the
+   * nonce, the signed body, and (for a refusal or a pending answer) the
+   * answer, so the write can be posted again under the same nonce
+   * (`ConsensusClient.resubmit(error)`).
    *
    * Encoding (snake_case keys, hex signature -> byte array) is owned by
    * `createTransactionWrapper`, the single place the SDK shapes the wire
    * format the Rust `Transaction` enum deserializes.
    */
-  private async broadcastTransaction(
+  private async submitWithNonce(
+    did: string,
     txType: string,
-    transaction: Transaction,
+    build: (nonce: number) => Transaction,
   ): Promise<BroadcastResult> {
-    const txWrapper = createTransactionWrapper(txType, transaction);
+    const nonce = await this.getNextNonce(did);
 
-    let result: BroadcastResult;
+    let txWrapper: ReturnType<typeof createTransactionWrapper>;
+    let headers: Record<string, string>;
     try {
-      result = await submitTxToApi(this.apiUrl, txWrapper, {
-        headers: this.auth.getAuthHeaders("POST", "/tx/submit"),
-      });
+      txWrapper = createTransactionWrapper(txType, build(nonce));
+      headers = this.auth.getAuthHeaders("POST", "/tx/submit");
     } catch (error) {
-      throw new WillowError(
-        `Failed to broadcast transaction: ${error instanceof Error ? error.message : String(error)}`,
-        "BROADCAST_FAILED",
-      );
+      this.nonces.release(did, nonce);
+      throw error;
     }
 
-    if (!result.success) {
-      throw new WillowError(
-        `Transaction rejected: ${result.rawLog || result.errorMessage || "unknown error"}`,
+    // Held from the send, so no other write takes it while this one is in flight.
+    this.nonces.hold(did, nonce);
+    let result: BroadcastResult;
+    try {
+      result = await submitTxToApi(this.apiUrl, txWrapper, { headers });
+    } catch (error) {
+      throw new TransactionSubmitError(
+        `Failed to broadcast transaction: ${error instanceof Error ? error.message : String(error)}`,
         "BROADCAST_FAILED",
+        { did, nonce, transaction: txWrapper },
+      );
+    }
+    this.nonces.settle(did, nonce, result);
+
+    if (!result.success) {
+      throw new TransactionSubmitError(
+        result.pending
+          ? `Transaction unconfirmed: ${result.errorMessage}`
+          : `Transaction rejected: ${result.rawLog || result.errorMessage || "unknown error"}`,
+        "BROADCAST_FAILED",
+        { did, nonce, transaction: txWrapper, result },
       );
     }
 

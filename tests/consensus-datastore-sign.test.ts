@@ -34,9 +34,22 @@ describe('createSignMessage — DataStore', () => {
     expect(msg).not.toContain(sha256Hex('{"a":2,"z":1}'));
   });
 
-  it('hashes non-JSON data as its raw string', () => {
-    const msg = createSignMessage('DataStore', makeTx('not json at all'));
-    expect(msg).toContain(`\nDataHash: ${sha256Hex('not json at all')}\n`);
+  it('refuses to sign data that is not a JSON object, which the node refuses in its block', () => {
+    const refusal = (data: unknown) => {
+      try {
+        createSignMessage('DataStore', makeTx(data as string));
+      } catch (error) {
+        return (error as { code?: string }).code;
+      }
+      return 'signed';
+    };
+    for (const data of ['not json at all', '[1]', '"text"', '42', 'null', '{"a":1} x', '{"s":"\\ud800"}', '', undefined]) {
+      expect(refusal(data)).toBe('INVALID_SIGNED_FIELD');
+    }
+    // Any JSON object, in any form the node reads, is signed as its bytes.
+    for (const data of ['{}', ' {"b":[1,{"c":null}],"a":"\\u00e9"} ', '{"a":1,"a":2}']) {
+      expect(createSignMessage('DataStore', makeTx(data))).toContain(`\nDataHash: ${sha256Hex(data)}\n`);
+    }
   });
 
   it('hashes exactly the bytes the wrapper sends', () => {

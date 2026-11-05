@@ -2,7 +2,7 @@
  * Willow TypeScript SDK - Dataset Registration Example
  *
  * Demonstrates how to:
- * 1. Define schemas with multiple index types
+ * 1. Define schemas
  * 2. Register a dataset (subgrove + schema)
  * 3. Inspect dataset access permissions
  *
@@ -38,8 +38,9 @@ async function main() {
   // NOTE: registration is paid from `did`'s own balance, so a real deployment
   // must fund `did` (transfer >= the registration fee) before this call.
   try {
-    await client.registerDid(didDocument);
+    // The DID's registration is signed by its own key.
     client.auth.setIdentity(did, privateKey, publicKeyId);
+    await client.registerDid(didDocument);
     console.log(`Authenticated as: ${did}\n`);
   } catch (error) {
     console.log(`Note: ${error}\n`);
@@ -50,26 +51,18 @@ async function main() {
   const productsSchema: SchemaDefinition = {
     version: 1,
     fields: {
-      sku: { type: 'string', indexed: true, required: true },
-      name: { type: 'string', indexed: true, required: true },
-      description: { type: 'string', indexed: true },
-      category: { type: 'string', indexed: true, required: true },
-      price: { type: 'number', indexed: true, required: true },
-      stock: { type: 'number', indexed: true },
-      rating: { type: 'number', indexed: true },
-      tags: { type: 'array', indexed: true },
-      images: { type: 'array' },
-      specifications: { type: 'object' },
-      created_at: { type: 'number', indexed: true },
+      sku: 'string',
+      name: 'string',
+      description: 'string',
+      category: 'string',
+      price: 'number',
+      stock: 'number',
+      rating: 'number',
+      tags: 'array',
+      images: 'array',
+      specifications: 'object',
+      created_at: 'number',
     },
-    indexes: [
-      { name: 'unique_sku', fields: ['sku'], unique: true, type: 'unique' },
-      { name: 'by_category', fields: ['category'], unique: false, type: 'hash' },
-      { name: 'by_price', fields: ['price'], unique: false, type: 'range' },
-      { name: 'by_rating', fields: ['rating'], unique: false, type: 'range' },
-      { name: 'product_search', fields: ['name', 'description'], unique: false, type: 'fulltext' },
-      { name: 'category_price', fields: ['category', 'price'], unique: false, type: 'compound' },
-    ],
     required_fields: ['sku', 'name', 'category', 'price'],
   };
 
@@ -86,7 +79,7 @@ async function main() {
     const result = await client.registerSubgrove(productsDataset);
     console.log('   Products subgrove registered');
     console.log(`   Tx hash: ${result.txHash}`);
-    console.log(`   Indexes:    ${productsSchema.indexes?.length ?? 0}\n`);
+    console.log();
   } catch (error) {
     console.log(`   Note: ${error}\n`);
   }
@@ -96,21 +89,15 @@ async function main() {
   const ordersSchema: SchemaDefinition = {
     version: 1,
     fields: {
-      order_id: { type: 'string', indexed: true, required: true },
-      customer_did: { type: 'string', indexed: true, required: true },
-      items: { type: 'array', required: true },
-      total: { type: 'number', indexed: true, required: true },
-      status: { type: 'string', indexed: true, required: true },
-      shipping_address: { type: 'object' },
-      created_at: { type: 'number', indexed: true },
-      updated_at: { type: 'number', indexed: true },
+      order_id: 'string',
+      customer_did: 'string',
+      items: 'array',
+      total: 'number',
+      status: 'string',
+      shipping_address: 'object',
+      created_at: 'number',
+      updated_at: 'number',
     },
-    indexes: [
-      { name: 'unique_order_id', fields: ['order_id'], unique: true, type: 'unique' },
-      { name: 'by_customer', fields: ['customer_did'], unique: false, type: 'hash' },
-      { name: 'by_status', fields: ['status'], unique: false, type: 'hash' },
-      { name: 'by_date', fields: ['created_at'], unique: false, type: 'range' },
-    ],
     required_fields: ['order_id', 'customer_did', 'items', 'total', 'status'],
   };
 
@@ -137,19 +124,14 @@ async function main() {
   const usersSchema: SchemaDefinition = {
     version: 1,
     fields: {
-      user_did: { type: 'string', indexed: true, required: true },
-      username: { type: 'string', indexed: true, required: true },
-      display_name: { type: 'string', indexed: true },
-      bio: { type: 'string' },
-      avatar_url: { type: 'string' },
-      joined_at: { type: 'number', indexed: true },
-      reputation: { type: 'number', indexed: true },
+      user_did: 'string',
+      username: 'string',
+      display_name: 'string',
+      bio: 'string',
+      avatar_url: 'string',
+      joined_at: 'number',
+      reputation: 'number',
     },
-    indexes: [
-      { name: 'unique_did', fields: ['user_did'], unique: true, type: 'unique' },
-      { name: 'unique_username', fields: ['username'], unique: true, type: 'unique' },
-      { name: 'by_reputation', fields: ['reputation'], unique: false, type: 'range' },
-    ],
     required_fields: ['user_did', 'username'],
   };
 
@@ -173,16 +155,13 @@ async function main() {
 
   console.log('Summary');
   console.log('=======');
-  console.log('  - products: public catalog with full-text + range indexing');
+  console.log('  - products: public catalog');
   console.log('  - orders:   private order records');
   console.log('  - users:    public profiles, owner-managed');
   console.log();
-  console.log('Index types used:');
-  console.log('  - unique:   no duplicates (sku, order_id, username)');
-  console.log('  - hash:     fast equality (category, status, customer_did)');
-  console.log('  - range:    numeric comparisons (price, rating, date)');
-  console.log('  - fulltext: text search (name + description)');
-  console.log('  - compound: multi-field (category + price)');
+  console.log('The schemas declare fields and required fields only: the chain');
+  console.log('refuses a schema that declares indexes, and the SDK refuses one');
+  console.log('before signing it (SCHEMA_INDEXES_UNSUPPORTED).');
   console.log();
   console.log('Subgrove registration example complete!');
 }

@@ -173,27 +173,66 @@ export {
   storeDataSignMessage,
   storeFileManifestSignMessage,
   deleteFileManifestSignMessage,
+  registerSubgroveSignMessage,
+  registerSubgroveUnsignedBincode,
+  grantSubgroveKeySignMessage,
+  rotateSubgroveKeySignMessage,
+  revokeSubgroveKeySignMessage,
+  unregisterStorageNodeSignMessage,
+  registerDidSignMessage,
+  serializeSchema,
+  SCHEMA_FIELD_TYPES,
+  NonceAllocator,
+  NONCE_WINDOW,
+  NONCE_HOLD_MS,
+  parseAccountNonceState,
+  refusalKeepsNonce,
+  TransactionSubmitError,
+  TransactionStatus,
 } from "./consensus";
+export { writeNotAccepted } from "./internal/tx";
 export type {
+  SignedSubmission,
+  AccountNonceState,
+  NonceAllocatorOptions,
   ConsensusConfig,
   BroadcastResult,
-  TransactionStatus,
   RegisterDidTx,
   RegisterSubgroveTx,
   TransferTx,
   DataStoreTx,
   StoreFileManifestTx,
   DeleteFileManifestTx,
+  GrantSubgroveKeyTx,
+  RevokeSubgroveKeyTx,
+  RotateSubgroveKeyTx,
+  UnregisterStorageNodeTx,
   Transaction,
   Signer,
   SignFunction,
   RegisterSubgroveOptions,
   StoreFileManifestFields,
+  SubgroveMode,
+  RetentionWindow,
+  UintInput,
+  TeeType,
+  ReadPricing,
+  ExecutionMode,
+  IndexerConfig,
+  WasmModule,
+  CompletenessCommitments,
+  TemplateSubgroveConfig,
 } from "./consensus";
 
 // Export file storage operations
 export { FileOperations, encryptFile, decryptFile } from "./files";
-export type { FileManifest, FileListResponse, FileEncryption } from "./files";
+export type {
+  FileManifest,
+  FileListResponse,
+  FileEncryption,
+  FileSigningOptions,
+  FileNonceSource,
+} from "./files";
 
 // Export privacy / key grant management
 export { PrivacyOperations, CommitmentFrequency } from "./privacy";

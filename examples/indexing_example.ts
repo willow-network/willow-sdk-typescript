@@ -2,7 +2,7 @@
  * Willow TypeScript SDK - Indexing Example
  *
  * Demonstrates:
- * 1. Defining schemas with multiple index types
+ * 1. Defining a schema
  * 2. Storing indexed data
  * 3. Querying via the various index types
  *
@@ -14,6 +14,7 @@
  */
 
 import { WillowClient } from '../src/client';
+import { TransactionStatus } from '../src/consensus';
 import {
   RegisterSubgroveRequest,
   SchemaDefinition,
@@ -34,25 +35,18 @@ async function main() {
   const schema: SchemaDefinition = {
     version: 1,
     fields: {
-      productId: { type: 'string', indexed: true, required: true },
-      category: { type: 'string', indexed: true, required: true },
-      brand: { type: 'string', indexed: true },
-      price: { type: 'number', indexed: true, required: true },
-      stock: { type: 'number', indexed: true },
-      rating: { type: 'number', indexed: true },
-      name: { type: 'string', indexed: true, required: true },
-      description: { type: 'string', indexed: true },
-      images: { type: 'array' },
-      specifications: { type: 'object' },
+      productId: 'string',
+      category: 'string',
+      brand: 'string',
+      price: 'number',
+      stock: 'number',
+      rating: 'number',
+      name: 'string',
+      description: 'string',
+      images: 'array',
+      specifications: 'object',
     },
-    indexes: [
-      { name: 'unique_product_id', fields: ['productId'], unique: true, type: 'unique' },
-      { name: 'by_category', fields: ['category'], unique: false, type: 'hash' },
-      { name: 'by_brand', fields: ['brand'], unique: false, type: 'hash' },
-      { name: 'by_price', fields: ['price'], unique: false, type: 'range' },
-      { name: 'product_search', fields: ['name', 'description'], unique: false, type: 'fulltext' },
-      { name: 'category_price', fields: ['category', 'price'], unique: false, type: 'compound' },
-    ],
+    required_fields: ['productId', 'category', 'price', 'name'],
   };
 
   const datasetRequest: RegisterSubgroveRequest = {
@@ -115,10 +109,23 @@ async function main() {
     },
   ];
 
+  // Each key is its own StoreData transaction. Writes in flight together get
+  // distinct nonces, so they can be sent at once; wait for each to land
+  // before querying.
   console.log('Storing products...');
-  await client.data.batchStore('products', products);
-
-  await new Promise((resolve) => setTimeout(resolve, 3000));
+  const results = await Promise.all(
+    products.map(({ key, value }) =>
+      client.consensus.storeData('products', key, value, fundedDID, client.auth.transactionSigner()),
+    ),
+  );
+  for (const result of results) {
+    // A refused or pending write has no tx hash to wait on.
+    if (!result.success) throw new Error(`a write did not go through: ${result.errorMessage}`);
+    // A write refused in its block lands too, as FAILED.
+    if ((await client.consensus.waitForTransaction(result.txHash!)) !== TransactionStatus.SUCCESS) {
+      throw new Error(`a write was refused in its block: ${result.txHash}`);
+    }
+  }
 
   // 1. Hash-index lookup
   console.log('\n1. Products in electronics category:');
@@ -141,38 +148,40 @@ async function main() {
     console.log('No proof included in response');
   }
 
-  // 2. Range index
-  console.log('\n2. Products between $500-$1000:');
-  const priceResults = await client.data.query('products', {
-    filters: { price: { $gte: 500, $lte: 1000 } },
-  } as QueryRequest);
-  priceResults.documents.forEach((doc) => {
-    console.log(`- ${doc.name}: $${doc.price}`);
-  });
+  // The API applies one exact-match filter and a sort, and no filter
+  // operator or search, so a verified query asks only for those (one asking
+  // for more throws QUERY_NOT_VERIFIABLE). Narrow the verified result further
+  // yourself.
 
-  // 3. Fulltext search
-  console.log('\n3. Search for "laptop":');
-  const searchResults = await client.data.query('products', {
-    search: { field: 'description', query: 'laptop' },
-  } as QueryRequest);
-  searchResults.documents.forEach((doc) => {
-    console.log(`- ${doc.name}: ${doc.description.substring(0, 50)}...`);
-  });
+  // 2. A price range, within the verified electronics result
+  console.log('\n2. Electronics between $500-$1000:');
+  electronicsResults.documents
+    .filter((doc) => doc.price >= 500 && doc.price <= 1000)
+    .forEach((doc) => {
+      console.log(`- ${doc.name}: $${doc.price}`);
+    });
 
-  // 4. Compound query with sorting
-  console.log('\n4. Electronics under $1500, sorted by price:');
-  const compoundResults = await client.data.query('products', {
-    filters: { category: 'electronics', price: { $lt: 1500 } },
+  // 3. Text match, within the verified electronics result
+  console.log('\n3. Electronics whose description mentions "laptop":');
+  electronicsResults.documents
+    .filter((doc) => String(doc.description).toLowerCase().includes('laptop'))
+    .forEach((doc) => {
+      console.log(`- ${doc.name}: ${doc.description.substring(0, 50)}...`);
+    });
+
+  // 4. Sorted by the API, verified in its order
+  console.log('\n4. Electronics sorted by price:');
+  const sortedResults = await client.data.query('products', {
+    filters: { category: 'electronics' },
     sort: { field: 'price', order: 'asc' },
   } as QueryRequest);
-  compoundResults.documents.forEach((doc) => {
+  sortedResults.documents.forEach((doc) => {
     console.log(`- ${doc.name}: $${doc.price}`);
   });
 
   // 5. Top-rated with pagination
   console.log('\n5. Top-rated products (page 1):');
   const topRatedResults = await client.data.query('products', {
-    filters: { rating: { $gte: 4.0 } },
     sort: { field: 'rating', order: 'desc' },
     limit: 2,
     offset: 0,
