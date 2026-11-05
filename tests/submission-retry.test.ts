@@ -186,7 +186,12 @@ describe('a write in flight keeps its nonce', () => {
   it('each send attempt renews the hold', async () => {
     let t = 1_000_000;
     const allocator = new NonceAllocator({ now: () => t });
-    const c = new ConsensusClient({ apiUrl: 'http://api.test', nonceAllocator: allocator, maxRetries: 1 });
+    const c = new ConsensusClient({
+      apiUrl: 'http://api.test',
+      nonceAllocator: allocator,
+      maxRetries: 1,
+      retryDelaySecs: 0,
+    });
     let other: number | undefined;
     const sent = stubChain(4, async (_, attempt) => {
       if (attempt === 1) {
@@ -207,12 +212,39 @@ describe('a write in flight keeps its nonce', () => {
   });
 });
 
+describe('broadcast retries', () => {
+  it('wait retryDelaySecs times the attempt number before each retry', async () => {
+    const events: string[] = [];
+    stubChain(4, (_, attempt) => {
+      events.push(`post ${attempt}`);
+      if (attempt < 3) throw new Error('connection reset');
+      return accepted();
+    });
+    const c = new ConsensusClient({
+      apiUrl: 'http://api.test',
+      nonceAllocator: new NonceAllocator(),
+      maxRetries: 2,
+      retryDelaySecs: 0.25,
+    });
+    jest.spyOn(c as any, 'sleep').mockImplementation(async (ms: unknown) => {
+      events.push(`wait ${ms}`);
+    });
+    expect((await c.storeData('sg', 'k', {}, DID, SIGNER)).success).toBe(true);
+    expect(events).toEqual(['post 1', 'wait 250', 'post 2', 'wait 500', 'post 3']);
+  });
+});
+
 describe('a failed submission carries what was sent, to post again', () => {
   it('TX_SUBMIT_FAILED carries the DID, nonce, and signed body, and keeps the nonce held', async () => {
     const sent = stubChain(4, () => {
       throw new Error('connection reset');
     });
-    const c = new ConsensusClient({ apiUrl: 'http://api.test', nonceAllocator: new NonceAllocator(), maxRetries: 1 });
+    const c = new ConsensusClient({
+      apiUrl: 'http://api.test',
+      nonceAllocator: new NonceAllocator(),
+      maxRetries: 1,
+      retryDelaySecs: 0,
+    });
     const err = await c.storeData('sg', 'k', { a: 1 }, DID, SIGNER).catch((e) => e);
     expect(err).toBeInstanceOf(TransactionSubmitError);
     expect(err).toMatchObject({ code: 'TX_SUBMIT_FAILED', did: DID, nonce: 5 });
@@ -267,7 +299,12 @@ describe('a failed submission carries what was sent, to post again', () => {
       if (attempt === 1) throw new Error('timeout');
       return inCache();
     });
-    const c = new ConsensusClient({ apiUrl: 'http://api.test', nonceAllocator: new NonceAllocator(), maxRetries: 1 });
+    const c = new ConsensusClient({
+      apiUrl: 'http://api.test',
+      nonceAllocator: new NonceAllocator(),
+      maxRetries: 1,
+      retryDelaySecs: 0,
+    });
     expect(await c.storeData('sg', 'k', {}, DID, SIGNER)).toMatchObject({ success: false, pending: true });
     expect(sent[1]).toBe(sent[0]);
     expect(await c.nextNonce(DID)).toBe(6);

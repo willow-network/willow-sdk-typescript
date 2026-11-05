@@ -102,6 +102,7 @@ describe('ConsensusClient.broadcastTransaction — retry policy', () => {
       apiUrl: API_URL,
       consensusRpcUrl: 'http://rpc.test',
       maxRetries: 2,
+      retryDelaySecs: 0,
       requestTimeoutSecs: 1,
     });
   }
@@ -257,7 +258,12 @@ describe('a 4xx from /tx/submit: the request never reached CheckTx', () => {
         let answer = (): Response =>
           ++posts === 1 ? first() : response({ ok: false, status, text: 'Too Many Requests' });
         const sent = stubChain(() => answer());
-        const c = new ConsensusClient({ apiUrl: API_URL, nonceAllocator: new NonceAllocator(), maxRetries: 1 });
+        const c = new ConsensusClient({
+          apiUrl: API_URL,
+          nonceAllocator: new NonceAllocator(),
+          maxRetries: 1,
+          retryDelaySecs: 0,
+        });
         const result = await c.storeData('sg', 'k', { a: 1 }, DID, SIGNER);
         expect(result).toMatchObject({
           success: false,

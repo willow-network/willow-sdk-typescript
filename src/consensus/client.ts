@@ -721,10 +721,12 @@ export class ConsensusClient {
    * JSON without implementing a bincode encoder per language.
    *
    * A transport failure is retried with the same signed body
-   * (`maxRetries`); `onAttempt` runs before each attempt. A post that threw
-   * may have reached CometBFT, so a 4xx to a later one (or to any post of a
-   * `repeat`, a resubmission) is pending, not a refusal: it answers that
-   * request only, and the earlier post may still land.
+   * (`maxRetries`), after a wait of `retryDelaySecs` times the attempt's
+   * number, so a retry does not meet at once a rate limit or the copy the
+   * failed post may have left; `onAttempt` runs before each attempt. A post
+   * that threw may have reached CometBFT, so a 4xx to a later one (or to any
+   * post of a `repeat`, a resubmission) is pending, not a refusal: it
+   * answers that request only, and the earlier post may still land.
    */
   private async broadcastTransaction(
     transaction: Record<string, unknown>,
@@ -758,6 +760,7 @@ export class ConsensusClient {
         }
         // This post may have reached CometBFT before it failed.
         earlier = true;
+        await this.sleep(this.config.retryDelaySecs! * 1000 * (attempt + 1));
       }
     }
     throw new ConsensusError('tx submit: exhausted retries', 'TX_SUBMIT_FAILED');

@@ -98,7 +98,12 @@ export interface ConsensusConfig {
   apiKey?: string; // Managed-tier API key sent as X-API-Key
   chainId?: string;
   requestTimeoutSecs?: number;
+  /**
+   * How many times a CometBFT RPC request, or a transaction post that failed
+   * in transport, is sent again. Default 3.
+   */
   maxRetries?: number;
+  /** Seconds to wait before a retry, times the attempt's number. Default 1. */
   retryDelaySecs?: number;
   logger?: WillowLogger; // Diagnostics logger; defaults to silent
   /**

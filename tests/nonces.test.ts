@@ -183,6 +183,7 @@ describe('ConsensusClient picks nonces with the allocator', () => {
       consensusRpcUrl: 'http://rpc.test',
       nonceAllocator,
       maxRetries,
+      retryDelaySecs: 0,
     });
   }
 

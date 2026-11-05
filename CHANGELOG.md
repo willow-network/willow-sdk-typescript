@@ -293,6 +293,10 @@ package adheres to [Semantic Versioning](https://semver.org/).
   `PrivacyOperations` threw. A 4xx whose body says the transaction is
   already in the cache stays pending. The thrown error types are
   unchanged.
+- `ConsensusClient` waits `retryDelaySecs` (by default 1 s) times the
+  attempt's number before it posts a transaction again after a transport
+  failure. It posted again at once, where the retry of a post that timed
+  out meets a rate limit, or the copy that post may have left in CometBFT.
 - A `ConsensusClient` write's result that is not `success` (pending, or
   refused at CheckTx) carries `submission` (its `did`, `nonce`, and signed
   body), and `client.store`, `client.registerDid`,
