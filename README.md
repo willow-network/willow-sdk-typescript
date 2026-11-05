@@ -249,11 +249,11 @@ values equal unless both are numbers or both are strings, so when a selected
 document lacks the sort field, or holds `null`, a boolean, an array, or an
 object there, the API's order is not determined (unless the selected
 documents hold at most one number and one string there), and every page of
-that sorted query
-throws, whatever its `offset` and `limit`: the order is checked over every
-document the query selects. Sort on a field every selected document holds as
-a number, or every one as a string: filter on a field that selects only such
-documents, or read the result with `queryUnverified`.
+that sorted query throws, whatever its `offset` and `limit`: the order is
+checked over every document the query selects. Sort on a field every
+selected document holds as a number, or every one as a string: filter on a
+field that selects only such documents, or read the result with
+`queryUnverified`.
 
 ### Update and Delete
 
