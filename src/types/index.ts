@@ -103,7 +103,11 @@ export interface WillowConfig {
   /**
    * Hands out transaction nonces per DID, so writes in flight together get
    * distinct ones. Defaults to `NonceAllocator.shared(apiUrl)`, which every
-   * client of that API URL in the process shares.
+   * client of that API URL in the process shares for the life of the
+   * process, and which never lowers the nonce base it has seen for a DID.
+   * Pass `new NonceAllocator()` for a client that must not share that state:
+   * a test, or a process that talks to a chain that was reset, or to more
+   * than one chain, at one API URL.
    */
   nonceAllocator?: NonceAllocator;
 }

@@ -114,6 +114,7 @@ DID document.
 | `logger` | SDK diagnostics sink. Defaults to `silentLogger` (no console output); pass `consoleLogger` or your own `WillowLogger` |
 | `lightClient` | Overrides for the auto-created light client (`chainId`, `validatorEndpoints`, `minValidatorsForConsensus`, `maxProofLagBlocks`, …). The fallbacks are single-node devnet defaults |
 | `webSocket` | WebSocket constructor for GraphQL subscriptions. Defaults to `globalThis.WebSocket` (browsers, Node >= 22); on older Node pass the `ws` package's `WebSocket` class |
+| `nonceAllocator` | Hands out the identity's transaction nonces. Defaults to the process-wide allocator for `apiUrl` (see [Nonces](#nonces)); pass `new NonceAllocator()` in tests and in processes that talk to more than one chain |
 
 ```typescript
 import { WillowClient, consoleLogger } from '@willow-network/sdk';
@@ -770,7 +771,13 @@ The chain accepts a nonce in `base + 1 … base + 24` that it hasn't used, and i
 - It reads the account's base (`/account/{did}/nonce` on the API) or, with a CometBFT RPC URL, the base and which of the 24 nonces above it are used (ABCI query `/store/account_nonce_state/{did}`), and hands out the lowest nonce in the window that isn't used, seen to land, or handed out within the last 120 s. Writes in flight together get distinct nonces.
 - When every nonce in the window is taken it throws `NONCE_WINDOW_FULL`; it never takes one above `base + 24`. A batch of more than 24 writes from one identity sends the rest once earlier ones land.
 - A write refused at CheckTx gives its nonce back, unless the refusal says the nonce is held by a pending transaction, already used, or spent. A write accepted at CheckTx holds its nonce, and one whose submission failed in transport keeps it, until it lands or 120 s pass; a nonce handed out 120 s ago that hasn't landed is free again.
-- Every client of one API URL in the process shares one allocator (`NonceAllocator.shared(apiUrl)`) unless given its own (`nonceAllocator` in `WillowConfig` or `ConsensusConfig`, or `PrivacyOperations`' last argument).
+- Every client of one API URL in the process shares one allocator (`NonceAllocator.shared(apiUrl)`) unless given its own (`nonceAllocator` in `WillowConfig` or `ConsensusConfig`, or `PrivacyOperations`' last argument). The shared allocator lives as long as the process and never lowers the base it has seen for a DID, so a client of a chain that was reset, or of another chain at the same URL, would hand out nonces from a base that chain hasn't reached, which it refuses. Give such a client its own, as tests should:
+
+  ```typescript
+  import { NonceAllocator, WillowClient } from '@willow-network/sdk';
+
+  const client = new WillowClient({ apiUrl: 'http://localhost:3031', nonceAllocator: new NonceAllocator() });
+  ```
 - `files.upload`, `files.delete`, and `files.unregisterStorageNode` take signing options (the chain refuses an unsigned transaction, so without them they throw `SIGNING_REQUIRED`). Leave `signing.nonce` out and the write takes its nonce from `client.consensus`, as every other write does; or pass one taken with `client.consensus.nextNonce(did)`. Either way the outcome is settled with the allocator: an accepted write holds its nonce, a refused one gives it back unless the refusal says it is held, used, or spent. A `FileOperations` made without a nonce source needs `signing.nonce` (`NONCE_REQUIRED`).
 - Each send attempt renews the nonce's hold, so no other write takes it while the write is in flight, however long its retries run.
 - A write that was sent and didn't go through throws a `TransactionSubmitError` (`TX_SUBMIT_FAILED`, or `BROADCAST_FAILED` from `PrivacyOperations`) carrying `did`, `nonce`, the signed body (`transaction`), and, for a refusal at CheckTx, the chain's answer (`result`). To retry a write that never landed under its own nonce, post the same signed body again with `client.consensus.resubmit(error)`: whichever attempt lands first spends the nonce. A repeat of a transaction the mempool already holds (CometBFT's "tx already exists in cache") returns `{ success: false, pending: true }` without a `txHash`: CometBFT caches a transaction before CheckTx runs and drops it if CheckTx refuses it, so the outcome is unknown. Its nonce stays held.

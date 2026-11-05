@@ -130,7 +130,12 @@ export class NonceAllocator {
     this.now = options.now ?? Date.now;
   }
 
-  /** The process's allocator for one API URL: every client of it shares it. */
+  /**
+   * The process's allocator for one API URL: every client of it shares it,
+   * for the life of the process. It never lowers the nonce base it has seen
+   * for a DID, so a client of a chain that was reset, or of another chain at
+   * the same URL (a test's, say), needs its own `new NonceAllocator()`.
+   */
   static shared(apiUrl: string): NonceAllocator {
     const key = apiUrl.replace(/\/+$/, '');
     let allocator = SHARED.get(key);
