@@ -651,7 +651,10 @@ on-chain DID document, with or without a key id
 Without either, the algorithm is guessed from the key's format, and an
 Ed25519 key can share the `0x`-prefixed form: the client signs requests with
 the guess but refuses to sign a transaction with a guessed secp256k1
-(`ALGORITHM_REQUIRED`). `registerDid` signs with the algorithm of the
+(`ALGORITHM_REQUIRED`). A secp256k1 key written without `0x` is guessed
+Ed25519, and its signatures don't verify against the DID's key: the chain
+refuses every write and the API answers every signed read 401 until the
+algorithm is given. `registerDid` signs with the algorithm of the
 document's key, and refuses an identity given another (`ALGORITHM_MISMATCH`).
 
 `createDidFromWallet` and `createDidFromPublicKey` publish a secp256k1 key in its 33-byte compressed form. `signSecp256k1(message, privateKey)` and `verifySecp256k1(message, signature, publicKey)` sign and verify as the chain does: ECDSA over the Keccak-256 of the message, lower-S. `signSecp256k1` returns `0x`-prefixed hex. `verifySecp256k1` decodes a signature as the chain does, reading an unprefixed one as base64 first, so it refuses an unprefixed hex signature the chain would refuse.

@@ -127,8 +127,12 @@ export class WillowClient {
    * kind. With a key id, a lookup that fails in any way (a DID the API
    * doesn't know, a network error, a 5xx, a 400), or a document that doesn't
    * list the key, leaves the algorithm to be guessed from the key's format,
-   * as `auth.setIdentity` does, and `init` completes: a transaction is not
-   * signed with a guessed secp256k1, so the guess can't sign one wrongly.
+   * as `auth.setIdentity` does, and `init` completes. A wrong guess fails
+   * closed: a transaction is not signed with a guessed secp256k1
+   * (`ALGORITHM_REQUIRED`), and a secp256k1 key written as 64 hex digits
+   * without `0x`, which is guessed Ed25519, signs nothing the DID's key
+   * verifies, so the chain refuses its every write and the API answers its
+   * every signed read 401 until the algorithm is given.
    * Without a key id the document is required, and a failed lookup throws.
    *
    * @param algorithm - The identity's signature algorithm. When given, it
