@@ -12,6 +12,7 @@ import {
   GroveDBVerificationError,
   ProvedKeyValue,
   Element,
+  MerkNode,
   NULL_HASH
 } from './types';
 import { bytesToHex, hexToBytes } from './bincode';
@@ -46,6 +47,13 @@ export interface ProvenEntry {
    * shows only that the key is present.
    */
   tree?: boolean;
+  /**
+   * The merk node the proof gives this entry as (the verifier always sets
+   * it): grovedb proves an Item as `KV`, a subtree as `KVValueHash`, and a
+   * reference as `KVRefValueHash`, whose `value` is the referenced element's
+   * bytes, not the reference's.
+   */
+  nodeType?: MerkNode['type'];
 }
 
 /**
@@ -367,7 +375,8 @@ function verifyLayerProof(
         key: proved.key,
         value: bound ? proved.value : null,
         element: bound && deserializeElements ? element : null,
-        tree: element !== null && isTreeElement(element)
+        tree: element !== null && isTreeElement(element),
+        nodeType: proved.nodeType
       });
     }
   }

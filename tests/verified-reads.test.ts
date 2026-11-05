@@ -10,10 +10,20 @@ import { WillowIndexers } from '../src/indexers';
 import { verifyItemProof, subgroveDataPath } from '../src/proof';
 import { LightClient } from '../src/light-client/client';
 import { createTrustThreshold } from '../src/light-client/types';
-import { hexToBytes } from '../src/grovedb';
+import { combineHash, hexToBytes, kvDigestToKvHash, nodeHash, valueHash, NULL_HASH } from '../src/grovedb';
 import { VerifiableRpcOperations } from '../src/verifiable-rpc';
 import { WillowClient } from '../src/client';
-import { Merk, chainProof, enc, groveProof, hex, oneItemLayer, pathProof } from './helpers/grove-proof';
+import {
+  Merk,
+  chainProof,
+  enc,
+  groveProof,
+  hex,
+  itemElement,
+  op,
+  oneItemLayer,
+  pathProof,
+} from './helpers/grove-proof';
 
 const DOC_A = { owner: 'alice', n: 1 };
 const DOC_C = { owner: 'carol', n: 3 };
@@ -115,6 +125,36 @@ describe('a verified read binds the value it returns to the proof', () => {
     });
   });
 
+  it("the key's node must be the KV node grovedb proves an Item in", async () => {
+    const doc = { owner: 'alice', n: 1 };
+    const element = itemElement(enc(JSON.stringify(doc)));
+    const key = enc('k');
+    // A reference at the key, whose target holds `doc`.
+    const refHash = valueHash(enc('a reference element'));
+    const ref = {
+      ops: Uint8Array.from([
+        0x06, key.length, ...key, element.length >> 8, element.length & 0xff, ...element, ...refHash,
+      ]),
+      root: nodeHash(kvDigestToKvHash(key, combineHash(refHash, valueHash(element))), NULL_HASH, NULL_HASH),
+    };
+    // The item itself, given as a KVValueHash node (same root as KV).
+    const viaValueHash = {
+      ops: Uint8Array.from(op.kvValueHash(key, element, valueHash(element))),
+      root: nodeHash(kvDigestToKvHash(key, valueHash(element)), NULL_HASH, NULL_HASH),
+    };
+    for (const leaf of [ref, viaValueHash]) {
+      const { proof, root } = chainProof(PATH, leaf.ops, leaf.root, key);
+      serve({ k: doc }, { k: hex(proof) });
+      await expect(client(7, hex(root)).getData('s1', 'k')).rejects.toMatchObject({
+        code: 'PROOF_VERIFICATION_FAILED',
+      });
+    }
+    // The KV node grovedb gives an Item verifies.
+    const kv = oneItemLayer('k', enc(JSON.stringify(doc)));
+    const { proof, root } = chainProof(PATH, kv.ops, kv.root, key);
+    serve({ k: doc }, { k: hex(proof) });
+    await expect(client(7, hex(root)).getData('s1', 'k')).resolves.toEqual(doc);
+  });
 });
 
 describe('getMultiple leaves a key out only when it is proven absent', () => {

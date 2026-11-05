@@ -128,7 +128,11 @@ export function requireValueBinds(key: string, raw: Uint8Array | null, value: un
  * Nothing is skipped: `value` is the value returned, and one the API's
  * answer does not carry (`undefined`) is refused, not checked for the key
  * alone. The proof must descend to the subgrove's data path and prove an
- * Item at `key` whose payload `value` binds to.
+ * Item at `key` as the `KV` node grovedb proves an Item in, whose payload
+ * `value` binds to. A subgrove's data holds Items only (a StoreData writes
+ * one), so another node at the key is refused: a reference's
+ * (`KVRefValueHash`) value is the element it points to, not one stored at
+ * the key.
  */
 export function verifySubgroveItem(
   proofHex: string,
@@ -148,7 +152,14 @@ export function verifySubgroveItem(
       `Proof does not contain key "${key}" at path [${pathLabel(subgroveDataPath(subgroveId))}]`,
     );
   }
-  requireValueBinds(key, entry.element?.type === 'Item' ? entry.element.value : null, value);
+  if (entry.nodeType !== 'KV' || entry.element?.type !== 'Item') {
+    throw new Error(
+      `The proof gives key "${key}" as a ${entry.nodeType ?? 'value'} node holding ` +
+        `${entry.element?.type ?? 'no element'}, not the KV node holding an Item that grovedb ` +
+        'proves a stored value in',
+    );
+  }
+  requireValueBinds(key, entry.element.value, value);
   const computed = hashToHex(verification.rootHash);
   enforceExpectedRoot(computed, expectedRootHash);
   return computed;
