@@ -129,6 +129,51 @@ describe('a transaction is signed with the algorithm of the key the chain verifi
     expect(signatureHex(bodies[0].StoreData)).toBe(STORE.ed25519_signature_hex);
   });
 
+  it("init given a key id reads that key's algorithm from the DID document", async () => {
+    const did = STORE.inputs.owner_did;
+    const keyId = `${did}#key-1`;
+    const chain = global.fetch as unknown as (url: string, init?: RequestInit) => Promise<Response>;
+    global.fetch = jest.fn(async (url: string, init?: RequestInit) =>
+      url.endsWith(`/did/${did}`)
+        ? jsonResponse({
+            success: true,
+            data: {
+              id: did,
+              public_keys: [
+                { id: `${did}#key-0`, type: 'Ed25519VerificationKey2018' },
+                { id: keyId, type: 'EcdsaSecp256k1VerificationKey2019' },
+              ],
+              authentication: [keyId],
+            },
+          })
+        : chain(url, init),
+    ) as unknown as typeof fetch;
+
+    // A 0x-prefixed key alone would be a guessed secp256k1, which no transaction is signed with.
+    const c = new WillowClient({ apiUrl: 'http://api.test', did, privateKey: `0x${SEED}`, nonceAllocator: new NonceAllocator() });
+    await c.init(undefined, keyId);
+    expect(c.auth.getPublicKeyId()).toBe(keyId);
+    expect(c.auth.getAlgorithm()).toBe('secp256k1');
+    await c.store(STORE.inputs.subgrove_id, STORE.inputs.key, JSON.parse(STORE.inputs.data_utf8));
+    expect(signatureHex(bodies[0].StoreData)).toBe(STORE.secp256k1_compact_signature_hex);
+
+    // An algorithm passed to init still wins, without a lookup.
+    const lookups = (global.fetch as jest.Mock).mock.calls.filter(([url]) => String(url).includes('/did/')).length;
+    const given = new WillowClient({ apiUrl: 'http://api.test', did, privateKey: SEED, nonceAllocator: new NonceAllocator() });
+    await given.init(undefined, keyId, 'Ed25519');
+    expect(given.auth.getAlgorithm()).toBe('Ed25519');
+    expect((global.fetch as jest.Mock).mock.calls.filter(([url]) => String(url).includes('/did/'))).toHaveLength(lookups);
+
+    // A DID not yet on chain keeps the guess, as before (it may be registered next).
+    global.fetch = jest.fn(async () =>
+      ({ ok: false, status: 404, text: async () => '{"success":false,"error":"DID not found"}' }) as unknown as Response,
+    ) as unknown as typeof fetch;
+    const unregistered = new WillowClient({ apiUrl: 'http://api.test', did, privateKey: SEED, nonceAllocator: new NonceAllocator() });
+    await unregistered.init(undefined, keyId);
+    expect(unregistered.auth.getPublicKeyId()).toBe(keyId);
+    expect(unregistered.auth.getAlgorithm()).toBe('Ed25519');
+  });
+
   it('registerDid signs with the document key\'s algorithm when the identity\'s was guessed', async () => {
     const doc = secpDoc();
     // A raw-hex secp256k1 key without 0x: guessed Ed25519.

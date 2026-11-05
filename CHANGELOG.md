@@ -191,8 +191,10 @@ package adheres to [Semantic Versioning](https://semver.org/).
   without an algorithm whose key is `0x`-prefixed hex was guessed
   secp256k1, and its transactions signed so; an Ed25519 key can share that
   form. Transactions now throw `ALGORITHM_REQUIRED` until the algorithm is
-  given to `setIdentity` (or read by `init()`); requests still sign with
-  the guess. `WillowAuth.transactionSigner(keyAlgorithm?)` takes the
+  given to `setIdentity` or `init()`, or read by `init()` from the DID
+  document; requests still sign with the guess. `init()` given no algorithm
+  reads the key's type from the document with or without a key id; given a
+  key id, it skipped the document and kept the guess. `WillowAuth.transactionSigner(keyAlgorithm?)` takes the
   algorithm of the key the chain will verify with.
 - `registerDid` (`WillowClient` and `ConsensusClient`) signs with the
   algorithm of the document's key: a guessed identity, or a signer without

@@ -386,8 +386,8 @@ export class WillowAuth {
    *   guessed by {@link detectAlgorithm} (Ed25519 for a typical Willow DID);
    *   requests are signed with the guess, but a transaction is not signed
    *   with a guessed secp256k1 (`ALGORITHM_REQUIRED`).
-   *   `WillowClient.init()` supplies it from the on-chain DID document's key
-   *   type.
+   *   `WillowClient.init()`, given no algorithm, supplies it from the key's
+   *   type in the DID document on chain, with or without a key id.
    */
   setIdentity(
     did: string,
@@ -441,7 +441,9 @@ export class WillowAuth {
    *
    * @throws WillowError `ALGORITHM_REQUIRED` if the identity's algorithm is
    *   a secp256k1 guessed from its key's format: pass the algorithm to
-   *   {@link setIdentity} (or call `WillowClient.init()`).
+   *   {@link setIdentity} or `WillowClient.init()`, or call
+   *   `WillowClient.init()` for a DID on chain whose document lists the key,
+   *   which reads it from the key's type.
    */
   getSignFunction(): SignFunction {
     return signFunctionFor(this.transactionAlgorithm());
@@ -479,8 +481,9 @@ export class WillowAuth {
     if (this.algorithm === 'secp256k1' && !this.algorithmGiven) {
       throw new WillowError(
         "The identity's algorithm was guessed from its key's format, which an Ed25519 key " +
-          "can share; pass 'secp256k1' or 'Ed25519' to setIdentity (or call " +
-          'WillowClient.init()) before signing a transaction',
+          "can share; pass 'secp256k1' or 'Ed25519' to setIdentity or WillowClient.init(), or " +
+          'call WillowClient.init() for a DID on chain whose document lists the key, before ' +
+          'signing a transaction',
         'ALGORITHM_REQUIRED',
       );
     }

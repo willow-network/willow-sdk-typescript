@@ -7,6 +7,7 @@ import { ConsensusClient } from "./consensus";
 import { didDocumentKeyType } from "./consensus/wire";
 import { BroadcastResult, RegisterSubgroveOptions, Signer } from "./consensus/types";
 import { writeNotAccepted } from "./internal/tx";
+import { HttpError } from "./internal/http";
 import { WillowIndexers } from "./indexers";
 import { WillowSubscriptions } from "./subscriptions";
 import {
@@ -119,12 +120,18 @@ export class WillowClient {
   /**
    * Initialize the client with authentication.
    *
-   * @param algorithm - Optional per-request signature algorithm. Self-certifying
-   *   Willow DIDs no longer encode the algorithm in the id, so a secp256k1
-   *   (Ethereum/wallet) identity must be signalled some other way. When omitted,
-   *   `init` derives it from the resolved DID document's key type (the
-   *   authoritative source); pass it explicitly to override or when supplying
-   *   your own `publicKeyId` skips the DID-document lookup.
+   * Reads the DID document from the API unless both `publicKeyId` and
+   * `algorithm` are given. Without `publicKeyId` it takes the document's
+   * first key. Without `algorithm` it takes the algorithm of that key's type
+   * in the document, the authoritative signal: self-certifying Willow DIDs
+   * don't encode the algorithm, and a `0x`-prefixed 64-hex key may be either
+   * kind. With a key id, a DID the API doesn't know (a 404), or a document
+   * that doesn't list the key, leaves the algorithm to be guessed
+   * from the key's format, as `auth.setIdentity` does (and a transaction is
+   * not signed with a guessed secp256k1).
+   *
+   * @param algorithm - The identity's signature algorithm. When given, it
+   *   wins over the document's.
    */
   async init(
     privateKey?: string,
@@ -141,24 +148,46 @@ export class WillowClient {
     }
 
     let resolvedAlgorithm = algorithm;
-    if (!publicKeyId) {
-      const didDoc = await this.auth.getDidDocument(this.config.did);
-      // The API serves the chain's document, whose keys are `public_keys`.
-      const publicKeys =
-        didDoc.publicKeys ??
-        (didDoc as unknown as { public_keys?: DidDocument["publicKeys"] }).public_keys ??
-        [];
-      if (publicKeys.length === 0) {
-        throw new Error("No public keys found in DID document");
+    if (!publicKeyId || resolvedAlgorithm === undefined) {
+      const publicKeys = await this.documentKeys(this.config.did, !publicKeyId);
+      if (!publicKeyId) {
+        if (publicKeys.length === 0) {
+          throw new Error("No public keys found in DID document");
+        }
+        publicKeyId = publicKeys[0].id;
       }
-      publicKeyId = publicKeys[0].id;
       // The on-chain DID document's key type is the authoritative algorithm
       // signal for self-certifying ids. An explicit `algorithm` still wins.
+      const keyId = publicKeyId;
       resolvedAlgorithm =
-        resolvedAlgorithm ?? algorithmFromKeyType(publicKeys[0].type);
+        resolvedAlgorithm ?? algorithmFromKeyType(publicKeys.find((k) => k?.id === keyId)?.type);
     }
 
     this.auth.setIdentity(this.config.did, key, publicKeyId, resolvedAlgorithm);
+  }
+
+  /**
+   * The keys of `did`'s document as the API serves it (the chain's document,
+   * whose keys are `public_keys`). When the document is needed only for a
+   * key's algorithm (`required` false), a DID the API doesn't know gives no
+   * keys rather than throwing.
+   */
+  private async documentKeys(did: string, required: boolean): Promise<DidDocument["publicKeys"]> {
+    let didDoc: DidDocument;
+    try {
+      didDoc = await this.auth.getDidDocument(did);
+    } catch (error) {
+      const unknown =
+        (error instanceof HttpError && error.status === 404) ||
+        (error instanceof WillowError && error.code === "DID_NOT_FOUND");
+      if (!required && unknown) return [];
+      throw error;
+    }
+    const keys =
+      didDoc?.publicKeys ??
+      (didDoc as unknown as { public_keys?: DidDocument["publicKeys"] } | undefined)?.public_keys ??
+      [];
+    return Array.isArray(keys) ? keys : [];
   }
 
   /**

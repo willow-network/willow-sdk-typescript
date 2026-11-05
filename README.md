@@ -618,7 +618,9 @@ client.auth.setIdentity(
 The client signs its transactions and signed requests with the identity's
 algorithm: `client.auth.transactionSigner()` gives the key, key id, and sign
 function (`signSecp256k1` or `signEd25519`) a transaction is signed with.
-`client.init()` reads the algorithm from the on-chain DID document's key type.
+`client.init()`, given no algorithm, reads it from the key's type in the
+on-chain DID document, with or without a key id
+(`client.init(privateKey, publicKeyId)`).
 Without either, the algorithm is guessed from the key's format, and an
 Ed25519 key can share the `0x`-prefixed form: the client signs requests with
 the guess but refuses to sign a transaction with a guessed secp256k1
