@@ -30,6 +30,27 @@ const OP_PARENT_INVERTED = 0x12;
 const OP_CHILD_INVERTED = 0x13;
 
 /**
+ * Large-value op codes: the same layout as the op they mirror, but the value
+ * length is a big-endian u32. The Willow GroveDB fork (willow-network/grovedb,
+ * branch willow/v3.1.0-proof-fixes; upstream dashpay/grovedb 86562f65) writes
+ * them for any value of 64 KiB or more, which grovedb 3.1.0's u16 length
+ * cannot express.
+ */
+const OP_PUSH_KV_LARGE = 0x20;
+const OP_PUSH_KVVALUEHASH_LARGE = 0x21;
+const OP_PUSH_KVREFVALUEHASH_LARGE = 0x22;
+const OP_PUSH_KVVALUEHASH_FEATURE_TYPE_LARGE = 0x23;
+const OP_PUSH_INVERTED_KV_LARGE = 0x28;
+const OP_PUSH_INVERTED_KVVALUEHASH_LARGE = 0x29;
+const OP_PUSH_INVERTED_KVREFVALUEHASH_LARGE = 0x2a;
+const OP_PUSH_INVERTED_KVVALUEHASH_FEATURE_TYPE_LARGE = 0x2b;
+
+/** A value this long or longer must use a large-value op (and only those may). */
+export const LARGE_VALUE_THRESHOLD = 65536;
+/** Longest value a large-value op may declare (64 MiB, as the prover's decoder). */
+export const MAX_VALUE_LEN = 64 * 1024 * 1024;
+
+/**
  * Feature type encoding
  */
 const FEATURE_BASIC = 0x00;
@@ -73,15 +94,23 @@ export class MerkDecoder implements Iterable<MerkOp> {
       case OP_PUSH_KVHASH:
         return { type: 'Push', node: this.decodeKVHash() };
       case OP_PUSH_KV:
-        return { type: 'Push', node: this.decodeKV() };
+        return { type: 'Push', node: this.decodeKV(false) };
       case OP_PUSH_KVVALUEHASH:
-        return { type: 'Push', node: this.decodeKVValueHash() };
+        return { type: 'Push', node: this.decodeKVValueHash(false) };
       case OP_PUSH_KVDIGEST:
         return { type: 'Push', node: this.decodeKVDigest() };
       case OP_PUSH_KVREFVALUEHASH:
-        return { type: 'Push', node: this.decodeKVRefValueHash() };
+        return { type: 'Push', node: this.decodeKVRefValueHash(false) };
       case OP_PUSH_KVVALUEHASH_FEATURE_TYPE:
-        return { type: 'Push', node: this.decodeKVValueHashFeatureType() };
+        return { type: 'Push', node: this.decodeKVValueHashFeatureType(false) };
+      case OP_PUSH_KV_LARGE:
+        return { type: 'Push', node: this.decodeKV(true) };
+      case OP_PUSH_KVVALUEHASH_LARGE:
+        return { type: 'Push', node: this.decodeKVValueHash(true) };
+      case OP_PUSH_KVREFVALUEHASH_LARGE:
+        return { type: 'Push', node: this.decodeKVRefValueHash(true) };
+      case OP_PUSH_KVVALUEHASH_FEATURE_TYPE_LARGE:
+        return { type: 'Push', node: this.decodeKVValueHashFeatureType(true) };
 
       // PushInverted variants
       case OP_PUSH_INVERTED_HASH:
@@ -89,15 +118,23 @@ export class MerkDecoder implements Iterable<MerkOp> {
       case OP_PUSH_INVERTED_KVHASH:
         return { type: 'PushInverted', node: this.decodeKVHash() };
       case OP_PUSH_INVERTED_KV:
-        return { type: 'PushInverted', node: this.decodeKV() };
+        return { type: 'PushInverted', node: this.decodeKV(false) };
       case OP_PUSH_INVERTED_KVVALUEHASH:
-        return { type: 'PushInverted', node: this.decodeKVValueHash() };
+        return { type: 'PushInverted', node: this.decodeKVValueHash(false) };
       case OP_PUSH_INVERTED_KVDIGEST:
         return { type: 'PushInverted', node: this.decodeKVDigest() };
       case OP_PUSH_INVERTED_KVREFVALUEHASH:
-        return { type: 'PushInverted', node: this.decodeKVRefValueHash() };
+        return { type: 'PushInverted', node: this.decodeKVRefValueHash(false) };
       case OP_PUSH_INVERTED_KVVALUEHASH_FEATURE_TYPE:
-        return { type: 'PushInverted', node: this.decodeKVValueHashFeatureType() };
+        return { type: 'PushInverted', node: this.decodeKVValueHashFeatureType(false) };
+      case OP_PUSH_INVERTED_KV_LARGE:
+        return { type: 'PushInverted', node: this.decodeKV(true) };
+      case OP_PUSH_INVERTED_KVVALUEHASH_LARGE:
+        return { type: 'PushInverted', node: this.decodeKVValueHash(true) };
+      case OP_PUSH_INVERTED_KVREFVALUEHASH_LARGE:
+        return { type: 'PushInverted', node: this.decodeKVRefValueHash(true) };
+      case OP_PUSH_INVERTED_KVVALUEHASH_FEATURE_TYPE_LARGE:
+        return { type: 'PushInverted', node: this.decodeKVValueHashFeatureType(true) };
 
       // Tree operations
       case OP_PARENT:
@@ -133,10 +170,10 @@ export class MerkDecoder implements Iterable<MerkOp> {
   /**
    * Decode a KV node
    */
-  private decodeKV(): MerkNode {
+  private decodeKV(large: boolean): MerkNode {
     const keyLen = this.readU8('key length');
     const key = this.readBytes(keyLen);
-    const valueLen = this.readU16();
+    const valueLen = this.readValueLength(large);
     const value = this.readBytes(valueLen);
     return { type: 'KV', key, value };
   }
@@ -144,10 +181,10 @@ export class MerkDecoder implements Iterable<MerkOp> {
   /**
    * Decode a KVValueHash node
    */
-  private decodeKVValueHash(): MerkNode {
+  private decodeKVValueHash(large: boolean): MerkNode {
     const keyLen = this.readU8('key length');
     const key = this.readBytes(keyLen);
-    const valueLen = this.readU16();
+    const valueLen = this.readValueLength(large);
     const value = this.readBytes(valueLen);
     const valueHash = this.readBytes(HASH_LENGTH);
     return { type: 'KVValueHash', key, value, valueHash };
@@ -166,10 +203,10 @@ export class MerkDecoder implements Iterable<MerkOp> {
   /**
    * Decode a KVRefValueHash node
    */
-  private decodeKVRefValueHash(): MerkNode {
+  private decodeKVRefValueHash(large: boolean): MerkNode {
     const keyLen = this.readU8('key length');
     const key = this.readBytes(keyLen);
-    const valueLen = this.readU16();
+    const valueLen = this.readValueLength(large);
     const value = this.readBytes(valueLen);
     const valueHash = this.readBytes(HASH_LENGTH);
     return { type: 'KVRefValueHash', key, value, valueHash };
@@ -178,10 +215,10 @@ export class MerkDecoder implements Iterable<MerkOp> {
   /**
    * Decode a KVValueHashFeatureType node
    */
-  private decodeKVValueHashFeatureType(): MerkNode {
+  private decodeKVValueHashFeatureType(large: boolean): MerkNode {
     const keyLen = this.readU8('key length');
     const key = this.readBytes(keyLen);
-    const valueLen = this.readU16();
+    const valueLen = this.readValueLength(large);
     const value = this.readBytes(valueLen);
     const valueHash = this.readBytes(HASH_LENGTH);
     const featureType = this.decodeFeatureType();
@@ -257,6 +294,44 @@ export class MerkDecoder implements Iterable<MerkOp> {
     }
     const value = (this.bytes[this.offset] << 8) | this.bytes[this.offset + 1];
     this.offset += 2;
+    return value;
+  }
+
+  /**
+   * Read a value length: a big-endian u16 for the 3.1.0 ops, a big-endian u32
+   * for the large-value ops. A large-value op must carry a value of at least
+   * 64 KiB (a shorter one has exactly one encoding, the u16 op) and at most
+   * MAX_VALUE_LEN.
+   */
+  private readValueLength(large: boolean): number {
+    if (!large) {
+      return this.readU16();
+    }
+    const len = this.readU32();
+    if (len < LARGE_VALUE_THRESHOLD) {
+      throw new GroveDBVerificationError(
+        `Large-value op with a ${len}-byte value (must be at least ${LARGE_VALUE_THRESHOLD})`,
+      );
+    }
+    if (len > MAX_VALUE_LEN) {
+      throw new GroveDBVerificationError(
+        `Large-value op with a ${len}-byte value (limit ${MAX_VALUE_LEN})`,
+      );
+    }
+    return len;
+  }
+
+  /**
+   * Read a big-endian u32 (without 32-bit signed bitwise arithmetic)
+   */
+  private readU32(): number {
+    if (this.offset + 4 > this.bytes.length) {
+      throw new GroveDBVerificationError('Unexpected end of data reading u32');
+    }
+    const b = this.bytes;
+    const o = this.offset;
+    const value = b[o] * 0x1000000 + ((b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]);
+    this.offset += 4;
     return value;
   }
 
