@@ -37,8 +37,13 @@ Transactions submitted through this SDK go to the API server's
 `POST /tx/submit` endpoint. The server accepts the JSON-encoded
 transaction, bincode-encodes it (the chain's on-the-wire format), and
 forwards to CometBFT's `broadcast_tx_sync`. `apiUrl` is therefore
-**required** whenever you submit a tx; `consensusRpcUrl` is only used
-for read-only RPC queries (status, block, validators). For localhost
+**required** whenever you submit a tx. `consensusRpcUrl` is the CometBFT
+RPC endpoint for reads only (no transaction is sent to it): RPC queries
+(status, block, validators, a transaction's status), the nonce state a
+write's nonce is chosen from (which nonces in the window are used;
+without it, the base alone from the API), and the light client's chain
+heights and roots, against which every verified read is checked (unless
+`lightClient.validatorEndpoints` names other endpoints). For localhost
 devnets it is derived from `apiUrl` automatically; for any other host,
 set it explicitly — operations that need CometBFT RPC throw with code
 `CONSENSUS_RPC_URL_REQUIRED` when it is missing.
@@ -668,7 +673,7 @@ willow-request-v2
 - Ed25519 signatures are sent as hex. secp256k1 signatures are over the Keccak-256 of the message and are sent as `0x`-prefixed hex.
 - Requests sent to an indexer are not signed this way.
 
-The client's other signed requests (key-grant reads and transaction submission) use the older form described below.
+`FileOperations` (file reads and the file writes it submits) and `PrivacyOperations` (key-grant reads and the grants, rotations, and revokes it submits) sign their requests with the older form described below. `ConsensusClient`, which submits every other transaction, signs no request: it sends only `X-API-Key` (when an `apiKey` is configured), and each transaction carries its own signature.
 
 To sign a read you send yourself:
 
