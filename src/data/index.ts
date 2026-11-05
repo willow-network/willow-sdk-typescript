@@ -156,6 +156,19 @@ function verificationFailed(error: unknown): WillowError {
   );
 }
 
+/**
+ * An object to return values by key in, with no prototype: no key a caller
+ * reads in it is inherited, and a key named `__proto__` is set as a key.
+ */
+function keyedResults(): Record<string, DataRecord> {
+  return Object.create(null) as Record<string, DataRecord>;
+}
+
+/** Set `key` to `value` as an own property, whatever the key's name. */
+function setResult(results: Record<string, DataRecord>, key: string, value: DataRecord): void {
+  Object.defineProperty(results, key, { value, enumerable: true, writable: true, configurable: true });
+}
+
 export interface WillowDataOptions {
   /** Logger for verification diagnostics. Defaults to `silentLogger`. */
   logger?: WillowLogger;
@@ -616,18 +629,22 @@ export class WillowData {
    * Get several keys, each verified as {@link getData} verifies it. A key the
    * API reports absent is left out of the result only when its proof proves
    * it absent at a root the light client verifies; otherwise this throws.
+   *
+   * The result has no prototype: each key is an own property, so a key named
+   * `__proto__` is returned as a key, and a key left out reads as
+   * `undefined` (`"toString" in result` is false).
    */
   async getMultiple(
     datasetId: string,
     keys: string[],
   ): Promise<Record<string, DataRecord>> {
-    const results: Record<string, DataRecord> = {};
+    const results = keyedResults();
 
     // In production, we'd want to batch these or have a bulk endpoint
     await Promise.all(
       keys.map(async (key) => {
         try {
-          results[key] = await this.getData(datasetId, key);
+          setResult(results, key, await this.getData(datasetId, key));
         } catch (error) {
           if (error instanceof WillowError && error.code === "DATA_NOT_FOUND") {
             await this.verifyAbsent(datasetId, key);
@@ -642,19 +659,20 @@ export class WillowData {
   }
 
   /**
-   * Query helper - get multiple records without verification
+   * Query helper - get multiple records without verification. The result
+   * has no prototype, as {@link getMultiple}'s.
    */
   async getMultipleUnverified(
     datasetId: string,
     keys: string[],
   ): Promise<Record<string, DataRecord>> {
-    const results: Record<string, DataRecord> = {};
+    const results = keyedResults();
 
     // In production, we'd want to batch these or have a bulk endpoint
     await Promise.all(
       keys.map(async (key) => {
         try {
-          results[key] = await this.getDataUnverified(datasetId, key);
+          setResult(results, key, await this.getDataUnverified(datasetId, key));
         } catch (error) {
           // Ignore not found errors in bulk operations
           if (error instanceof WillowError && error.statusCode === 404) {

@@ -310,6 +310,12 @@ package adheres to [Semantic Versioning](https://semver.org/).
 - `getMultiple` leaves out a key the API reports absent only when the API's
   proof for it proves it absent at a verified root; otherwise it throws. It
   dropped such keys unchecked.
+- `getMultiple` and `getMultipleUnverified` return an object with no
+  prototype, each value an own property of its key. A key named
+  `__proto__` set the result's prototype to the stored value, so a key
+  proven absent read as that value's field of the same name. Test for a key
+  with `key in result` or `Object.hasOwn(result, key)`: the result has no
+  `hasOwnProperty` method.
 - `get`, `getData`, `getVerifiedData`, and `getMultiple` refuse an answer
   that reports success but carries no value (`PROOF_VERIFICATION_FAILED`).
   Such an answer, with the key's genuine proof, was checked for the key
