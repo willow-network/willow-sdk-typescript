@@ -52,11 +52,11 @@ function serve(values: Record<string, unknown>, proofs: Record<string, string | 
   }) as unknown as typeof fetch;
 }
 
-function client(latest = 7): WillowData {
+function client(latest = 7, root = ROOT): WillowData {
   const d = new WillowData('http://api.test', new WillowAuth('http://api.test'), new WillowIndexers('http://api.test'));
   (d as any).lightClient = {
     getLatestChainHeight: async () => latest,
-    getVerifiedRootHashAtHeight: async () => ROOT,
+    getVerifiedRootHashAtHeight: async () => root,
   };
   return d;
 }
@@ -74,6 +74,26 @@ describe('getData and getVerifiedData', () => {
     serve({ a: DOC_A }, { a: proofOf(['a']) }, null);
     await expect(client().getData('s1', 'a')).rejects.toMatchObject({ code: 'PROOF_VERIFICATION_FAILED' });
   });
+});
+
+describe('a verified read binds the value it returns to the proof', () => {
+  it('a value the SDK wrote verifies, whatever its digits', async () => {
+    // `client.store('s1', 'k', { price: 1.1 * 1.1 })` stores `{"price":1.2100000000000002}`.
+    const doc = { price: 1.1 * 1.1, third: 1 / 3, sum: 0.1 + 0.2 };
+    const leaf = oneItemLayer('k', enc(JSON.stringify(doc)));
+    const { proof, root } = chainProof(PATH, leaf.ops, leaf.root, enc('k'));
+    serve({ k: doc }, { k: hex(proof) });
+    await expect(client(7, hex(root)).getData('s1', 'k')).resolves.toEqual(doc);
+    // A digit string that parses to a double JavaScript writes as another value still refuses.
+    const text = '{"third":0.33333333333333331}';
+    const other = oneItemLayer('k', enc(text));
+    const second = chainProof(PATH, other.ops, other.root, enc('k'));
+    serve({ k: JSON.parse(text) }, { k: hex(second.proof) });
+    await expect(client(7, hex(second.root)).getData('s1', 'k')).rejects.toMatchObject({
+      code: 'PROOF_VERIFICATION_FAILED',
+    });
+  });
+
 });
 
 describe('getMultiple leaves a key out only when it is proven absent', () => {

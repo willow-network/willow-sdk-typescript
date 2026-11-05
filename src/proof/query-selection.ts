@@ -440,9 +440,10 @@ export function checkQueryResult(
  * the query's selection run over the entries. The response's `documents`
  * must be the documents the query selects, in order (each structurally
  * equal to the proven one, numbers exact: a document holding a number
- * JavaScript can't carry exactly, such as an integer beyond 2^53 − 1 or a
- * decimal of more than 15 significant digits, does not verify), and its
- * `total`, `offset`, and `limit` the query's.
+ * JavaScript can't carry exactly, an integer beyond 2^53 − 1 or a decimal
+ * that parses to a double JavaScript writes as another value, such as
+ * `0.33333333333333331`, does not verify; every number JavaScript writes
+ * does), and its `total`, `offset`, and `limit` the query's.
  *
  * `query` is the query as it was sent (without `include_proof`, which the
  * SDK sets).

@@ -273,8 +273,11 @@ package adheres to [Semantic Versioning](https://semver.org/).
   values that are not all numbers or all strings, or an object whose first
   key is `serde_json`'s private number or raw-value token) throws
   `QUERY_RESULT_NOT_VERIFIABLE`. The selection is the one in the body as
-  sent. A document holding a decimal of more than 15 significant digits
-  does not verify, in queries and in `get`. The verified result carries
+  sent. A document holding a number JavaScript can't carry exactly (an
+  integer beyond 2^53 − 1, or a decimal that parses to a double JavaScript
+  writes as another value, such as `0.33333333333333331`) does not verify,
+  in queries and in `get`; every number JavaScript writes does. The
+  verified result carries
   `documents`, `total`, `offset`, `limit`, `proof`, `verifiedRootHash`, and
   `verifiedHeight`, and none of the API's other fields.
 - **A verified read's proof height must be near the chain's.** `get`,

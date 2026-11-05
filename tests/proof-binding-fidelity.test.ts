@@ -109,8 +109,8 @@ describe('a number JavaScript cannot carry exactly never binds', () => {
   // 0.12345678901234567890 and 0.12345678901234568 parse to one double.
   const LONG = '0.12345678901234567890';
 
-  it('a decimal of more than 15 significant digits, or below the normal range', async () => {
-    for (const text of [LONG, '1.0000000000000000001', '1e-320', '-123456789.1234567']) {
+  it('a decimal whose double is written as another value, or that underflows', async () => {
+    for (const text of [LONG, '1.0000000000000000001', '0.33333333333333331', '4.9406564584124654e-324', '1e-400']) {
       mockVerify.mockReturnValue(provenItem(`{"x":${text}}`));
       const value = JSON.parse(`{"x":${text}}`);
       await expect(verifyItemProof('00', 'k', value)).rejects.toThrow(
@@ -127,16 +127,39 @@ describe('a number JavaScript cannot carry exactly never binds', () => {
     }
   });
 
+  it('binds every number JavaScript writes, at 16 and 17 significant digits too', async () => {
+    // What `client.store` sends for these values, and the API stores and returns.
+    const written = [1.1 * 1.1, 1 / 3, 0.1 + 0.2, -123456789.1234567, 1e-320, 2 ** -1022].map(String);
+    expect(written.slice(0, 3)).toEqual(['1.2100000000000002', '0.3333333333333333', '0.30000000000000004']);
+    for (const text of [...written, '1.0', '1e2', '1E+2', '0.10']) {
+      mockVerify.mockReturnValue(provenItem(`{"x":${text}}`));
+      const value = JSON.parse(`{"x":${text}}`);
+      await expect(verifyItemProof('00', 'k', value)).resolves.toBe(ROOT_HEX);
+      await expect(verifyQueryProof('00', [value])).resolves.toBe(ROOT_HEX);
+    }
+  });
+
   it('isExactJsonNumber and firstInexactNumber', () => {
     expect(isExactJsonNumber('9007199254740991')).toBe(true);
+    expect(isExactJsonNumber('-9007199254740991')).toBe(true);
     expect(isExactJsonNumber('9007199254740992')).toBe(false);
+    expect(isExactJsonNumber('9007199254740993')).toBe(false);
+    expect(isExactJsonNumber('1e20')).toBe(false); // an integer beyond 2^53 - 1
     expect(isExactJsonNumber('0.0')).toBe(true);
     expect(isExactJsonNumber('1e400')).toBe(false);
     expect(isExactJsonNumber('2.5e-308')).toBe(true);
-    expect(isExactJsonNumber('2.2250738585072014e-308')).toBe(false); // 17 digits
-    expect(isExactJsonNumber('1e-308')).toBe(false);
+    expect(isExactJsonNumber('2.2250738585072014e-308')).toBe(true); // 2^-1022, as JavaScript writes it
+    expect(isExactJsonNumber('1e-308')).toBe(true);
+    expect(isExactJsonNumber('1.2100000000000002')).toBe(true);
+    expect(isExactJsonNumber('1.21000000000000020')).toBe(true); // the same value
+    expect(isExactJsonNumber('1.2100000000000003')).toBe(false); // parses to the double written 1.2100000000000004
+    expect(isExactJsonNumber('0.33333333333333331')).toBe(false); // parses to 0.3333333333333333
+    expect(isExactJsonNumber('100')).toBe(true);
+    expect(isExactJsonNumber('1.0')).toBe(true);
+    expect(isExactJsonNumber('1e2')).toBe(true);
     expect(firstInexactNumber(`{"a":"1e-400","b\\"":[1,${LONG}],"c":2}`)).toBe(LONG);
     expect(firstInexactNumber('{"a":"\\"0.12345678901234567890"}')).toBeUndefined();
+    expect(firstInexactNumber('{"a":1.2100000000000002,"b":[0.30000000000000004]}')).toBeUndefined();
   });
 });
 

@@ -214,8 +214,10 @@ selection is the one in the body as sent, so changing the query object while
 the request is in flight does not change what its result is checked against.
 Numbers match as JSON text: `1` and `1.0` are different values. A document
 holding a number JavaScript can't carry exactly (an integer beyond
-2^53 − 1, or a decimal of more than 15 significant digits, which
-`JSON.parse` rounds) does not verify; store such values as strings.
+2^53 − 1, or a decimal that `JSON.parse` rounds to a double JavaScript
+writes as another value, such as `0.33333333333333331`) does not verify;
+store such values as strings. Every number JavaScript writes verifies,
+including results such as `1.1 * 1.1` (`1.2100000000000002`) and `1 / 3`.
 
 A query the API does not apply as asked throws `QUERY_NOT_VERIFIABLE` before
 anything is sent: a filter on more than one field (the API applies only one),

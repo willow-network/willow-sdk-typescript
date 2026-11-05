@@ -24,12 +24,14 @@
  * document binds only if it is structurally equal to the JSON those bytes
  * decode to — whitespace and object key order are normalized away, but numbers
  * are compared with `Object.is` and must be ones JavaScript carries exactly:
- * a safe integer, or a non-integer of at most 15 significant digits whose
- * magnitude is below 2^53 and, unless zero, at least 2^-1022. So `-0`/`0`,
- * `NaN`, precision-lossy big integers (e.g. 2^53+1), and longer decimals
- * (which `JSON.parse` rounds) never bind. Numbers outside that range should
- * be carried as strings to bind. A non-JSON stored Item binds only by exact
- * bytes.
+ * a number whose text has the exact decimal value of the shortest text of the
+ * double it parses to (what `JSON.stringify` writes for that double; `1.0` and
+ * `1` are one value), and that is not an integer beyond ±(2^53 − 1). So every
+ * number JavaScript writes binds (`1.1 * 1.1` is `1.2100000000000002`), while
+ * `-0`/`0`, `NaN`, precision-lossy big integers (e.g. 2^53+1), and decimals
+ * `JSON.parse` rounds to another value's double (`0.33333333333333331`) never
+ * bind. Such numbers should be carried as strings to bind. A non-JSON stored
+ * Item binds only by exact bytes.
  */
 
 import { QueryResponse, DataRecord } from '../types';

@@ -53,29 +53,55 @@ export function isFidelitySafeNumber(n: number): boolean {
   return Number.isFinite(n) && Math.abs(n) < 2 ** 53;
 }
 
-/** The smallest positive normal double; below it a double keeps fewer digits. */
-const MIN_NORMAL = 2 ** -1022;
+/**
+ * A number's exact decimal value: its sign, its significant digits (no
+ * leading or trailing zeros; empty for zero, which has no sign), and the
+ * power of ten of the last digit. `1.0`, `1e0`, and `1` are the same value.
+ */
+interface ExactDecimal {
+  negative: boolean;
+  digits: string;
+  exponent: bigint;
+}
+
+/** The exact decimal value of a JSON number token, or `null` for other text. */
+function exactDecimal(text: string): ExactDecimal | null {
+  const m = /^(-?)([0-9]+)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?$/.exec(text);
+  if (!m) return null;
+  const [, sign, whole, fraction = '', exp = '0'] = m;
+  const all = (whole + fraction).replace(/^0+/, '');
+  const digits = all.replace(/0+$/, '');
+  if (digits === '') return { negative: false, digits: '', exponent: 0n };
+  const exponent = BigInt(exp) - BigInt(fraction.length) + BigInt(all.length - digits.length);
+  return { negative: sign === '-', digits, exponent };
+}
 
 /**
  * Whether the number JSON text `text` parses to in JavaScript is the number
- * it writes, so that no other number's text parses to the same value. An
- * integer (no fraction or exponent) must be a safe integer. Any other number
- * must have at most 15 significant digits, which a double keeps through a
- * round trip, and be zero or of a magnitude a double holds at full precision
- * (from 2^-1022 up); `0.12345678901234567` (17 digits) and `1e-320` are not
- * exact. `-0` is left to {@link isFidelitySafeNumber}.
+ * it writes, so that no other number's text parses to the same value: its
+ * exact decimal value is the value of the shortest text that parses back to
+ * the same double (`String(Number(text))`, what `JSON.stringify` writes),
+ * and it is not an integer beyond ±(2^53 − 1). A double has one shortest
+ * text, so no two values that pass parse to the same double. Every number a
+ * shortest round-trip writer writes passes (`1.2100000000000002`, the value
+ * of `1.1 * 1.1`; `0.3333333333333333`), as does the same value in another
+ * form (`1.0`, `1e2`); `0.33333333333333331`, which parses to the double
+ * written `0.3333333333333333`, and `9007199254740993`, which parses to
+ * 2^53, do not. `-0` is left to {@link isFidelitySafeNumber}.
  */
 export function isExactJsonNumber(text: string): boolean {
   const value = Number(text);
   if (!Number.isFinite(value)) return false;
-  if (/^-?[0-9]+$/.test(text)) return Number.isSafeInteger(value);
-  const digits = text
-    .split(/[eE]/)[0]
-    .replace(/[-.]/g, '')
-    .replace(/^0+/, '')
-    .replace(/0+$/, '');
-  if (digits.length === 0) return true;
-  return digits.length <= 15 && Math.abs(value) >= MIN_NORMAL;
+  if (Number.isInteger(value) && !Number.isSafeInteger(value)) return false;
+  const written = exactDecimal(text);
+  const shortest = exactDecimal(String(value));
+  return (
+    written !== null &&
+    shortest !== null &&
+    written.negative === shortest.negative &&
+    written.digits === shortest.digits &&
+    written.exponent === shortest.exponent
+  );
 }
 
 /**
