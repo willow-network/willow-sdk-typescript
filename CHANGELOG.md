@@ -188,14 +188,15 @@ package adheres to [Semantic Versioning](https://semver.org/).
 - `ConsensusClient` without an `apiUrl` or an RPC URL refuses to pick a
   nonce (`API_URL_REQUIRED`); it used nonce 1.
 - **A transaction is not signed with a guessed secp256k1.** An identity set
-  without an algorithm whose key is `0x`-prefixed hex was guessed
-  secp256k1, and its transactions signed so; an Ed25519 key can share that
-  form. Transactions now throw `ALGORITHM_REQUIRED` until the algorithm is
-  given to `setIdentity` or `init()`, or read by `init()` from the DID
-  document; requests still sign with the guess. `init()` given no algorithm
-  reads the key's type from the document with or without a key id; given a
-  key id, it skipped the document and kept the guess. `WillowAuth.transactionSigner(keyAlgorithm?)` takes the
-  algorithm of the key the chain will verify with.
+  without an algorithm whose key is `0x`-prefixed hex was guessed secp256k1,
+  and its transactions signed so; an Ed25519 key can share that form.
+  Transactions now throw `ALGORITHM_REQUIRED` until the algorithm is given
+  to `setIdentity` or `init()`, or read by `init()` from the DID document;
+  requests still sign with the guess. `init()` given no algorithm reads the
+  key's type from the document with or without a key id; given a key id, it
+  skipped the document and kept the guess.
+  `WillowAuth.transactionSigner(keyAlgorithm?)` takes the algorithm of the
+  key the chain will verify with.
 - `registerDid` (`WillowClient` and `ConsensusClient`) signs with the
   algorithm of the document's key: a guessed identity, or a signer without
   a `signFunction`, takes it, and an identity given another algorithm (or a
@@ -269,35 +270,36 @@ package adheres to [Semantic Versioning](https://semver.org/).
   `client.registerSubgrove`, and `client.data.registerSubgrove` throw it as
   a `TransactionSubmitError` (`TX_SUBMIT_FAILED`) with `result`, where they
   threw an `Error` with the message alone. `client.deregisterSubgrove`,
-  which returned such a result without throwing, throws it too. `isNonceUsed` says whether a
-  transaction with the nonce has been included in a block, not whether the
-  write applied: a refusal in the block spends the nonce too.
+  which returned such a result without throwing, throws it too.
+  `isNonceUsed` says whether a transaction with the nonce has been included
+  in a block, not whether the write applied: a refusal in the block spends
+  the nonce too.
 - **`client.query` and `data.query` verify the query's whole result.** The
   proof must reveal every entry of the subgrove's data tree (no `Hash`,
-  `KVHash`, or `KVDigest` node, and no subtree without its lower layer),
-  and the SDK runs the API's selection over those entries (each item that
-  parses as JSON, the one exact-match filter, the sort, `offset`, and
-  `limit`, default 100, with numbers compared as their JSON text) and
-  requires the response's `documents` and `total` to be exactly it, in
-  order. They were only checked to be values the proof proves, so a proof
-  revealing part of the tree, or a subset, duplicate, or filtered-out
-  document, verified, and `total` and `offset` were not checked. A query
-  whose selection the SDK can't reproduce throws `QUERY_NOT_VERIFIABLE`
-  before anything is sent: a filter on more than one field (the API applies
-  one), a filter operator (it applies none), or `search`. The proof's
-  completeness and its root are checked before the selection is run, and
-  data at the verified root whose selection can't be reproduced (a sort over
-  values that are not all numbers or all strings, as on a field some
-  selected document lacks or holds as `null`, a boolean, an array, or an
-  object, or an object whose first key is `serde_json`'s private number or
-  raw-value token) throws `QUERY_RESULT_NOT_VERIFIABLE`. The selection is
-  the one in the body as sent. A document holding a number JavaScript can't
-  carry exactly (an integer beyond 2^53 − 1, or a decimal that parses to a
-  double JavaScript writes as another value, such as `0.33333333333333331`)
-  does not verify, in queries and in `get`; every number JavaScript writes
-  does. The verified result carries
-  `documents`, `total`, `offset`, `limit`, `proof`, `verifiedRootHash`, and
-  `verifiedHeight`, and none of the API's other fields.
+  `KVHash`, or `KVDigest` node, and no subtree without its lower layer), and
+  the SDK runs the API's selection over those entries (each item that parses
+  as JSON, the one exact-match filter, the sort, `offset`, and `limit`,
+  default 100, with numbers compared as their JSON text) and requires the
+  response's `documents` and `total` to be exactly it, in order. They were
+  only checked to be values the proof proves, so a proof revealing part of
+  the tree, or a subset, duplicate, or filtered-out document, verified, and
+  `total` and `offset` were not checked. A query whose selection the SDK
+  can't reproduce throws `QUERY_NOT_VERIFIABLE` before anything is sent: a
+  filter on more than one field (the API applies one), a filter operator (it
+  applies none), or `search`. The proof's completeness and its root are
+  checked before the selection is run, and data at the verified root whose
+  selection can't be reproduced (a sort over values that are not all numbers
+  or all strings, as on a field some selected document lacks or holds as
+  `null`, a boolean, an array, or an object, or an object whose first key is
+  `serde_json`'s private number or raw-value token) throws
+  `QUERY_RESULT_NOT_VERIFIABLE`. The selection is the one in the body as
+  sent. A document holding a number JavaScript can't carry exactly (an
+  integer beyond 2^53 − 1, or a decimal that parses to a double JavaScript
+  writes as another value, such as `0.33333333333333331`) does not verify,
+  in queries and in `get`; every number JavaScript writes does. The verified
+  result carries `documents`, `total`, `offset`, `limit`, `proof`,
+  `verifiedRootHash`, and `verifiedHeight`, and none of the API's other
+  fields.
 - **A verified read's proof height must be near the chain's.** `get`,
   `getData`, `getMultiple`, and `query` refuse a proof whose block height is
   more than `lightClient.maxProofLagBlocks` from the chain's latest height
