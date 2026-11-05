@@ -424,6 +424,13 @@ package adheres to [Semantic Versioning](https://semver.org/).
   it, so a base-only read can't hand out a nonce known to be used.
 - Each send attempt renews a write's nonce hold, so another write can't take
   the nonce while the first is still being retried.
+- **`waitForTransaction` and `getTransactionStatus` find the transaction.**
+  They sent the hex hash `/tx/submit` returns as the `hash` of CometBFT's
+  JSON-RPC `tx` method, which reads it as base64, so no transaction was ever
+  found: `getTransactionStatus` answered `NOT_FOUND` and
+  `waitForTransaction` threw `TX_CONFIRM_TIMEOUT`. They now send the base64
+  of the hash's bytes, as CometBFT's own clients do, and refuse a hash that
+  is not 32 bytes of hex (`INVALID_TX_HASH`).
 
 ## [0.1.0] - 2026-06-11
 

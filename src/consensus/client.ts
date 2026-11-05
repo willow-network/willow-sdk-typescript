@@ -11,6 +11,7 @@ import { NonceAllocator, AccountNonceState, NONCE_WINDOW, isUsed, parseAccountNo
 import { signEd25519, signSecp256k1, algorithmFromKeyType } from '../auth';
 import { didDocumentKeyType } from './wire';
 import { WillowLogger, silentLogger } from '../internal/logger';
+import { bytesToBase64, hexToBytes } from '../internal/bytes';
 
 /**
  * A failure of a signed write that was sent, as a {@link TransactionSubmitError}
@@ -46,6 +47,23 @@ function resolveSigner(
     publicKeyId: signerOrPrivateKey.publicKeyId,
     signFunction: signerOrPrivateKey.signFunction ?? signEd25519,
   };
+}
+
+/**
+ * A transaction hash as CometBFT's JSON-RPC `tx` method reads it: the base64
+ * of its 32 bytes, as CometBFT's own clients send it (`tendermint-rpc`
+ * encodes it so). The hex `/tx/submit` returns is read as base64 there, and
+ * matches no transaction.
+ */
+function txHashParam(txHash: string): string {
+  const hex = typeof txHash === 'string' ? txHash.replace(/^0x/i, '') : '';
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
+    throw new ConsensusError(
+      `Transaction hash ${JSON.stringify(txHash)} is not 32 bytes of hex`,
+      'INVALID_TX_HASH',
+    );
+  }
+  return bytesToBase64(hexToBytes(hex));
 }
 
 /**
@@ -517,12 +535,19 @@ export class ConsensusClient {
   }
 
   /**
-   * Get the status of a transaction
+   * The status of a transaction, read from CometBFT by its hash (`txHash`,
+   * 32 bytes as hex, as `/tx/submit` returns it): SUCCESS or FAILED once it
+   * is in a block (a transaction refused in its block is FAILED), NOT_FOUND
+   * until then.
+   *
+   * @throws ConsensusError `INVALID_TX_HASH` for a hash that is not 32 bytes
+   *   of hex, before anything is sent.
    */
   async getTransactionStatus(txHash: string): Promise<TransactionStatus> {
+    const hash = txHashParam(txHash);
     try {
       // Query transaction from CometBFT
-      const result = await this.queryTransaction(txHash);
+      const result = await this.queryTransaction(hash);
 
       if (!result) {
         return TransactionStatus.NOT_FOUND;
@@ -542,9 +567,11 @@ export class ConsensusClient {
   /**
    * Wait for a transaction to be confirmed.
    *
-   * Resolves with SUCCESS or FAILED once the transaction lands in a block.
+   * Resolves with SUCCESS or FAILED once the transaction lands in a block: a
+   * transaction refused in its block lands too, as FAILED, so check which.
    * Throws a ConsensusError with code `TX_CONFIRM_TIMEOUT` if the
-   * transaction is still unconfirmed when the timeout elapses.
+   * transaction is still unconfirmed when the timeout elapses, and
+   * `INVALID_TX_HASH` for a hash that is not 32 bytes of hex.
    */
   async waitForTransaction(
     txHash: string,
@@ -827,12 +854,10 @@ export class ConsensusClient {
     throw new ConsensusError('Unexpected end of retry loop');
   }
 
-  /**
-   * Query a transaction by hash
-   */
-  private async queryTransaction(txHash: string): Promise<any | undefined> {
+  /** Query a transaction by its hash, given as {@link txHashParam} writes it. */
+  private async queryTransaction(hash: string): Promise<any | undefined> {
     try {
-      const result = await this.rpcRequest('tx', { hash: txHash, prove: false });
+      const result = await this.rpcRequest('tx', { hash, prove: false });
       return result;
     } catch (error) {
       if (isRpcUrlMissingError(error)) throw error;
