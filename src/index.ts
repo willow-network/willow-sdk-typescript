@@ -188,14 +188,15 @@ export {
   parseAccountNonceState,
   refusalKeepsNonce,
   TransactionSubmitError,
+  TransactionStatus,
 } from "./consensus";
+export { writeNotAccepted } from "./internal/tx";
 export type {
   SignedSubmission,
   AccountNonceState,
   NonceAllocatorOptions,
   ConsensusConfig,
   BroadcastResult,
-  TransactionStatus,
   RegisterDidTx,
   RegisterSubgroveTx,
   TransferTx,

@@ -209,7 +209,9 @@ function clientError(status: number, detail: string, opts: SubmitTxOptions): Bro
  * `WillowClient` and `WillowData` writes: a {@link TransactionSubmitError}
  * (`TX_SUBMIT_FAILED`) carrying the result and its submission (DID, nonce,
  * and signed body), so a pending write can be confirmed and a refused one
- * sent again. A result without a submission gives a plain `Error`.
+ * sent again. A result without a submission gives a plain `Error`. `what`
+ * names the write in the message (`"<what> failed: <reason>"`). Use it to
+ * throw a `ConsensusClient` result the way the client's own writes do.
  */
 export function writeNotAccepted(what: string, result: BroadcastResult): Error {
   const message = `${what} failed: ${result.errorMessage ?? result.rawLog ?? 'unknown'}`;

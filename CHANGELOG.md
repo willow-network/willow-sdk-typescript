@@ -96,6 +96,11 @@ package adheres to [Semantic Versioning](https://semver.org/).
   reached.
 - `BroadcastResult.pending`, `BroadcastResult.submission`, and
   `ConsensusClient.isNonceUsed(did, nonce)`.
+- `writeNotAccepted(what, result)`, which gives a write's result that is not
+  `success` as the `TransactionSubmitError` (`TX_SUBMIT_FAILED`) the
+  client's own writes throw, and `TransactionStatus` as a value (it was
+  exported as a type only, so `TransactionStatus.SUCCESS` could not be
+  written against the package).
 - The `UNSUPPORTED` code of `VerifiableRpcError`.
 
 ### Changed
