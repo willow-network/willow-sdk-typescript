@@ -68,8 +68,9 @@ export class QueryNotVerifiableError extends WillowError {
  * from (code `QUERY_RESULT_NOT_VERIFIABLE`): the proof reveals the whole data
  * tree at `rootHash`, but the API's selection over those entries can't be
  * reproduced (a sort over values that are not all numbers or all strings,
- * say). `client.query` throws it only once `rootHash` is the light client's
- * root for the proof's height; {@link verifyQuerySelection} checks
+ * as on a field some selected document lacks, say). `client.query` throws
+ * it only once `rootHash` is the light client's root for the proof's
+ * height; {@link verifyQuerySelection} checks
  * `rootHash` only against `expectedRootHash`, so without one it is the
  * proof's own root, to compare with a trusted root before acting on the
  * error.

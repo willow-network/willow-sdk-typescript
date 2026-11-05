@@ -682,7 +682,13 @@ export class WillowData {
    * none), or `search`. Use `queryUnverified` for those. Data at the verified
    * root whose selection the SDK can't reproduce (a sort over values that are
    * not all numbers or all strings, say) throws `QUERY_RESULT_NOT_VERIFIABLE`
-   * (a `QueryResultNotVerifiableError` carrying the root).
+   * (a `QueryResultNotVerifiableError` carrying the root). The API's sort
+   * calls a missing field, `null`, a boolean, an array, or an object equal to
+   * anything, so a sort on a field some selected document lacks (or holds as
+   * one of those) throws on every page, unless the selected documents hold
+   * at most one number and one string there: filter on a field that selects
+   * only documents holding the sort field as a number (or all as a string),
+   * or use `queryUnverified`.
    */
   async query(
     datasetId: string,

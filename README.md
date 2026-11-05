@@ -226,10 +226,18 @@ a filter operator such as `$gte` or `$in` (the API applies none), or
 filter the verified documents further yourself. Data at the verified root
 whose selection the SDK can't reproduce throws `QUERY_RESULT_NOT_VERIFIABLE`
 (a `QueryResultNotVerifiableError` carrying `rootHash`): a sort over values
-that are not all numbers or all strings (the API's order is then not
-determined), or a document holding an object whose first key is
-`serde_json`'s private number or raw-value token, which the API reads as
-something other than an object.
+that are not all numbers or all strings, or a document holding an object
+whose first key is `serde_json`'s private number or raw-value token, which
+the API reads as something other than an object. The API's sort calls two
+values equal unless both are numbers or both are strings, so when a selected
+document lacks the sort field, or holds `null`, a boolean, an array, or an
+object there, the API's order is not determined (unless the selected
+documents hold at most one number and one string there), and every page of
+that sorted query
+throws, whatever its `offset` and `limit`: the order is checked over every
+document the query selects. Sort on a field every selected document holds as
+a number, or every one as a string: filter on a field that selects only such
+documents, or read the result with `queryUnverified`.
 
 ### Update and Delete
 

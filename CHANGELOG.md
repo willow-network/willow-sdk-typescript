@@ -270,14 +270,15 @@ package adheres to [Semantic Versioning](https://semver.org/).
   one), a filter operator (it applies none), or `search`. The proof's
   completeness and its root are checked before the selection is run, and
   data at the verified root whose selection can't be reproduced (a sort over
-  values that are not all numbers or all strings, or an object whose first
-  key is `serde_json`'s private number or raw-value token) throws
-  `QUERY_RESULT_NOT_VERIFIABLE`. The selection is the one in the body as
-  sent. A document holding a number JavaScript can't carry exactly (an
-  integer beyond 2^53 − 1, or a decimal that parses to a double JavaScript
-  writes as another value, such as `0.33333333333333331`) does not verify,
-  in queries and in `get`; every number JavaScript writes does. The
-  verified result carries
+  values that are not all numbers or all strings, as on a field some
+  selected document lacks or holds as `null`, a boolean, an array, or an
+  object, or an object whose first key is `serde_json`'s private number or
+  raw-value token) throws `QUERY_RESULT_NOT_VERIFIABLE`. The selection is
+  the one in the body as sent. A document holding a number JavaScript can't
+  carry exactly (an integer beyond 2^53 − 1, or a decimal that parses to a
+  double JavaScript writes as another value, such as `0.33333333333333331`)
+  does not verify, in queries and in `get`; every number JavaScript writes
+  does. The verified result carries
   `documents`, `total`, `offset`, `limit`, `proof`, `verifiedRootHash`, and
   `verifiedHeight`, and none of the API's other fields.
 - **A verified read's proof height must be near the chain's.** `get`,
