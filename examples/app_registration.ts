@@ -160,7 +160,8 @@ async function main() {
   console.log('  - users:    public profiles, owner-managed');
   console.log();
   console.log('The schemas declare fields and required fields only: the chain');
-  console.log('refuses a schema that declares indexes (SCHEMA_INDEXES_UNSUPPORTED).');
+  console.log('refuses a schema that declares indexes, and the SDK refuses one');
+  console.log('before signing it (SCHEMA_INDEXES_UNSUPPORTED).');
   console.log();
   console.log('Subgrove registration example complete!');
 }

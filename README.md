@@ -702,7 +702,7 @@ willow-request-v2
 - Ed25519 signatures are sent as hex. secp256k1 signatures are over the Keccak-256 of the message and are sent as `0x`-prefixed hex.
 - Requests sent to an indexer are not signed this way.
 
-`FileOperations` (file reads and the file writes it submits) and `PrivacyOperations` (key-grant reads and the grants, rotations, and revokes it submits) sign their requests with the older form described below. `ConsensusClient`, which submits every other transaction, signs no request: it sends only `X-API-Key` (when an `apiKey` is configured), and each transaction carries its own signature.
+`FileOperations` (file reads and the file writes it submits), `PrivacyOperations` (key-grant reads and the grants, rotations, and revokes it submits), and SQL and GraphQL requests sent to an indexer (`sqlQuery` and `graphqlQuery` routed to one) sign their requests with the older form described below. `ConsensusClient`, which submits every other transaction, signs no request: it sends only `X-API-Key` (when an `apiKey` is configured), and each transaction carries its own signature.
 
 To sign a read you send yourself:
 
