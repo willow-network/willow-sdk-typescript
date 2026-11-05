@@ -70,13 +70,18 @@ describe('a Transfer amount is sent and signed as its exact digits', () => {
     }
   });
 
-  it('2^64 + 1 wei', async () => {
+  it('2^64 + 1 wei, as a bigint or a decimal string', async () => {
     const sent = stubChain();
-    await client().transfer(FROM, TO, 2n ** 64n + 1n, SIGNER);
-    expect(sent[0]).toContain(`"amount":${PAST_U64},`);
-    const signature = bytesToHex(Uint8Array.from(JSON.parse(sent[0]).Transfer.signature));
-    expect(nodeMessage(sent[0])).toBe(`Transfer\nFrom: ${FROM}\nTo: ${TO}\nAmount: ${PAST_U64}\nMemo: \nNonce: 5`);
-    expect(verifyEd25519(nodeMessage(sent[0]), signature, PUBLIC_KEY)).toBe(true);
+    const c = client();
+    await c.transfer(FROM, TO, 2n ** 64n + 1n, SIGNER);
+    await c.transfer(FROM, TO, PAST_U64, SIGNER);
+    expect(sent).toHaveLength(2);
+    sent.forEach((body, i) => {
+      expect(body).toContain(`"amount":${PAST_U64},`);
+      const signature = bytesToHex(Uint8Array.from(JSON.parse(body).Transfer.signature));
+      expect(nodeMessage(body)).toBe(`Transfer\nFrom: ${FROM}\nTo: ${TO}\nAmount: ${PAST_U64}\nMemo: \nNonce: ${5 + i}`);
+      expect(verifyEd25519(nodeMessage(body), signature, PUBLIC_KEY)).toBe(true);
+    });
   });
 
   it('the message and the body agree for every form of the amount', () => {
@@ -100,7 +105,8 @@ describe('a Transfer amount is sent and signed as its exact digits', () => {
   it('an amount that is not a u128 is refused before a nonce is taken', async () => {
     const sent = stubChain();
     const c = client();
-    const notU128 = [1e21, 2 ** 53 + 2, -1, 1.5, NaN, '1e21', '-1', '0x10', ' 1', (1n << 128n).toString(), 1n << 128n, -1n];
+    // 2 ** 64 + 1 is already rounded to 18446744073709551616 as a number.
+    const notU128 = [1e21, 2 ** 64 + 1, 2 ** 53 + 2, -1, 1.5, NaN, '1e21', '-1', '0x10', ' 1', (1n << 128n).toString(), 1n << 128n, -1n];
     for (const amount of notU128) {
       await expect(c.transfer(FROM, TO, amount as TransferTx['amount'], SIGNER)).rejects.toMatchObject({
         code: 'INVALID_SIGNED_FIELD',
