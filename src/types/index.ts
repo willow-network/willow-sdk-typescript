@@ -37,10 +37,10 @@ export interface WillowLightClientOptions {
   /** Per-request timeout in seconds. Default: 30. */
   requestTimeoutSecs?: number;
   /**
-   * How many blocks a verified read's proof may be from the chain's latest
+   * How many blocks a verified read's proof may be behind the chain's latest
    * height (as the endpoints report it): the API chooses the height it
-   * proves at, so a proof further from the latest is refused
-   * (`PROOF_HEIGHT_OUT_OF_RANGE`). Default: 20.
+   * proves at, so a proof further behind the latest, or more than one block
+   * ahead of it, is refused (`PROOF_HEIGHT_OUT_OF_RANGE`). Default: 20.
    */
   maxProofLagBlocks?: number;
 }

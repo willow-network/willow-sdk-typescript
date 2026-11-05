@@ -142,7 +142,7 @@ export class NoIndexersReachableError extends WillowError {
 }
 
 /**
- * How many blocks a verified read's proof may be from the chain's latest
+ * How many blocks a verified read's proof may be behind the chain's latest
  * height, unless `lightClient.maxProofLagBlocks` says otherwise.
  */
 export const DEFAULT_MAX_PROOF_LAG_BLOCKS = 20;
@@ -368,7 +368,8 @@ export class WillowData {
    * Get data by key with automatic proof verification (secure by default):
    * the value must be the one the proof proves at the key, and the proof's
    * root the light client's root for the proof's block height, which must be
-   * within `lightClient.maxProofLagBlocks` of the chain's latest. An answer
+   * at most `lightClient.maxProofLagBlocks` behind the chain's latest and at
+   * most one block ahead of it. An answer
    * that carries no value is refused (`PROOF_VERIFICATION_FAILED`). See
    * {@link getVerifiedData} for the root and height.
    */
@@ -452,9 +453,12 @@ export class WillowData {
   /**
    * Check a proof's root against the light client's root for the proof's
    * block height, and return both. The API chooses the height it proves at,
-   * so a height more than `lightClient.maxProofLagBlocks` from the chain's
-   * latest (as the light client's endpoints report it) is refused
-   * (`PROOF_HEIGHT_OUT_OF_RANGE`), as is a proof that names no height.
+   * so a height more than `lightClient.maxProofLagBlocks` behind the chain's
+   * latest (as the light client's endpoints report it), or more than one
+   * block ahead of it, is refused (`PROOF_HEIGHT_OUT_OF_RANGE`), as is a
+   * proof that names no height. A root is read from the header after the
+   * proof's height, which the light client waits for: a height further ahead
+   * would hold each read until that wait times out on every endpoint.
    */
   private async verifyRootAtHeight(
     computedRootHash: string,
@@ -470,9 +474,16 @@ export class WillowData {
     const lightClient = await this.getOrCreateLightClient();
     const maxLag = this.maxProofLagBlocks();
     const latest = await lightClient.getLatestChainHeight();
-    if (Math.abs(latest - height) > maxLag) {
+    if (height - latest > 1) {
       throw new WillowError(
-        `The proof is of the state at height ${height}, ${Math.abs(latest - height)} blocks from the ` +
+        `The proof is of the state at height ${height}, ${height - latest} blocks ahead of the ` +
+          `chain's latest (${latest}); at most 1 is accepted`,
+        "PROOF_HEIGHT_OUT_OF_RANGE",
+      );
+    }
+    if (latest - height > maxLag) {
+      throw new WillowError(
+        `The proof is of the state at height ${height}, ${latest - height} blocks behind the ` +
           `chain's latest (${latest}); at most ${maxLag} is accepted (lightClient.maxProofLagBlocks)`,
         "PROOF_HEIGHT_OUT_OF_RANGE",
       );
@@ -697,8 +708,9 @@ export class WillowData {
    * read when it is sent, so changing `query` afterwards does not change what
    * the result is checked against. The proof must reveal the whole data
    * tree, and its root must be the light client's root for the proof's block
-   * height, which must be within `lightClient.maxProofLagBlocks` of the
-   * chain's latest, before the selection is run; the result carries
+   * height, which must be at most `lightClient.maxProofLagBlocks` behind
+   * the chain's latest and at most one block ahead of it, before the
+   * selection is run; the result carries
    * `verifiedRootHash` and `verifiedHeight`.
    *
    * A query whose selection can't be verified throws `QUERY_NOT_VERIFIABLE`

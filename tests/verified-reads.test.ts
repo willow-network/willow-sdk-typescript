@@ -86,6 +86,20 @@ describe('getData and getVerifiedData', () => {
     serve({ a: DOC_A }, { a: proofOf(['a']) }, null);
     await expect(client().getData('s1', 'a')).rejects.toMatchObject({ code: 'PROOF_VERIFICATION_FAILED' });
   });
+
+  it('refuse a proof more than one block ahead of the chain, before asking for its root', async () => {
+    serve({ a: DOC_A }, { a: proofOf(['a']) }, 9);
+    const ahead = client(7);
+    const roots = jest.spyOn((ahead as any).lightClient, 'getVerifiedRootHashAtHeight');
+    await expect(ahead.getData('s1', 'a')).rejects.toMatchObject({
+      code: 'PROOF_HEIGHT_OUT_OF_RANGE',
+      message: expect.stringMatching(/2 blocks ahead of the chain's latest \(7\)/),
+    });
+    expect(roots).not.toHaveBeenCalled();
+    // One block ahead (the API's node a block past the light client's endpoints) verifies.
+    serve({ a: DOC_A }, { a: proofOf(['a']) }, 8);
+    await expect(client(7).getVerifiedData('s1', 'a')).resolves.toEqual({ data: DOC_A, rootHash: ROOT, height: 8 });
+  });
 });
 
 describe('a verified read binds the value it returns to the proof', () => {

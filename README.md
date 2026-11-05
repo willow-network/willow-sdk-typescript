@@ -154,7 +154,7 @@ const client = new WillowClient({
 
 - `get` returns a key's value only when the proof proves that value at the key in the subgrove's data.
 - `query` returns a result only when it is the query's whole result: the proof reveals the subgrove's entire data tree, and the documents and `total` are exactly what the API's query selects from it, in its order (see [Query Data](#query-data)).
-- The API chooses the block height it proves at, so a proof more than `lightClient.maxProofLagBlocks` blocks (default 20) from the chain's latest height is refused (`PROOF_HEIGHT_OUT_OF_RANGE`), as is a proof that names no height.
+- The API chooses the block height it proves at, so a proof more than `lightClient.maxProofLagBlocks` blocks (default 20) behind the chain's latest height, or more than one block ahead of it, is refused (`PROOF_HEIGHT_OUT_OF_RANGE`), as is a proof that names no height.
 - The light client reads roots and the latest height from its configured endpoints and trusts them; the latest height is the one a majority of the endpoints that answer have reached (see [Light Client](#light-client-experimental)).
 
 ```typescript

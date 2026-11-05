@@ -342,9 +342,10 @@ package adheres to [Semantic Versioning](https://semver.org/).
   other fields.
 - **A verified read's proof height must be near the chain's.** `get`,
   `getData`, `getMultiple`, and `query` refuse a proof whose block height is
-  more than `lightClient.maxProofLagBlocks` from the chain's latest height
-  as the light client's endpoints report it (`PROOF_HEIGHT_OUT_OF_RANGE`),
-  and one that names no height. The API chose the height with no bound.
+  more than `lightClient.maxProofLagBlocks` behind the chain's latest height
+  as the light client's endpoints report it, or more than one block ahead of
+  it (`PROOF_HEIGHT_OUT_OF_RANGE`), and one that names no height. The API
+  chose the height with no bound.
 - `getMultiple` leaves out a key the API reports absent only when the API's
   proof for it proves it absent at a verified root; otherwise it throws. It
   dropped such keys unchecked.
