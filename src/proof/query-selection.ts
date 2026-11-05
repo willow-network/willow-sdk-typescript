@@ -200,17 +200,34 @@ function fieldValue(doc: NodeJson, field: string): NodeJson | undefined {
 type SortKey = { k: 'num'; f: number | null } | { k: 'str'; s: string } | { k: 'other' };
 
 /**
+ * How many significant digits a JSON number's text has: those of its
+ * mantissa from the first digit other than `0` to the last, counted in one
+ * pass (a regex stripping the zeros would take seconds over a long run of
+ * them).
+ */
+function significantDigits(text: string): number {
+  let count = 0;
+  let zeros = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c === 0x65 || c === 0x45) break; // e, E: the exponent
+    if (c === 0x30) {
+      if (count > 0) zeros++;
+    } else if (c > 0x30 && c <= 0x39) {
+      count += zeros + 1;
+      zeros = 0;
+    }
+  }
+  return count;
+}
+
+/**
  * A number's value as the API sorts by it (Rust's `str::parse::<f64>` of its
  * text; `null` when not finite). JavaScript must give it the correctly
  * rounded value, which it is bound to for up to 20 significant digits.
  */
 function sortNumber(text: string): number | null {
-  const digits = text
-    .split('e')[0]
-    .replace(/[-.]/g, '')
-    .replace(/^0+/, '')
-    .replace(/0+$/, '');
-  if (digits.length > 20) {
+  if (significantDigits(text) > 20) {
     throw new NotReproducibleError(
       `the sort compares the number ${text}, which has more than 20 significant digits`,
     );

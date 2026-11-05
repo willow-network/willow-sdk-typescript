@@ -172,6 +172,39 @@ describe('a number JavaScript cannot carry exactly never binds', () => {
   });
 });
 
+describe('a number with a long run of zeros is read in linear time', () => {
+  // 65,400 zeros between two ones: a document that fits one KV node. Stripping
+  // the zeros by a backtracking regex took seconds, before the root was checked.
+  const ZEROS = '0'.repeat(65_400);
+  const FRACTION = `1.${ZEROS}1`;
+  const INTEGER = `1${ZEROS}1`;
+  const timed = async (run: () => unknown): Promise<number> => {
+    const start = performance.now();
+    await run();
+    return performance.now() - start;
+  };
+
+  it('isExactJsonNumber', async () => {
+    expect(await timed(() => expect(isExactJsonNumber(FRACTION)).toBe(false))).toBeLessThan(100);
+    expect(await timed(() => expect(isExactJsonNumber(INTEGER)).toBe(false))).toBeLessThan(100);
+    expect(isExactJsonNumber(`1.5${ZEROS}`)).toBe(true);
+    expect(isExactJsonNumber(`${ZEROS}1`)).toBe(true);
+  }, 30_000);
+
+  it('firstInexactNumber', async () => {
+    const text = `{"a":${FRACTION}}`;
+    expect(await timed(() => expect(firstInexactNumber(text)).toBe(FRACTION))).toBeLessThan(100);
+  }, 30_000);
+
+  it('verifyItemProof', async () => {
+    mockVerify.mockReturnValue(provenItem(`{"a":${FRACTION}}`));
+    const elapsed = await timed(() =>
+      expect(verifyItemProof('00', 'k', { a: 1 })).rejects.toThrow(/which JavaScript can't carry exactly/),
+    );
+    expect(elapsed).toBeLessThan(100);
+  }, 30_000);
+});
+
 describe('verifyQueryProof — prototype pollution safety', () => {
   it('is not fooled by a __proto__ key in the server document', async () => {
     mockVerify.mockReturnValue(provenItem('{"a":1}'));

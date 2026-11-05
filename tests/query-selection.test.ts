@@ -307,6 +307,22 @@ describe("the API's reading of documents", () => {
     );
   });
 
+  it('a sort number of more than 20 significant digits is refused, in linear time', () => {
+    const asc = { sort: { field: 'v', order: 'asc' as const } };
+    // 65,400 zeros between two ones: a document that fits one KV node. Counting
+    // its digits by a backtracking regex took seconds.
+    const long = `{"v":1.${'0'.repeat(65_400)}1}`;
+    const start = performance.now();
+    expect(() => select([long, '{"v":2}'], asc)).toThrow(/more than 20 significant digits/);
+    expect(performance.now() - start).toBeLessThan(100);
+    expect(() => select(['{"v":123456789012345678901}', '{"v":2}'], asc)).toThrow(/more than 20/);
+    expect(() => select(['{"v":-1.23456789012345678901e5}', '{"v":2}'], asc)).toThrow(/more than 20/);
+    // Leading and trailing zeros, the sign, the point, and the exponent are not significant digits.
+    const twenty = `{"v":-0.000${'1'.repeat(20)}000e+3}`;
+    expect(select([twenty, '{"v":2}'], asc)).toEqual([JSON.parse(twenty), { v: 2 }]);
+    expect(select(['{"v":1000000000000000000000000}', '{"v":2}'], asc)).toEqual([{ v: 2 }, { v: 1e24 }]);
+  }, 30_000);
+
   it('a reference is not an item to the API', async () => {
     const a = itemElement(enc(JSON.stringify({ id: 'a' })));
     const target = itemElement(enc(JSON.stringify({ id: 'target' })));

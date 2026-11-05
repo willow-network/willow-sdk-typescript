@@ -62,13 +62,30 @@ interface ExactDecimal {
   exponent: bigint;
 }
 
+/**
+ * `text` without its leading `0`s, or without its trailing ones (`end`), in
+ * one pass. The text is a proven value's, so it is not left to a regex: one
+ * such as `/0+$/` retries its match from every `0` of a run that is not at
+ * the end, and takes seconds over a document of tens of thousands of them.
+ */
+function trimZeros(text: string, end: 'start' | 'end'): string {
+  if (end === 'start') {
+    let i = 0;
+    while (i < text.length && text.charCodeAt(i) === 0x30) i++;
+    return text.slice(i);
+  }
+  let j = text.length;
+  while (j > 0 && text.charCodeAt(j - 1) === 0x30) j--;
+  return text.slice(0, j);
+}
+
 /** The exact decimal value of a JSON number token, or `null` for other text. */
 function exactDecimal(text: string): ExactDecimal | null {
   const m = /^(-?)([0-9]+)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?$/.exec(text);
   if (!m) return null;
   const [, sign, whole, fraction = '', exp = '0'] = m;
-  const all = (whole + fraction).replace(/^0+/, '');
-  const digits = all.replace(/0+$/, '');
+  const all = trimZeros(whole + fraction, 'start');
+  const digits = trimZeros(all, 'end');
   if (digits === '') return { negative: false, digits: '', exponent: 0n };
   const exponent = BigInt(exp) - BigInt(fraction.length) + BigInt(all.length - digits.length);
   return { negative: sign === '-', digits, exponent };
