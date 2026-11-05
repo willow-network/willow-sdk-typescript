@@ -49,10 +49,13 @@ package adheres to [Semantic Versioning](https://semver.org/).
 - `NonceAllocator` (with `NONCE_WINDOW`, `NONCE_HOLD_MS`,
   `parseAccountNonceState`, `refusalKeepsNonce`, and the
   `AccountNonceState` and `NonceAllocatorOptions` types), which hands out
-  an identity's transaction nonces; `ConsensusClient.nextNonce(did)` and
-  `ConsensusClient.nonces`; a `nonceAllocator` option in `WillowConfig` and
-  `ConsensusConfig`, and an optional last argument to the
-  `PrivacyOperations` constructor.
+  an identity's transaction nonces; `ConsensusClient.nextNonce(did)`,
+  `ConsensusClient.nonces`, and `PrivacyOperations.nonces`; a
+  `nonceAllocator` option in `WillowConfig` and `ConsensusConfig`, and an
+  optional last argument to the `PrivacyOperations` constructor.
+- `WillowDataOptions.consensus`: the `ConsensusClient` that sends
+  `WillowData`'s transactions (`registerSubgrove`). `WillowClient` passes
+  its own; without one, `WillowData` makes one for its API URL.
 - `serializeSchema(schema)`, which returns a data or file subgrove's schema
   as the JSON text the chain parses, `SCHEMA_FIELD_TYPES`, and the
   `SchemaFieldType` type. A `SchemaDefinition`'s field may be written as the
@@ -148,18 +151,20 @@ package adheres to [Semantic Versioning](https://semver.org/).
 - **`ConsensusClient.transfer` sends and signs its amount as exact digits.**
   The amount (and `TransferTx.amount`) is a u128 and takes a `bigint` or a
   decimal string as well as a safe-integer number. An amount of 1000 WILL
-  (10^21) or more, passed as a number, was sent and signed as `1e+21`,
-  which the chain's u128 decoder refuses, so every such transfer failed
-  (retried as a transport error while its nonce was held), and an amount
-  above 2^53 could not be given exactly. A number that is not a safe
-  integer, or a value outside u128, is refused (`INVALID_SIGNED_FIELD`)
-  before a nonce is taken.
+  (10^21) or more, passed as a number, was sent and signed as `1e+21`, which
+  the chain's u128 decoder refuses, so every such transfer failed (the API
+  refused the body, and the SDK posted it again as a transport failure, then
+  threw), and an amount above 2^53 could not be given exactly. A number that
+  is not a safe integer, or a value outside u128, is refused
+  (`INVALID_SIGNED_FIELD`) before a nonce is taken.
 - **`WillowClient.registerDid` sends a RegisterDid transaction**, signed by
   the identity (the new DID), at nonce 1, and returns its
   `BroadcastResult`. The document goes as the chain's `DidDocument` and is
   signed over its JSON text as the chain writes it. The API has no DID
   registration route; `WillowAuth.registerDid` throws
-  `UNSUPPORTED_OPERATION` naming this path.
+  `UNSUPPORTED_OPERATION` naming this path. `WillowClient.registerDid`
+  throws `IDENTITY_MISMATCH`, before anything is sent, when the identity is
+  not the DID being registered.
 - `createDidFromPublicKey` publishes an Ed25519 key as
   `Ed25519VerificationKey2018`, the type the chain derives a DID from and
   verifies.
@@ -254,7 +259,8 @@ package adheres to [Semantic Versioning](https://semver.org/).
   spends the nonce; `undefined` was signed as 0 bytes.
 - **`ProofVerifier.verifyInclusionProof` and `verifyAbsenceProof` take the
   key's path (required)** and bind the key, the path, and the value (or the
-  absence) to the proof. They returned true for any valid proof at the
+  absence) to the proof. Without a path they throw a `LightClientError`
+  (`PATH_REQUIRED`). They returned true for any valid proof at the
   trusted root, and `verifyAbsenceProof` even when the key was present.
   `ProofVerifier.verifyQueryProof` binds each `queryResult` entry to an Item
   the proof proves; it ignored them.
