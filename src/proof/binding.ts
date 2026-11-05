@@ -4,12 +4,7 @@
  * read makes. Internal: the `proof` module's exported functions build on it.
  */
 
-import {
-  GroveDBVerificationResult,
-  hashToHex,
-  isTreeElement,
-  verifyGroveDBProof,
-} from '../grovedb';
+import { GroveDBVerificationResult, hashToHex, verifyGroveDBProof } from '../grovedb';
 import {
   PathSegment,
   decodeProofBytes,
@@ -75,19 +70,6 @@ export function decodeProvenValue(raw: Uint8Array): ProvenValue {
 export function documentBindsTo(proven: ProvenValue, document: unknown): boolean {
   if (proven.kind === 'json') return proven.inexact === undefined && jsonDeepEqual(proven.value, document);
   return document instanceof Uint8Array && bytesEqual(proven.bytes, document);
-}
-
-/**
- * The bytes a proven result commits to as a value: an Item's payload, or the
- * raw leaf bytes when the element didn't deserialize. A subtree is not a
- * value (and one proven without its lower layer is not bound byte for byte),
- * so it gives none.
- */
-export function provenRaw(result: ProvenResult): Uint8Array | null {
-  if (result.tree) return null;
-  if (result.element?.type === 'Item') return result.element.value;
-  if (result.element && isTreeElement(result.element)) return null;
-  return result.value;
 }
 
 /** The proven entry at exactly `path` and `key`, if the proof proves one. */

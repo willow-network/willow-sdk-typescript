@@ -366,7 +366,9 @@ package adheres to [Semantic Versioning](https://semver.org/).
   node holding an Item that grovedb proves a stored value in. A reference
   at the key (a `KVRefValueHash` node, whose value is the element it points
   to) was taken as the key's value; it, and an Item given as another node,
-  is refused.
+  is refused. So do the membership checks (`verifyQueryProof`,
+  `verifyQueryResponse`, `GroveDBProofVerifier.verifyQueryProof`, and
+  `ProofVerifier.verifyQueryProof`): a document binds only to such an Item.
 - **`queryHistoricalVerified` throws `UNSUPPORTED_OPERATION`** without
   sending anything, and is deprecated. It checked the proof against a state
   root from the same API that served the result, not from consensus, and

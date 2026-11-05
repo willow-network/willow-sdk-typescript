@@ -383,8 +383,9 @@ What each function binds:
   (checked only against `expectedRootHash`).
 - `verifyQueryProof`, `verifyQueryResponse`, and `GroveDBProofVerifier`
   check membership only: every document you pass in must deep-equal a value
-  the proof commits to, so a server cannot pair a valid proof with unrelated
-  data. They do not show that the documents are a query's whole result, or
+  the proof commits to (an Item proven as a `KV` node; a reference's value,
+  the element it points to, is not one), so a server cannot pair a valid
+  proof with unrelated data. They do not show that the documents are a query's whole result, or
   its result at all: a proof may leave entries out, and a subset, a
   duplicate, or a document a filter excludes passes.
 - `verifyItemProof` binds one key's value at a path.

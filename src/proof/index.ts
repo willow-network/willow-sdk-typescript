@@ -51,7 +51,6 @@ import {
   pathLabel,
   provenEntry,
   provenItemPayload,
-  provenRaw,
   requireValueBinds,
 } from './binding';
 
@@ -96,15 +95,17 @@ export interface ProofVerificationResult {
 
 /**
  * Collect the values the proof actually commits to from its proven results:
- * with `path`, only those proven at exactly that path.
+ * the payload of each `KV` node holding an Item (with `path`, only those
+ * proven at exactly that path). A reference is proven as a `KVRefValueHash`
+ * node whose value is the element it points to, not a value stored at its
+ * key, and an Item given as another node is not how grovedb proves one.
  */
 function provenValues(verification: GroveDBVerificationResult, path?: Uint8Array[]): ProvenValue[] {
   const values: ProvenValue[] = [];
   for (const result of verification.results) {
     if (path && !pathEqual(result.path, path)) continue;
-    const raw = provenRaw(result);
-    if (!raw) continue;
-    values.push(decodeProvenValue(raw));
+    if (result.nodeType !== 'KV' || result.element?.type !== 'Item') continue;
+    values.push(decodeProvenValue(result.element.value));
   }
   return values;
 }

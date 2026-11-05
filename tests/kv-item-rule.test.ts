@@ -3,10 +3,17 @@
  * `KV` node. A reference at the key is proven as a `KVRefValueHash` node
  * whose value is the element it points to, which is not stored at the key;
  * an Item given as another node is not how grovedb proves one. Every check
- * of one key's value takes it from the `KV` node alone.
+ * of one key's value, and the membership checks of a query's documents, take
+ * a value from the `KV` node alone.
  */
 import { combineHash, hexToBytes, kvDigestToKvHash, nodeHash, valueHash, NULL_HASH } from '../src/grovedb';
-import { GroveDBProofVerifier, subgroveDataPath, verifyItemProof } from '../src/proof';
+import {
+  GroveDBProofVerifier,
+  subgroveDataPath,
+  verifyItemProof,
+  verifyQueryProof,
+  verifyQueryResponse,
+} from '../src/proof';
 import { ProofVerifier } from '../src/light-client/verifier';
 import { chainProof, enc, hex, itemElement, op, oneItemLayer } from './helpers/grove-proof';
 
@@ -67,5 +74,29 @@ describe("one key's value is taken only from the KV node holding an Item", () =>
     expect(await verifier.verifyInclusionProof(KEY, PAYLOAD, hexToBytes(kv.proof), hexToBytes(kv.root), path)).toBe(
       true,
     );
+  });
+
+  it('verifyQueryProof, verifyQueryResponse, and ProofVerifier.verifyQueryProof', async () => {
+    const verifier = new ProofVerifier();
+    const response = (proof: string) => ({ documents: [DOC], total: 1, offset: 0, limit: 100, proof });
+    const asQuery = (proof: string) => ({ proof: hexToBytes(proof), pathQuery: null, height: 7 });
+    for (const other of [reference, valueHashNode]) {
+      await expect(verifyQueryProof(other.proof, [DOC], { path: PATH })).rejects.toThrow(/not committed by the proof/);
+      await expect(verifyQueryProof(other.proof, [DOC])).rejects.toThrow(/not committed by the proof/);
+      await expect(verifyQueryResponse(response(other.proof), { path: PATH })).rejects.toThrow(
+        /not committed by the proof/,
+      );
+      await expect(new GroveDBProofVerifier().verifyQueryProof(other.proof, [DOC])).resolves.toMatchObject({
+        valid: false,
+      });
+      await expect(
+        verifier.verifyQueryProof(asQuery(other.proof), hexToBytes(other.root), [PAYLOAD]),
+      ).resolves.toMatchObject({ success: false, error: expect.stringMatching(/not a value the proof proves/) });
+    }
+    await expect(verifyQueryProof(kv.proof, [DOC], { path: PATH })).resolves.toBe(kv.root);
+    await expect(verifyQueryResponse(response(kv.proof), { path: PATH })).resolves.toBe(kv.root);
+    await expect(verifier.verifyQueryProof(asQuery(kv.proof), hexToBytes(kv.root), [PAYLOAD])).resolves.toMatchObject({
+      success: true,
+    });
   });
 });

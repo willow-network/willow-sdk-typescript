@@ -287,7 +287,7 @@ export class ProofVerifier {
    * Verify a GroveDB query proof against a trusted app hash. The proof must
    * verify to `trustedAppHash`, and each entry of `queryResult` (or of
    * `proof.queryResult` when none is given) must be the bytes of an Item the
-   * proof proves. It does not tie those values to a path, nor show that
+   * proof proves, as the `KV` node grovedb proves an Item in. It does not tie those values to a path, nor show that
    * they are a query's whole result (membership only): to check one key at
    * a known path, use {@link verifyInclusionProof}; to verify a query's
    * result, `verifyQuerySelection`.
@@ -309,8 +309,10 @@ export class ProofVerifier {
         };
       }
 
+      // Each Item a KV node proves: a reference's value (KVRefValueHash) is
+      // the element it points to, not one stored at its key.
       const proven = verification.results.flatMap((r) =>
-        r.element?.type === 'Item' ? [r.element.value] : []
+        r.nodeType === 'KV' && r.element?.type === 'Item' ? [r.element.value] : []
       );
       for (let i = 0; i < values.length; i++) {
         if (!proven.some((v) => this.arraysEqual(v, values[i]))) {
