@@ -39,17 +39,19 @@ import {
   verifyGroveDBProof,
   quickVerify,
   hashToHex,
-  isTreeElement,
   GroveDBVerificationResult,
 } from '../grovedb';
+import { PathSegment, decodeProofBytes, encodePath, enforceExpectedRoot } from './shared';
 import {
-  PathSegment,
-  decodeProofBytes,
-  encodePath,
-  enforceExpectedRoot,
-  firstInexactNumber,
-  jsonDeepEqual,
-} from './shared';
+  ProvenValue,
+  decodeProvenValue,
+  documentBindsTo,
+  pathEqual,
+  pathLabel,
+  provenEntry,
+  provenRaw,
+  requireValueBinds,
+} from './binding';
 
 export { subgroveDataPath } from './shared';
 export type { PathSegment } from './shared';
@@ -88,77 +90,6 @@ export interface ProofVerificationResult {
   valid: boolean;
   rootHash?: string;
   error?: string;
-}
-
-function textEncode(s: string): Uint8Array {
-  return new TextEncoder().encode(s);
-}
-
-function pathLabel(path: PathSegment[]): string {
-  return path
-    .map((segment) => (typeof segment === 'string' ? segment : `0x${hashToHex(segment)}`))
-    .join(', ');
-}
-
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
-}
-
-function pathEqual(a: Uint8Array[], b: Uint8Array[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (!bytesEqual(a[i], b[i])) return false;
-  return true;
-}
-
-/**
- * A value the proof commits to: the raw proven Item bytes, decoded as JSON
- * when they parse, otherwise kept as opaque bytes so a non-JSON stored Item
- * (raw blob) can still bind to a returned value by exact bytes.
- */
-type ProvenValue =
-  /** `inexact`: the first number in the text JavaScript can't carry exactly. */
-  | { kind: 'json'; value: unknown; inexact?: string }
-  | { kind: 'raw'; bytes: Uint8Array };
-
-/**
- * Bytes that are not UTF-8, or that start with a byte-order mark, are not
- * JSON text to the node, so they stay raw: a decoder that replaced bad bytes
- * or dropped the mark would read other bytes as the same JSON.
- */
-function decodeProvenValue(raw: Uint8Array): ProvenValue {
-  try {
-    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(raw);
-    return { kind: 'json', value: JSON.parse(text), inexact: firstInexactNumber(text) };
-  } catch {
-    return { kind: 'raw', bytes: raw };
-  }
-}
-
-/**
- * Test whether a returned `document` binds to a proven value. JSON-proven
- * bytes bind by structural equality (number fidelity enforced), and never
- * when they hold a number JavaScript can't carry exactly; non-JSON proven
- * bytes bind only when the document is itself raw bytes equal to them
- * (DataRecord documents are JSON, so they never bind to a raw blob).
- */
-function documentBindsTo(proven: ProvenValue, document: unknown): boolean {
-  if (proven.kind === 'json') return proven.inexact === undefined && jsonDeepEqual(proven.value, document);
-  return document instanceof Uint8Array && bytesEqual(proven.bytes, document);
-}
-
-/**
- * The bytes a proven result commits to as a value: an Item's payload, or the
- * raw leaf bytes when the element didn't deserialize. A subtree is not a
- * value (and one proven without its lower layer is not bound byte for byte),
- * so it gives none.
- */
-function provenRaw(result: GroveDBVerificationResult['results'][number]): Uint8Array | null {
-  if (result.tree) return null;
-  if (result.element?.type === 'Item') return result.element.value;
-  if (result.element && isTreeElement(result.element)) return null;
-  return result.value;
 }
 
 /**
@@ -238,7 +169,10 @@ export async function verifyQueryProof(
  * payload binds to it: JSON values bind by structural equality with number
  * fidelity enforced (see {@link jsonDeepEqual}); a non-JSON stored Item binds
  * by exact bytes (pass a `Uint8Array` as `value`). Pass `undefined` to skip
- * value binding and check only the (key, path) and root.
+ * value binding and check only the (key, path) and root. A response field
+ * that is missing reads as `undefined` too: to bind a value an API returned,
+ * refuse an answer that carries none before calling this (as `getData`
+ * does), or it is checked for the key alone.
  */
 export async function verifyItemProof(
   proofHex: string,
@@ -249,7 +183,6 @@ export async function verifyItemProof(
 ): Promise<string> {
   const bytes = decodeProofBytes(proofHex);
 
-  const expectedKey = textEncode(key);
   const expectedPath = encodePath(path);
   // A non-empty path is required to descend; `[]` (a root-level item) keeps
   // the legacy behaviour and is checked only through the result match below.
@@ -258,29 +191,12 @@ export async function verifyItemProof(
     expectedPath.length > 0 ? { expectedPath } : {},
   );
 
-  const match = verification.results.find(
-    (r) => pathEqual(r.path, expectedPath) && bytesEqual(r.key, expectedKey),
-  );
+  const match = provenEntry(verification, expectedPath, new TextEncoder().encode(key));
   if (!match) {
     throw new Error(`Proof does not contain key "${key}" at path [${pathLabel(path)}]`);
   }
 
-  if (value !== undefined) {
-    const raw = provenRaw(match);
-    const proven = raw ? decodeProvenValue(raw) : null;
-    if (proven?.kind === 'json' && proven.inexact !== undefined) {
-      throw new Error(
-        `Proven value for key "${key}" holds the number ${proven.inexact}, which JavaScript can't ` +
-          'carry exactly; store such values as strings',
-      );
-    }
-    if (!proven || !documentBindsTo(proven, value)) {
-      throw new Error(
-        `Proven value for key "${key}" does not match the returned data — ` +
-          'the server returned data the proof does not cover',
-      );
-    }
-  }
+  if (value !== undefined) requireValueBinds(key, provenRaw(match), value);
 
   const computed = hashToHex(verification.rootHash);
   enforceExpectedRoot(computed, options?.expectedRootHash);

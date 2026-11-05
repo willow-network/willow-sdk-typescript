@@ -289,6 +289,11 @@ package adheres to [Semantic Versioning](https://semver.org/).
 - `getMultiple` leaves out a key the API reports absent only when the API's
   proof for it proves it absent at a verified root; otherwise it throws. It
   dropped such keys unchecked.
+- `get`, `getData`, `getVerifiedData`, and `getMultiple` refuse an answer
+  that reports success but carries no value (`PROOF_VERIFICATION_FAILED`).
+  Such an answer, with the key's genuine proof, was checked for the key
+  alone: `get` returned `undefined`, and `getMultiple` reported the key
+  absent without an absence proof.
 - **`queryHistoricalVerified` throws `UNSUPPORTED_OPERATION`** without
   sending anything, and is deprecated. It checked the proof against a state
   root from the same API that served the result, not from consensus, and

@@ -21,10 +21,10 @@ import {
 import { WillowAuth } from "../auth";
 import {
   verifyQueryProof,
-  verifyItemProof,
   subgroveDataPath,
   ProofVerificationOptions,
 } from "../proof";
+import { verifySubgroveItem } from "../proof/binding";
 import {
   checkQueryResult,
   provenQueryData,
@@ -355,7 +355,8 @@ export class WillowData {
    * Get data by key with automatic proof verification (secure by default):
    * the value must be the one the proof proves at the key, and the proof's
    * root the light client's root for the proof's block height, which must be
-   * within `lightClient.maxProofLagBlocks` of the chain's latest. See
+   * within `lightClient.maxProofLagBlocks` of the chain's latest. An answer
+   * that carries no value is refused (`PROOF_VERIFICATION_FAILED`). See
    * {@link getVerifiedData} for the root and height.
    */
   async getData(
@@ -387,17 +388,23 @@ export class WillowData {
       );
     }
 
-    const data = response.data!;
+    const data = response.data;
 
     try {
+      // A success that carries no value has nothing to bind to the proof: it
+      // is refused, not returned as `undefined` or read as an absent key.
+      if (data === undefined) {
+        throw new Error(`The API's answer for key "${key}" carries no value`);
+      }
       const proofData = await this.fetchProof(datasetId, key);
-      // Verify the proof and compute root hash
-      const computedRootHash = await verifyItemProof(
+      // Verify the proof, binding the returned value to the Item it proves at
+      // the key, and compute the root hash.
+      const computedRootHash = verifySubgroveItem(
         proofData.proof,
+        datasetId,
         key,
         data,
-        subgroveDataPath(datasetId),
-        this.proofOptions,
+        this.proofOptions?.expectedRootHash,
       );
       const verified = await this.verifyRootAtHeight(computedRootHash, proofData.height);
       return { data, rootHash: verified.rootHash, height: verified.height };

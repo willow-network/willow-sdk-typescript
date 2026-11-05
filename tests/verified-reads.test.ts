@@ -12,6 +12,7 @@ import { LightClient } from '../src/light-client/client';
 import { createTrustThreshold } from '../src/light-client/types';
 import { hexToBytes } from '../src/grovedb';
 import { VerifiableRpcOperations } from '../src/verifiable-rpc';
+import { WillowClient } from '../src/client';
 import { Merk, chainProof, enc, groveProof, hex, oneItemLayer, pathProof } from './helpers/grove-proof';
 
 const DOC_A = { owner: 'alice', n: 1 };
@@ -77,6 +78,26 @@ describe('getData and getVerifiedData', () => {
 });
 
 describe('a verified read binds the value it returns to the proof', () => {
+  it('a success that carries no value is refused, not returned as undefined', async () => {
+    // The API answers `{"success":true}` for the key and relays its genuine proof.
+    global.fetch = jest.fn(async (url: string) => {
+      const [, route, , key] = new URL(url).pathname.split('/');
+      if (route === 'data') return reply({ success: true });
+      if (route === 'proof') return reply({ success: true, data: { proof: proofOf([key]), height: 7 } });
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+    const d = client();
+    await expect(d.getVerifiedData('s1', 'a')).rejects.toMatchObject({ code: 'PROOF_VERIFICATION_FAILED' });
+    await expect(d.getData('s1', 'a')).rejects.toMatchObject({ code: 'PROOF_VERIFICATION_FAILED' });
+    await expect(d.getMultiple('s1', ['a', 'c'])).rejects.toMatchObject({ code: 'PROOF_VERIFICATION_FAILED' });
+    const willow = new WillowClient({ apiUrl: 'http://api.test' });
+    (willow.data as any).lightClient = (d as any).lightClient;
+    await expect(willow.get('s1', 'a')).rejects.toMatchObject({ code: 'PROOF_VERIFICATION_FAILED' });
+    await expect(willow.collection('s1').getMultiple(['a'])).rejects.toMatchObject({
+      code: 'PROOF_VERIFICATION_FAILED',
+    });
+  });
+
   it('a value the SDK wrote verifies, whatever its digits', async () => {
     // `client.store('s1', 'k', { price: 1.1 * 1.1 })` stores `{"price":1.2100000000000002}`.
     const doc = { price: 1.1 * 1.1, third: 1 / 3, sum: 0.1 + 0.2 };

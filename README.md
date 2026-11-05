@@ -178,7 +178,9 @@ const multiple = await collection.getMultiple(['key1', 'key2', 'key3']);
 ```
 
 `getMultiple` leaves out a key the API reports absent only when the API's
-proof for the key proves it absent; otherwise it throws.
+proof for the key proves it absent; otherwise it throws. An answer that
+reports success but carries no value is refused (`PROOF_VERIFICATION_FAILED`):
+there is nothing to check against the proof.
 
 ### Query Data
 
