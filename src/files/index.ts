@@ -348,7 +348,7 @@ export class FileOperations {
    * flight and the outcome settled with its allocator: accepted holds it, a
    * refusal at CheckTx gives it back unless it says the nonce is held, used,
    * or spent, and a transport failure keeps it held (the write may yet land).
-   * A transport failure or a refusal throws a `TX_SUBMIT_FAILED`
+   * A transport failure, a pending answer, or a refusal throws a `TX_SUBMIT_FAILED`
    * {@link TransactionSubmitError} carrying the DID, the nonce, the signed
    * body, and (for a refusal) the chain's answer, so the write can be posted
    * again under the same nonce (`client.consensus.resubmit(error)`).

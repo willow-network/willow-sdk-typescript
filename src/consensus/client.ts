@@ -549,7 +549,7 @@ export class ConsensusClient {
       // Query transaction from CometBFT
       const result = await this.queryTransaction(hash);
 
-      if (!result) {
+      if (!result?.tx_result) {
         return TransactionStatus.NOT_FOUND;
       }
 

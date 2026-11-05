@@ -61,3 +61,19 @@ describe('a transaction is looked up by the base64 of its hash', () => {
     expect(requests).toHaveLength(0);
   });
 });
+
+describe('an RPC answer with no transaction result', () => {
+  it('is not found, not a success', async () => {
+    for (const result of [null, {}]) {
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ result }),
+        text: async () => JSON.stringify({ result }),
+      });
+      global.fetch = fetchMock as unknown as typeof fetch;
+      const c = new ConsensusClient({ consensusRpcUrl: 'http://rpc.test', apiUrl: 'http://api.test', maxRetries: 0 });
+      await expect(c.getTransactionStatus('AA'.repeat(32))).resolves.toBe(TransactionStatus.NOT_FOUND);
+    }
+  });
+});

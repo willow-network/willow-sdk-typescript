@@ -200,7 +200,10 @@ export interface BroadcastResult {
    * refusal in the block spends the nonce too, so read the state the write
    * changes to see that it applied. While the nonce is unused,
    * `ConsensusClient.resubmit(result.submission)` posts the same signed body
-   * again; whichever copy lands first spends the nonce.
+   * again; whichever copy lands first spends the nonce. A repeat refused
+   * because its nonce is taken is pending too: an earlier post may be what took
+   * it, so read what the write wrote before signing it again under a fresh
+   * nonce, or it can run twice.
    */
   pending?: boolean;
   /**

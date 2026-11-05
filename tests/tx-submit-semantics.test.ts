@@ -218,6 +218,43 @@ describe('a 4xx from /tx/submit: the request never reached CheckTx', () => {
     }
   });
 
+  it('a CheckTx refusal to a repeat that says the nonce is taken is pending: the earlier post may be what took it', async () => {
+    for (const log of [
+      'Invalid nonce: 5 already used (replay)',
+      'Invalid nonce: 5 <= base nonce 9',
+      'Nonce 5 of did:willow:a is held by a pending transaction; sign this one with another nonce',
+    ]) {
+      mockFetch.mockResolvedValueOnce(
+        response({ ok: true, status: 200, body: { success: true, data: { tx_hash: 'AA', code: 1, log } } }),
+      );
+      await expect(submitTxToApi(API_URL, { Test: {} }, { repeat: true })).resolves.toMatchObject({
+        success: false,
+        pending: true,
+        errorMessage: expect.stringMatching(/read what it wrote/),
+        rawLog: log,
+      });
+    }
+    // On a first post the refusal is the answer, and other refusals to a repeat are too.
+    mockFetch.mockResolvedValueOnce(
+      response({ ok: true, status: 200, body: { success: true, data: { tx_hash: 'AA', code: 1, log: 'Invalid nonce: 5 already used (replay)' } } }),
+    );
+    const first = await submitTxToApi(API_URL, { Test: {} });
+    expect(first).toMatchObject({ success: false, errorCode: 1 });
+    expect(first.pending).toBeUndefined();
+    mockFetch.mockResolvedValueOnce(
+      response({ ok: true, status: 200, body: { success: true, data: { tx_hash: 'AA', code: 7, log: 'Invalid signature' } } }),
+    );
+    const other = await submitTxToApi(API_URL, { Test: {} }, { repeat: true });
+    expect(other.pending).toBeUndefined();
+  });
+
+  it('a 2xx that is not the handler\'s answer is a transport failure, not a refusal', async () => {
+    for (const body of [{}, { success: true }, { success: true, data: {} }]) {
+      mockFetch.mockResolvedValueOnce(response({ ok: true, status: 200, body }));
+      await expect(submitTxToApi(API_URL, { Test: {} })).rejects.toBeInstanceOf(TxTransportError);
+    }
+  });
+
   it('one that says the transaction is already in the cache stays pending', async () => {
     mockFetch.mockResolvedValueOnce(
       response({ ok: false, status: 400, body: { success: false, error: 'Internal error tx already exists in cache' } }),

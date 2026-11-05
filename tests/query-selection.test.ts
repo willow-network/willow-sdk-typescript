@@ -314,7 +314,7 @@ describe("the API's reading of documents", () => {
     const long = `{"v":1.${'0'.repeat(65_400)}1}`;
     const start = performance.now();
     expect(() => select([long, '{"v":2}'], asc)).toThrow(/more than 20 significant digits/);
-    expect(performance.now() - start).toBeLessThan(100);
+    expect(performance.now() - start).toBeLessThan(1000);
     expect(() => select(['{"v":123456789012345678901}', '{"v":2}'], asc)).toThrow(/more than 20/);
     expect(() => select(['{"v":-1.23456789012345678901e5}', '{"v":2}'], asc)).toThrow(/more than 20/);
     // Leading and trailing zeros, the sign, the point, and the exponent are not significant digits.

@@ -105,6 +105,15 @@ package adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- A retry or `resubmit` refused at CheckTx because its nonce is used, spent, or
+  held comes back `pending` with the nonce held: an earlier post may be what
+  took it, so read what the write wrote before signing it again under a fresh
+  nonce.
+- A 2xx from `/tx/submit` that holds neither a result nor an error is a
+  transport failure, with the nonce held, not a refusal.
+- `getTransactionStatus` reads an RPC answer with no transaction result as
+  `NOT_FOUND`; it read as `SUCCESS`.
+
 - With an identity set, `GET /data/:sg/:key`, `GET /proof/:sg/:key`, and
   `POST /query/:sg`, `/sql/:sg`, and `/graphql/:sg` sent to the API are
   nonce-signed over the path and query as sent and the exact body.

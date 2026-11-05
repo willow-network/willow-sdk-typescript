@@ -8,6 +8,7 @@
  * misparse) them. Every SDK module that broadcasts goes through here.
  */
 
+import { refusalKeepsNonce } from '../consensus/nonces';
 import { BroadcastResult, TransactionSubmitError } from '../consensus/types';
 import { toJson } from './json';
 
@@ -127,17 +128,43 @@ export async function submitTxToApi(
   }
 
   if (!body.success || !body.data) {
-    const msg = body.error || `HTTP ${response.status}`;
-    return { success: false, errorMessage: msg, rawLog: msg };
+    if (typeof body.error !== 'string' || body.error === '') {
+      // Not the tx handler's answer (a proxy's, say): the post's fate is unknown.
+      throw new TxTransportError(`HTTP ${response.status} from ${url}: the answer holds no result`);
+    }
+    return { success: false, errorMessage: body.error, rawLog: body.error };
   }
 
   const code = body.data.code;
+  if (typeof code !== 'number') {
+    throw new TxTransportError(`HTTP ${response.status} from ${url}: the answer holds no CheckTx code`);
+  }
+  if (code !== 0 && opts.repeat && refusalKeepsNonce(body.data.log)) {
+    return repeatFoundItsNonceTaken(body.data.log);
+  }
   return {
     success: code === 0,
     txHash: body.data.tx_hash,
     errorCode: code !== 0 ? code : undefined,
     errorMessage: code !== 0 ? body.data.log : undefined,
     rawLog: body.data.log,
+  };
+}
+
+/**
+ * The result of a repeat refused because its nonce is used, spent, or held: an
+ * earlier post of the same transaction may be what took it (a restart loses
+ * CometBFT's cache of it, so the repeat reaches CheckTx), so it is pending, and
+ * calling the write again under a fresh nonce could run it twice.
+ */
+function repeatFoundItsNonceTaken(rawLog: string): BroadcastResult {
+  return {
+    success: false,
+    pending: true,
+    errorMessage:
+      `${rawLog}; an earlier post of this transaction may be what took the nonce, so read what it ` +
+      'wrote before signing it again under a fresh nonce, or it can run twice',
+    rawLog,
   };
 }
 
