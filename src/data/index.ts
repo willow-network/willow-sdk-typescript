@@ -26,6 +26,7 @@ import {
 } from "../proof";
 import { verifySubgroveItem } from "../proof/binding";
 import {
+  checkQueryAccepted,
   checkQueryResult,
   provenQueryData,
   querySelection,
@@ -705,7 +706,7 @@ export class WillowData {
    *
    * The result is verified as the query's whole result: the API proves the
    * subgrove's entire data tree, and the SDK runs the API's selection over it
-   * (the one exact-match filter, the sort, `offset`, and `limit`, default
+   * (every exact-match filter, the sort, `offset`, and `limit`, default
    * 100) and requires the returned `documents` and `total` to be exactly that
    * (see `verifyQuerySelection`). The selection is the one in the body sent,
    * read when it is sent, so changing `query` afterwards does not change what
@@ -716,19 +717,17 @@ export class WillowData {
    * selection is run; the result carries `verifiedRootHash` and
    * `verifiedHeight`.
    *
-   * A query whose selection can't be verified throws `QUERY_NOT_VERIFIABLE`
-   * before anything is sent: a filter on more than one field (the API
-   * applies only one), a filter operator such as `$gt` (the API applies
-   * none), or `search`. Use `queryUnverified` for those. Data at the verified
-   * root whose selection the SDK can't reproduce (a sort over values that are
-   * not all numbers or all strings, say) throws `QUERY_RESULT_NOT_VERIFIABLE`
-   * (a `QueryResultNotVerifiableError` carrying the root). The API's sort
-   * calls a missing field, `null`, a boolean, an array, or an object equal to
-   * anything, so a sort on a field some selected document lacks (or holds as
-   * one of those) throws on every page, unless the selected documents hold
-   * at most one number and one string there: filter on a field that selects
-   * only documents holding the sort field as a number (or all as a string),
-   * or use `queryUnverified`.
+   * A query the API refuses throws `QUERY_REFUSED` before anything is
+   * sent: a filter operator such as `$gt`, a `$and`, `$or`, `$not`, or
+   * `$nor` filter key, more than 32 filter fields, a field over 256 bytes, a
+   * filter value over 4,096 bytes as JSON, `search`, or a sort order other
+   * than `asc` or `desc` (see `queryRefusal`). A filter value holding an
+   * object whose first key is serde_json's private token throws
+   * `QUERY_NOT_VERIFIABLE` before anything is sent; use `queryUnverified`
+   * for it. Data at the verified root whose selection the SDK can't
+   * reproduce (a document holding such an object) throws
+   * `QUERY_RESULT_NOT_VERIFIABLE` (a `QueryResultNotVerifiableError`
+   * carrying the root).
    */
   async query(
     datasetId: string,
@@ -737,7 +736,8 @@ export class WillowData {
     // The body as it is sent (with the proof always asked for), read once:
     // the selection is checked against it, not the caller's object later.
     const sent = JSON.parse(JSON.stringify({ ...query, include_proof: true })) as QueryRequest;
-    // Refuse a query whose result can't be verified before sending it.
+    // Refuse a query the API refuses, or whose result can't be verified,
+    // before sending it.
     const selection = querySelection(sent);
 
     const response = await this.api.post<ApiResponse<QueryResponse>>(
@@ -800,7 +800,9 @@ export class WillowData {
   }
 
   /**
-   * Query indexed data without proof verification (use with caution)
+   * Query indexed data without proof verification (use with caution). A
+   * query the API refuses throws `QUERY_REFUSED` before anything is sent
+   * (see `query`).
    */
   async queryUnverified(
     datasetId: string,
@@ -811,6 +813,7 @@ export class WillowData {
       ...query,
       include_proof: false,
     };
+    checkQueryAccepted(queryWithoutProof);
 
     const response = await this.api.post<ApiResponse<QueryResponse>>(
       `/query/${datasetId}`,
@@ -873,10 +876,12 @@ export class WillowData {
    *
    * The API forwards the query to indexer nodes that keep the checkpoint's
    * data and returns what one of them answers. Nothing in the result is
-   * verified: the checkpoint's state root and the data both come from the
-   * API, and the response carries no proof the SDK can check. The method
-   * only checks that the response's `state_root` is the one the API reports
-   * for the checkpoint.
+   * verified: the API passes the provider's proof through (`proof`, hex)
+   * without checking it against the checkpoint, and nothing requires the
+   * checkpoint's `state_root` to commit to the provider's store (the
+   * reference indexer's is a hash of the subgrove id, block range, and
+   * entity count, not a root of the data). The method only checks that the
+   * response's `state_root` is the one the API reports for the checkpoint.
    *
    * @param subgroveId - The subgrove ID
    * @param checkpointId - The checkpoint ID (hex string)
@@ -944,11 +949,11 @@ export class WillowData {
 
   /**
    * A historical query can't be verified, so this always throws
-   * `UNSUPPORTED_OPERATION` without sending anything. The checkpoint's state
-   * root comes from the same API that serves the result, not from consensus,
-   * so a proof checked against it shows nothing; and the API returns no proof
-   * for a historical query. Use {@link queryHistorical}, whose result is
-   * unverified.
+   * `UNSUPPORTED_OPERATION` without sending anything. The API passes the
+   * provider's proof through without checking it against the checkpoint, and
+   * nothing requires the checkpoint's state root to commit to the provider's
+   * store, so the proof shows nothing about the checkpoint. Use
+   * {@link queryHistorical}, whose result is unverified.
    *
    * @deprecated Always throws `UNSUPPORTED_OPERATION`.
    */
@@ -958,9 +963,9 @@ export class WillowData {
     _query: HistoricalQueryRequest,
   ): Promise<HistoricalQueryResponse> {
     throw new WillowError(
-      "A historical query can't be verified: the checkpoint's state root comes from the API that " +
-        "serves the result, not from consensus, and the API returns no proof for it. Use " +
-        "queryHistorical, whose result is unverified.",
+      "A historical query can't be verified: the API passes the provider's proof through without " +
+        "checking it against the checkpoint, and nothing requires the checkpoint's state root to " +
+        "commit to the provider's store. Use queryHistorical, whose result is unverified.",
       "UNSUPPORTED_OPERATION",
     );
   }

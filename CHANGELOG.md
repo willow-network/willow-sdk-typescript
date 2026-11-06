@@ -77,6 +77,10 @@ package adheres to [Semantic Versioning](https://semver.org/).
 - An optional nonce source as the third argument to the `FileOperations`
   constructor (`WillowClient` passes its `ConsensusClient`), and the
   `FileNonceSource` and `FileSigningOptions` types.
+- `QueryRefusedError` (code `QUERY_REFUSED`): a query the API refuses,
+  thrown by `query` and `queryUnverified` before anything is sent.
+  `HistoricalQueryResponse.verification`, the API's statement of what a
+  historical answer can be verified against.
 - `verifyQuerySelection(subgroveId, query, response, options?)`, which
   verifies a `POST /query/:subgrove` response as the query's whole result;
   `QueryNotVerifiableError` (code `QUERY_NOT_VERIFIABLE`) for a query whose
@@ -104,6 +108,23 @@ package adheres to [Semantic Versioning](https://semver.org/).
 - The `UNSUPPORTED` code of `VerifiableRpcError`.
 
 ### Changed
+
+- **A verified query computes the API's current selection.** Every
+  `filters` field applies (all must match), and a filter matches numbers by
+  exact decimal value (`1`, `1.0`, and `1e0` are equal), in arrays and
+  objects too. The sort is a total order: a missing field, `null`, `false`,
+  `true`, numbers (by value; a number of more than 20 significant digits by
+  its correctly rounded double), strings (by code point), arrays, then
+  objects, stably in either direction. A sort over values of mixed kinds
+  verifies; it threw `QUERY_RESULT_NOT_VERIFIABLE`, and a stored `1.0`
+  filtered by `1` failed verification. A query the API refuses throws
+  `QUERY_REFUSED` from `query` and `queryUnverified` before anything is
+  sent: a filter operator, a `$and`, `$or`, `$not`, or `$nor` key, more than
+  32 filter fields, a field or sort field over 256 bytes, a filter value
+  over 4,096 bytes as JSON, `search`, `includes`, a sort order other than
+  `asc` or `desc`, a sort key other than `field` and `order`, or a key the
+  API does not read. These threw `QUERY_NOT_VERIFIABLE` from `query`, and a
+  filter on more than one field did too.
 
 - A retry or `resubmit` refused at CheckTx because its nonce is used, spent, or
   held comes back `pending` with the nonce held: an earlier post may be what
@@ -380,9 +401,11 @@ package adheres to [Semantic Versioning](https://semver.org/).
   `ProofVerifier.verifyQueryProof`): a document binds only to such an Item.
 - **`queryHistoricalVerified` throws `UNSUPPORTED_OPERATION`** without
   sending anything, and is deprecated. It checked the proof against a state
-  root from the same API that served the result, not from consensus, and
-  the API returns no proof for a historical query. `queryHistorical` and
-  `getCheckpointStateRoot` are documented as unverified.
+  root from the same API that served the result, not from consensus. The
+  API passes the provider's proof through without checking it against the
+  checkpoint, and nothing requires the checkpoint's state root to commit to
+  the provider's store. `queryHistorical` and `getCheckpointStateRoot` are
+  documented as unverified.
 - `LightClient.verifyQueryProof` checks a proof made at height H against the
   header of block H+1, which commits the state after H; it used header H.
 - Proven Item bytes are read as UTF-8 strictly (a bad byte is not replaced,

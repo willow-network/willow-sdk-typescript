@@ -250,19 +250,21 @@ const results = await client.queryUnverified('dataset-id', {
 ```
 
 With a proof, the API proves the subgrove's whole data tree and selects from
-every item in it: each item that parses as JSON, kept when its `filters`
-field equals the given value (one field, matched exactly; a dotted name such
-as `meta.kind` reaches into objects), sorted by the `sort` field (stably,
-numbers by value and strings by code point), then `offset` and `limit`
+every item in it: each item that parses as JSON, kept when every `filters`
+field equals its value (matched exactly, numbers by exact decimal value, so
+`1`, `1.0`, and `1e0` are equal; a dotted name such as `meta.kind` reaches
+into objects), sorted by the `sort` field, then `offset` and `limit`
 (default 100) applied; `total` counts the documents selected before `offset`
-and `limit`. `client.query` checks that the proof reveals the whole data
-tree at the light client's root, then runs that selection over it and returns
-the result only when the API's `documents` and `total` are exactly it. The
-selection is the one in the body as sent, so changing the query object while
-the request is in flight does not change what its result is checked against.
-Numbers match as JSON text: `1` and `1.0` are different values. A number
-verifies when its text has the exact decimal value of the text JavaScript
-writes for the double it parses to (`String(Number(text))`). So every number
+and `limit`. The sort is stable (equal values keep key order, in either
+direction) and orders every value: a missing field, then `null`, `false`,
+`true`, numbers (by value), strings (by code point), arrays, and objects.
+`client.query` checks that the proof reveals the whole data tree at the
+light client's root, then runs that selection over it and returns the result
+only when the API's `documents` and `total` are exactly it. The selection is
+the one in the body as sent, so changing the query object while the request
+is in flight does not change what its result is checked against. A number in
+a result verifies when its text has the exact decimal value of the text
+JavaScript writes for the double it parses to (`String(Number(text))`). So every number
 JavaScript writes verifies, at any magnitude, including results such as
 `1.1 * 1.1` (`1.2100000000000002`), `1 / 3`, and `1e18`
 (`1000000000000000000`). A document holding a number whose text parses to a
@@ -277,25 +279,17 @@ exact value is `18446744073709551616`: `BigInt(value)` is not the stored
 digits. Keep amounts, and any other integer that must stay exact, as strings
 (`{ amount: '18446744073709551615' }`).
 
-A query the API does not apply as asked throws `QUERY_NOT_VERIFIABLE` before
-anything is sent: a filter on more than one field (the API applies only one),
-a filter operator such as `$gte` or `$in` (the API applies none), or
-`search`. Read those with `queryUnverified`, or query on one exact field and
-filter the verified documents further yourself. Data at the verified root
-whose selection the SDK can't reproduce throws `QUERY_RESULT_NOT_VERIFIABLE`
-(a `QueryResultNotVerifiableError` carrying `rootHash`): a sort over values
-that are not all numbers or all strings, or a document holding an object
-whose first key is `serde_json`'s private number or raw-value token, which
-the API reads as something other than an object. The API's sort calls two
-values equal unless both are numbers or both are strings, so when a selected
-document lacks the sort field, or holds `null`, a boolean, an array, or an
-object there, the API's order is not determined (unless the selected
-documents hold at most one number and one string there), and every page of
-that sorted query throws, whatever its `offset` and `limit`: the order is
-checked over every document the query selects. Sort on a field every
-selected document holds as a number, or every one as a string: filter on a
-field that selects only such documents, or read the result with
-`queryUnverified`.
+A query the API refuses throws `QUERY_REFUSED` (a `QueryRefusedError`) from
+`query` and `queryUnverified` before anything is sent: a filter operator
+such as `$gte` or `$in`, a `$and`, `$or`, `$not`, or `$nor` filter key, more
+than 32 filter fields, a filter field or sort field longer than 256 bytes, a
+filter value longer than 4,096 bytes as JSON, `search`, a sort order other
+than `asc` or `desc`, or a key the API does not read. Data at the verified
+root whose selection the SDK can't reproduce throws
+`QUERY_RESULT_NOT_VERIFIABLE` (a `QueryResultNotVerifiableError` carrying
+`rootHash`): a document holding an object whose first key is `serde_json`'s
+private number or raw-value token, which the API reads as something other
+than an object.
 
 ### Update and Delete
 
@@ -307,7 +301,7 @@ do `data.storeData` and `batchStore`, which have no per-key transaction.
 
 ### Historical Data Queries
 
-Query data at a checkpoint. The API routes a historical query to indexers who have declared availability for the checkpoint. The result is unverified: the checkpoint's state root and the data both come from the API, and the response carries no proof the SDK can check.
+Query data at a checkpoint. The API routes a historical query to indexers who have declared availability for the checkpoint. The result is unverified. The API passes the provider's proof through (`proof`, hex) without checking it against the checkpoint, and nothing requires the checkpoint's `state_root` to commit to the provider's store: the reference indexer's is a hash of the subgrove id, block range, and entity count, not a root of the data. The response's `verification` says so.
 
 ```typescript
 // The state root the API reports for a checkpoint (not verified)
@@ -333,8 +327,8 @@ console.log('Data:', result.data);
 ```
 
 `queryHistoricalVerified` throws `UNSUPPORTED_OPERATION` without sending
-anything: a proof checked against a state root from the same API that serves
-the result shows nothing.
+anything: the provider's proof is of its own store, which the checkpoint's
+state root need not commit to, so checking it shows nothing.
 
 **Error Handling for Unavailable Data:**
 
@@ -397,8 +391,9 @@ What each function binds:
   tree, and `response.documents` and `total` must be exactly what the API's
   query selects from it, in order. The proof's completeness and its root
   (`options.expectedRootHash`, when given) are checked before the selection
-  is run. It throws `QUERY_NOT_VERIFIABLE` for a query whose selection it
-  can't reproduce, and `QUERY_RESULT_NOT_VERIFIABLE` for data whose
+  is run. It throws `QUERY_REFUSED` for a query the API refuses,
+  `QUERY_NOT_VERIFIABLE` for a query whose selection it can't reproduce,
+  and `QUERY_RESULT_NOT_VERIFIABLE` for data whose
   selection it can't reproduce, with the root of that data as `rootHash`
   (checked only against `expectedRootHash`).
 - `verifyQueryProof`, `verifyQueryResponse`, and `GroveDBProofVerifier`
@@ -955,8 +950,8 @@ try {
 | `getUnverified(datasetId, key)` | Get data without verification |
 | `update(datasetId, key, value)` | Throws `UNSUPPORTED_OPERATION` (see [Update and Delete](#update-and-delete)) |
 | `delete(datasetId, key)` | Throws `UNSUPPORTED_OPERATION` |
-| `query(datasetId, query)` | Query, verified as the query's whole result (`QUERY_NOT_VERIFIABLE` or `QUERY_RESULT_NOT_VERIFIABLE` when it can't be) |
-| `queryUnverified(datasetId, query)` | Query without verification |
+| `query(datasetId, query)` | Query, verified as the query's whole result (`QUERY_REFUSED` for a query the API refuses; `QUERY_NOT_VERIFIABLE` or `QUERY_RESULT_NOT_VERIFIABLE` when it can't be verified) |
+| `queryUnverified(datasetId, query)` | Query without verification (`QUERY_REFUSED` for a query the API refuses) |
 | `sqlQuery(subgroveId, sql, options?)` | SQL query routed to indexer or validator (unverified: the SDK checks nothing, including a proof the response carries) |
 | `graphqlQuery(subgroveId, query, options?)` | GraphQL query routed to indexer or validator (unverified: the SDK checks nothing, including a proof the response carries) |
 | `getProof(datasetId, key)` | Get raw Merkle proof |

@@ -131,7 +131,6 @@ describe('Historical Query Proof Verification', () => {
       };
 
       expect(response.proof).toBe('');
-      // Empty proof should be rejected by queryHistoricalVerified
     });
 
     it('should reject missing proof', async () => {
@@ -144,7 +143,6 @@ describe('Historical Query Proof Verification', () => {
       };
 
       expect(response.proof).toBeUndefined();
-      // Missing proof should be rejected by queryHistoricalVerified
     });
 
     it('should handle proof with 0x prefix', async () => {

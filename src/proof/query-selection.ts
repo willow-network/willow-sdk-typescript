@@ -5,21 +5,21 @@
  *
  * With a proof, the API proves the whole data tree (a `range_full` query on
  * the subgrove's data path) and selects from every item in it: each item that
- * parses as JSON, kept when it matches the one exact-match filter, sorted by
- * the one sort field (stably), then `offset` and `limit` (default 100)
- * applied. `total` is the number selected before `offset` and `limit`. This
- * module requires the proof to reveal every entry of the data tree, runs
- * that selection over them as the API does, and requires the response's
- * documents and `total` to be it.
+ * parses as JSON, kept when it matches every exact-match filter (numbers by
+ * exact decimal value), sorted by the one sort field (stably, in a total
+ * order by kind), then `offset` and `limit` (default 100) applied. `total` is
+ * the number selected before `offset` and `limit`. This module requires the
+ * proof to reveal every entry of the data tree, runs that selection over them
+ * as the API does, and requires the response's documents and `total` to be
+ * it.
  *
- * A query whose selection can't be reproduced exactly is not verifiable and
- * throws {@link QueryNotVerifiableError}, before anything is sent: a filter
- * on more than one field (the API applies only one), a filter operator (the
- * API applies none), or `search` (the API applies none). The proof's
- * completeness and root are checked before the selection is run, so a
- * selection the data makes irreproducible (a sort over values that are not
- * all numbers or all strings, whose order is then not determined, or a
- * document the API's JSON reader may read differently) is reported, as
+ * A query the API refuses throws {@link QueryRefusedError} before anything is
+ * sent (see {@link queryRefusal}). A query whose selection can't be
+ * reproduced exactly (a filter value holding an object whose first key is
+ * serde_json's private token) throws {@link QueryNotVerifiableError}, before
+ * anything is sent. The proof's completeness and root are checked before the
+ * selection is run, so a selection the data makes irreproducible (a document
+ * the API's JSON reader may read differently) is reported, as
  * {@link QueryResultNotVerifiableError}, only for data at a checked root.
  */
 
@@ -28,10 +28,13 @@ import { verifyCompleteLayer, CompleteEntry, hashToHex, bytesToHex } from '../gr
 import {
   NodeJson,
   NotReproducibleError,
+  parseF64,
   parseNodeJson,
   parseNodeJsonText,
   nodeJsonEqual,
+  nodeJsonTextLength,
   nodeJsonToJs,
+  utf8Length,
 } from './node-json';
 import {
   decodeProofBytes,
@@ -47,8 +50,29 @@ export const DEFAULT_QUERY_LIMIT = 100;
 
 const U32_MAX = 0xffff_ffff;
 
-/** The keys of a `POST /query/:subgrove` body the API reads. */
+/** The keys of a `POST /query/:subgrove` body the API reads; it refuses any other. */
 const QUERY_KEYS = new Set(['filters', 'search', 'sort', 'limit', 'offset', 'include_proof', 'includes']);
+
+/** The most `filters` fields the API takes. */
+const MAX_FILTER_FIELDS = 32;
+/** The longest a filter value may be, as the API's JSON text of it. */
+const MAX_FILTER_VALUE_BYTES = 4096;
+/** The longest a filter field or the sort field may be. */
+const MAX_FIELD_BYTES = 256;
+/** MongoDB's logical operators, which the API refuses as filter fields. */
+const LOGICAL_OPERATORS = new Set(['$and', '$or', '$not', '$nor']);
+
+/**
+ * A query the API refuses (code `QUERY_REFUSED`), so it is not sent:
+ * `client.query` and `client.queryUnverified` throw it before sending
+ * anything. See {@link queryRefusal} for what the API refuses.
+ */
+export class QueryRefusedError extends WillowError {
+  constructor(message: string) {
+    super(message, 'QUERY_REFUSED');
+    this.name = 'QueryRefusedError';
+  }
+}
 
 /**
  * A query whose result the SDK can't verify whatever the data, because the
@@ -67,8 +91,8 @@ export class QueryNotVerifiableError extends WillowError {
  * A query result the SDK can't verify because of the data it is selected
  * from (code `QUERY_RESULT_NOT_VERIFIABLE`): the proof reveals the whole data
  * tree at `rootHash`, but the API's selection over those entries can't be
- * reproduced (a sort over values that are not all numbers or all strings,
- * as on a field some selected document lacks, say). `client.query` throws
+ * reproduced (a document holding an object whose first key is serde_json's
+ * private token, say). `client.query` throws
  * it only once `rootHash` is the light client's root for the proof's
  * height; {@link verifyQuerySelection} checks
  * `rootHash` only against `expectedRootHash`, so without one it is the
@@ -88,8 +112,8 @@ export class QueryResultNotVerifiableError extends WillowError {
 
 /** The selection the API makes for a `POST /query/:subgrove` body. */
 export interface QuerySelection {
-  /** The one exact-match filter: documents whose `field` equals `value`. */
-  filter: { field: string; value: NodeJson } | null;
+  /** The exact-match filters: documents whose every `field` equals its `value`. */
+  filters: Array<{ field: string; value: NodeJson }>;
   /** The sort field and direction. */
   sort: { field: string; descending: boolean } | null;
   offset: number;
@@ -102,85 +126,147 @@ function notVerifiable(reason: string): QueryNotVerifiableError {
   );
 }
 
-function u32(value: NodeJson | undefined, name: string, fallback: number): number {
-  if (value === undefined || value.t === 'null') return fallback;
-  if (value.t !== 'num' || !/^[0-9]+$/.test(value.n) || Number(value.n) > U32_MAX) {
-    throw notVerifiable(`\`${name}\` is not an integer from 0 to ${U32_MAX}, which the API refuses`);
-  }
-  return Number(value.n);
+function refused(reason: string): QueryRefusedError {
+  return new QueryRefusedError(`The API refuses this query: ${reason}`);
+}
+
+/** Whether `value` is an integer from 0 to 2^32 - 1 (or `null`, or absent), as the API reads `limit` and `offset`. */
+function isU32(value: NodeJson | undefined): boolean {
+  return (
+    value === undefined ||
+    value.t === 'null' ||
+    (value.t === 'num' && /^[0-9]+$/.test(value.n) && Number(value.n) <= U32_MAX)
+  );
+}
+
+function u32(value: NodeJson | undefined, fallback: number): number {
+  return value === undefined || value.t !== 'num' ? fallback : Number(value.n);
 }
 
 /**
- * The selection the API makes for `body`, read from the JSON text the SDK
- * sends for it as the API reads that text. Throws
- * {@link QueryNotVerifiableError} for a body whose selection can't be
- * reproduced, or which asks for something the API does not do.
+ * The body's members as the API reads the JSON text the SDK sends for it, or
+ * why the SDK can't read it as the API does (an object whose first key is
+ * serde_json's private token). Throws {@link QueryRefusedError} for text the
+ * API can't read.
  */
-export function querySelection(body: QueryRequest): QuerySelection {
+function readBody(body: QueryRequest): { fields: Map<string, NodeJson> } | { irreproducible: string } {
   let parsed: NodeJson | null;
   try {
     parsed = parseNodeJsonText(JSON.stringify(body));
   } catch (error) {
-    if (error instanceof NotReproducibleError) throw notVerifiable(error.message);
+    if (error instanceof NotReproducibleError) return { irreproducible: error.message };
     throw error;
   }
   if (!parsed || parsed.t !== 'obj') {
-    throw notVerifiable('the API cannot read the request as JSON (a lone surrogate in a string, say)');
+    throw refused('it cannot read the request as JSON (a lone surrogate in a string, say)');
   }
-  const fields = parsed.v;
+  return { fields: parsed.v };
+}
+
+/**
+ * Why the API refuses a `POST /query/:subgrove` body it reads as `fields`, or
+ * `undefined` when it takes it. It refuses a key it does not read; `filters`
+ * other than an object (or `null`), with more than 32 fields, a field of
+ * more than 256 bytes or named `$and`, `$or`, `$not`, or `$nor`, or a value
+ * that is an object (a filter operator such as `{ $gt: 1 }`) or longer than
+ * 4,096 bytes as JSON text; `search`; `includes` other than `[]`; `sort`
+ * other than `{ field, order }` with `order` exactly `asc` or `desc` and a
+ * `field` of at most 256 bytes; and a `limit` or `offset` other than an
+ * integer from 0 to 2^32 - 1.
+ */
+export function queryRefusal(fields: Map<string, NodeJson>): string | undefined {
   for (const key of fields.keys()) {
-    if (!QUERY_KEYS.has(key)) throw notVerifiable(`the API ignores \`${key}\``);
-  }
-  const present = (key: string): NodeJson | undefined => {
-    const value = fields.get(key);
-    return value && value.t !== 'null' ? value : undefined;
-  };
-
-  if (present('search')) throw notVerifiable('the API applies no `search`');
-  const includes = fields.get('includes');
-  if (includes && !(includes.t === 'arr' && includes.v.length === 0)) {
-    throw notVerifiable('the API applies no `includes`');
+    if (!QUERY_KEYS.has(key)) return `it reads no \`${key}\``;
   }
 
-  let filter: QuerySelection['filter'] = null;
-  const filters = present('filters');
-  if (filters) {
-    if (filters.t !== 'obj') throw notVerifiable('the API applies `filters` only as an object');
-    if (filters.v.size > 1) {
-      throw notVerifiable(
-        'the API applies one filter field and ignores the rest; filter on one field and filter the ' +
-          'verified documents further yourself',
-      );
+  const filters = fields.get('filters');
+  if (filters && filters.t !== 'null') {
+    if (filters.t !== 'obj') return '`filters` must be an object of fields and their exact values';
+    if (filters.v.size > MAX_FILTER_FIELDS) {
+      return `\`filters\` gives ${filters.v.size} fields; at most ${MAX_FILTER_FIELDS} are allowed`;
     }
-    const [entry] = filters.v;
-    if (entry) {
-      const [field, value] = entry;
-      if (value.t === 'obj') {
-        throw notVerifiable(
-          `the API applies no filter operator (\`${field}\` is given an object): it matches a field ` +
-            'only by exact value',
-        );
+    for (const [field, value] of filters.v) {
+      if (LOGICAL_OPERATORS.has(field)) {
+        return `logical operators are not supported (\`${field}\`): every filter field must match`;
       }
-      filter = { field, value };
+      if (utf8Length(field) > MAX_FIELD_BYTES) return `a filter field is longer than ${MAX_FIELD_BYTES} bytes`;
+      if (nodeJsonTextLength(value) > MAX_FILTER_VALUE_BYTES) {
+        return `the filter value for \`${field}\` is longer than ${MAX_FILTER_VALUE_BYTES} bytes`;
+      }
+      if (value.t === 'obj') {
+        return `filter operators are not supported (\`${field}\` is given an object): a filter matches a field's exact value`;
+      }
     }
+  }
+
+  const search = fields.get('search');
+  if (search && search.t !== 'null') return '`search` is not supported';
+  const includes = fields.get('includes');
+  if (includes && !(includes.t === 'arr' && includes.v.length === 0)) return '`includes` is not supported';
+
+  const sort = fields.get('sort');
+  if (sort && sort.t !== 'null') {
+    const field = sort.t === 'obj' ? sort.v.get('field') : undefined;
+    const order = sort.t === 'obj' ? sort.v.get('order') : undefined;
+    if (sort.t !== 'obj' || sort.v.size !== 2 || field?.t !== 'str' || order?.t !== 'str') {
+      return "`sort` must be `{ field, order }`, nothing else";
+    }
+    if (utf8Length(field.v) > MAX_FIELD_BYTES) return `\`sort.field\` is longer than ${MAX_FIELD_BYTES} bytes`;
+    if (order.v !== 'asc' && order.v !== 'desc') return '`sort.order` must be "asc" or "desc"';
+  }
+
+  for (const name of ['limit', 'offset']) {
+    if (!isU32(fields.get(name))) return `\`${name}\` must be an integer from 0 to ${U32_MAX}`;
+  }
+  const includeProof = fields.get('include_proof');
+  if (includeProof && includeProof.t !== 'null' && includeProof.t !== 'bool') return '`include_proof` must be a boolean';
+  return undefined;
+}
+
+/**
+ * Throws {@link QueryRefusedError} when the API refuses `body` (see
+ * {@link queryRefusal}), read from the JSON text the SDK sends for it as the
+ * API reads that text. `client.queryUnverified` runs it before sending.
+ */
+export function checkQueryAccepted(body: QueryRequest): void {
+  const read = readBody(body);
+  if ('irreproducible' in read) return;
+  const reason = queryRefusal(read.fields);
+  if (reason !== undefined) throw refused(reason);
+}
+
+/**
+ * The selection the API makes for `body`, read from the JSON text the SDK
+ * sends for it as the API reads that text. Throws {@link QueryRefusedError}
+ * for a body the API refuses, and {@link QueryNotVerifiableError} for one
+ * whose selection can't be reproduced.
+ */
+export function querySelection(body: QueryRequest): QuerySelection {
+  const read = readBody(body);
+  if ('irreproducible' in read) throw notVerifiable(read.irreproducible);
+  const fields = read.fields;
+  const reason = queryRefusal(fields);
+  if (reason !== undefined) throw refused(reason);
+
+  const filters: QuerySelection['filters'] = [];
+  const given = fields.get('filters');
+  if (given?.t === 'obj') {
+    for (const [field, value] of given.v) filters.push({ field, value });
   }
 
   let sort: QuerySelection['sort'] = null;
-  const sortSpec = present('sort');
-  if (sortSpec) {
-    const field = sortSpec.t === 'obj' ? sortSpec.v.get('field') : undefined;
-    const order = sortSpec.t === 'obj' ? sortSpec.v.get('order') : undefined;
-    if (field?.t !== 'str' || order?.t !== 'str' || (order.v !== 'asc' && order.v !== 'desc')) {
-      throw notVerifiable("`sort` is not `{ field, order: 'asc' | 'desc' }`");
-    }
+  const sortSpec = fields.get('sort');
+  if (sortSpec?.t === 'obj') {
+    const field = sortSpec.v.get('field') as { t: 'str'; v: string };
+    const order = sortSpec.v.get('order') as { t: 'str'; v: string };
     sort = { field: field.v, descending: order.v === 'desc' };
   }
 
   return {
-    filter,
+    filters,
     sort,
-    offset: u32(fields.get('offset'), 'offset', 0),
-    limit: u32(fields.get('limit'), 'limit', DEFAULT_QUERY_LIMIT),
+    offset: u32(fields.get('offset'), 0),
+    limit: u32(fields.get('limit'), DEFAULT_QUERY_LIMIT),
   };
 }
 
@@ -196,8 +282,17 @@ function fieldValue(doc: NodeJson, field: string): NodeJson | undefined {
   return current;
 }
 
-/** How the API's sort reads a document's sort field. */
-type SortKey = { k: 'num'; f: number | null } | { k: 'str'; s: string } | { k: 'other' };
+/**
+ * How the API's sort reads a document's sort field: its kind's rank
+ * (missing, `null`, boolean, number, string, array, object), and a
+ * boolean, a number's double (`null` when it has no finite one), or a
+ * string.
+ */
+type SortKey =
+  | { rank: 0 | 1 | 5 | 6 }
+  | { rank: 2; b: boolean }
+  | { rank: 3; f: number | null }
+  | { rank: 4; s: string };
 
 /**
  * How many significant digits a JSON number's text has: those of its
@@ -223,24 +318,31 @@ function significantDigits(text: string): number {
 
 /**
  * A number's value as the API sorts by it (Rust's `str::parse::<f64>` of its
- * text; `null` when not finite). JavaScript must give it the correctly
- * rounded value, which it is bound to for up to 20 significant digits.
+ * text; `null` when not finite). JavaScript gives the correctly rounded value
+ * for up to 20 significant digits; past that, {@link parseF64} computes it.
  */
 function sortNumber(text: string): number | null {
-  if (significantDigits(text) > 20) {
-    throw new NotReproducibleError(
-      `the sort compares the number ${text}, which has more than 20 significant digits`,
-    );
-  }
-  const f = Number(text);
+  const f = significantDigits(text) > 20 ? parseF64(text) : Number(text);
   return Number.isFinite(f) ? f : null;
 }
 
 function sortKey(doc: NodeJson, field: string): SortKey {
   const value = fieldValue(doc, field);
-  if (value?.t === 'num') return { k: 'num', f: sortNumber(value.n) };
-  if (value?.t === 'str') return { k: 'str', s: value.v };
-  return { k: 'other' };
+  if (value === undefined) return { rank: 0 };
+  switch (value.t) {
+    case 'null':
+      return { rank: 1 };
+    case 'bool':
+      return { rank: 2, b: value.v };
+    case 'num':
+      return { rank: 3, f: sortNumber(value.n) };
+    case 'str':
+      return { rank: 4, s: value.v };
+    case 'arr':
+      return { rank: 5 };
+    case 'obj':
+      return { rank: 6 };
+  }
 }
 
 /** Strings in Unicode code point order (Rust's `str` order), not UTF-16's. */
@@ -259,42 +361,34 @@ function compareCodePoints(a: string, b: string): number {
   return 0;
 }
 
-/** The API's comparison: numbers with numbers, strings with strings, else equal. */
+/**
+ * The API's comparison (`SortKey::total_cmp`), a total order: by kind
+ * (missing, `null`, `false`, `true`, numbers, strings, arrays, objects),
+ * then numbers by value (one with no finite double first; `-0` and `0` tie)
+ * and strings by code point. Two arrays, two objects, two `null`s, or two
+ * missing fields tie.
+ */
 function compareKeys(a: SortKey, b: SortKey): number {
-  if (a.k === 'num' && b.k === 'num') {
-    if (a.f === null || b.f === null) return a.f === b.f ? 0 : a.f === null ? -1 : 1;
-    return a.f < b.f ? -1 : a.f > b.f ? 1 : 0;
+  if (a.rank !== b.rank) return a.rank < b.rank ? -1 : 1;
+  switch (a.rank) {
+    case 2:
+      return Number(a.b) - Number((b as typeof a).b);
+    case 3: {
+      const x = a.f;
+      const y = (b as typeof a).f;
+      if (x === null || y === null) return x === y ? 0 : x === null ? -1 : 1;
+      return x < y ? -1 : x > y ? 1 : 0;
+    }
+    case 4:
+      return compareCodePoints(a.s, (b as typeof a).s);
+    default:
+      return 0;
   }
-  if (a.k === 'str' && b.k === 'str') return compareCodePoints(a.s, b.s);
-  return 0;
 }
 
-/**
- * The API's stable sort. Its comparison calls a number and a string, or a
- * missing field and anything, equal, so it orders the documents consistently
- * only when their sort values are all numbers, or all strings, or every pair
- * compares equal; otherwise its order depends on the sort algorithm, and
- * this throws {@link NotReproducibleError}.
- */
+/** The API's stable sort: ties keep key order, in either direction. */
 function sortDocuments(docs: NodeJson[], sort: NonNullable<QuerySelection['sort']>): NodeJson[] {
   const keyed = docs.map((doc, index) => ({ doc, index, key: sortKey(doc, sort.field) }));
-  const numbers = new Set<string>();
-  const strings = new Set<string>();
-  let others = 0;
-  for (const { key } of keyed) {
-    if (key.k === 'num') numbers.add(key.f === null ? 'none' : String(key.f === 0 ? 0 : key.f));
-    else if (key.k === 'str') strings.add(key.s);
-    else others++;
-  }
-  const consistent =
-    (others === 0 && (numbers.size === 0 || strings.size === 0)) ||
-    (numbers.size <= 1 && strings.size <= 1);
-  if (!consistent) {
-    throw new NotReproducibleError(
-      `the documents' "${sort.field}" values are not all numbers or all strings, so the API's sort ` +
-        'order is not determined',
-    );
-  }
   const direction = sort.descending ? -1 : 1;
   keyed.sort((a, b) => direction * compareKeys(a.key, b.key) || a.index - b.index);
   return keyed.map(({ doc }) => doc);
@@ -319,11 +413,11 @@ export function selectDocuments(
     if (entry.reference || entry.element.type !== 'Item') continue;
     const doc = parseNodeJson(entry.element.value);
     if (doc === null) continue;
-    if (selection.filter) {
-      const value = fieldValue(doc, selection.filter.field);
-      if (value === undefined || !nodeJsonEqual(value, selection.filter.value)) continue;
-    }
-    selected.push(doc);
+    const matches = selection.filters.every(({ field, value }) => {
+      const held = fieldValue(doc, field);
+      return held !== undefined && nodeJsonEqual(held, value);
+    });
+    if (matches) selected.push(doc);
   }
   const ordered = selection.sort ? sortDocuments(selected, selection.sort) : selected;
   return {
@@ -467,6 +561,7 @@ export function checkQueryResult(
  * `query` is the query as it was sent (without `include_proof`, which the
  * SDK sets).
  *
+ * @throws QueryRefusedError when the API refuses this query.
  * @throws QueryNotVerifiableError when the API's selection for this query
  *   can't be reproduced, whatever the data.
  * @throws QueryResultNotVerifiableError when the selection over the proven

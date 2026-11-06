@@ -58,6 +58,7 @@ export { subgroveDataPath } from './shared';
 export type { PathSegment } from './shared';
 export {
   verifyQuerySelection,
+  QueryRefusedError,
   QueryNotVerifiableError,
   QueryResultNotVerifiableError,
   DEFAULT_QUERY_LIMIT,

@@ -359,14 +359,16 @@ export interface HistoricalQueryResponse {
   provider_did?: string;
   /** Provider endpoint */
   provider_endpoint?: string;
-  /** Checkpoint state root for proof verification */
+  /** The checkpoint's state root as its indexer submitted it (not necessarily a root of the data) */
   state_root: string;
   /** Block range covered by the checkpoint */
   block_range: [number, number];
   /** Query results from the indexer */
   data: any;
-  /** Merkle proof (hex-encoded) when include_proof was true */
+  /** The provider's GroveDB proof (hex) of its own store, not checked against the checkpoint */
   proof?: string;
+  /** On an answer, the API's statement of what it can be verified against */
+  verification?: string;
   /** Whether this data can be re-indexed (only set on error) */
   can_reindex?: boolean;
   /** Error message if any */

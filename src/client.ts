@@ -421,9 +421,10 @@ export class WillowClient {
   /**
    * Query indexed data with automatic proof verification (secure by
    * default): the result is verified as the query's whole result. A query
-   * whose result the SDK can't verify throws `QUERY_NOT_VERIFIABLE` before
-   * anything is sent, and data at the verified root whose selection it can't
-   * reproduce throws `QUERY_RESULT_NOT_VERIFIABLE` (see `WillowData.query`).
+   * the API refuses throws `QUERY_REFUSED`, and one whose result the SDK
+   * can't verify `QUERY_NOT_VERIFIABLE`, before anything is sent; data at
+   * the verified root whose selection it can't reproduce throws
+   * `QUERY_RESULT_NOT_VERIFIABLE` (see `WillowData.query`).
    */
   async query(
     datasetId: string,
@@ -433,7 +434,8 @@ export class WillowClient {
   }
 
   /**
-   * Query indexed data without proof verification (use with caution)
+   * Query indexed data without proof verification (use with caution). A
+   * query the API refuses throws `QUERY_REFUSED` before anything is sent.
    */
   async queryUnverified(
     datasetId: string,

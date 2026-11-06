@@ -217,6 +217,9 @@ describe('WillowData binds query results to the queried subgrove', () => {
     const historicalQuery = { path: PATH_A.map((s) => Array.from(enc(s))), query_type: 'get_path' };
     await expect(data().queryHistoricalVerified('sg-a', 'cp', historicalQuery)).rejects.toMatchObject({
       code: 'UNSUPPORTED_OPERATION',
+      message: expect.stringMatching(
+        /passes the provider's proof through without checking it against the checkpoint.*nothing requires the checkpoint's state root to commit/,
+      ),
     });
     expect(fetchMock).not.toHaveBeenCalled();
   });
