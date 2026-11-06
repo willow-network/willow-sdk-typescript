@@ -6,11 +6,12 @@
  * from what `JSON.parse` gives in ways that change which documents a query
  * selects and in what order:
  *
- * - A number keeps its text. `1` and `1.0` are different numbers (equality
- *   compares the text), and nothing is rounded. The text is normalized: the
- *   exponent marker is written `e` with a sign (`1E5` is `1e+5`), and an
+ * - A number keeps its text, and nothing is rounded. The text is normalized:
+ *   the exponent marker is written `e` with a sign (`1E5` is `1e+5`), and an
  *   integer that fits a u64 (or, negative, an i64) is written in decimal, so
- *   `-0` is `0`.
+ *   `-0` is `0`. The query's filter compares numbers by their exact decimal
+ *   value (`1`, `1.0`, and `1e0` are equal; see {@link nodeJsonEqual}), and
+ *   its sort by the double Rust parses from the text ({@link parseF64}).
  * - Bytes that are not UTF-8, a string escape of a lone UTF-16 surrogate, a
  *   byte-order mark, or more than 127 nested arrays and objects are refused
  *   (the node skips such a document); `JSON.parse` takes them.
@@ -286,7 +287,152 @@ class Parser {
   }
 }
 
-/** The node's `Value` equality: numbers by their text, objects by key. */
+const I128_MAX = (1n << 127n) - 1n;
+const I128_MIN = -(1n << 127n);
+
+/** The index of the first character other than `0` in `text` from `start` to `end`, in one pass. */
+function skipZeros(text: string, start: number, end: number): number {
+  while (start < end && text.charCodeAt(start) === 0x30) start++;
+  return start;
+}
+
+/** `end`, moved back over the `0`s before it (down to `start`), in one pass. */
+function dropZeros(text: string, start: number, end: number): number {
+  while (end > start && text.charCodeAt(end - 1) === 0x30) end--;
+  return end;
+}
+
+/**
+ * A number's text as the node's `exact_decimal` reads it: its sign, its
+ * significant digits (no leading or trailing `0`; none for zero, which has no
+ * sign), and the power of ten of the last of them. `null` when the exponent,
+ * or a step of the node's arithmetic on it (`exponent - fraction digits`,
+ * then `+ trailing zeros`), does not fit an i128; the node then compares the
+ * numbers' texts.
+ */
+export function nodeExactDecimal(
+  text: string,
+): { negative: boolean; digits: string; exponent: bigint } | null {
+  const negative = text.startsWith('-');
+  const rest = negative ? text.slice(1) : text;
+  const e = rest.search(/[eE]/);
+  const mantissa = e < 0 ? rest : rest.slice(0, e);
+  let exponent = 0n;
+  if (e >= 0) {
+    const literal = rest.slice(e + 1);
+    const m = /^([+-]?)([0-9]+)$/.exec(literal);
+    if (!m) return null;
+    // More than 39 digits (past its leading zeros) is past an i128 either way.
+    const first = skipZeros(m[2], 0, m[2].length);
+    if (m[2].length - first > 39) return null;
+    const magnitude = BigInt(m[2].slice(first) || '0');
+    exponent = m[1] === '-' ? -magnitude : magnitude;
+    if (exponent > I128_MAX || exponent < I128_MIN) return null;
+  }
+  const dot = mantissa.indexOf('.');
+  const int = dot < 0 ? mantissa : mantissa.slice(0, dot);
+  const frac = dot < 0 ? '' : mantissa.slice(dot + 1);
+  if (int === '' || !/^[0-9]*$/.test(int + frac)) return null;
+  const digits = int + frac;
+  const start = skipZeros(digits, 0, digits.length);
+  if (start === digits.length) return { negative: false, digits: '', exponent: 0n };
+  const end = dropZeros(digits, start, digits.length);
+  exponent -= BigInt(frac.length);
+  if (exponent < I128_MIN) return null;
+  exponent += BigInt(digits.length - end);
+  if (exponent > I128_MAX) return null;
+  return { negative, digits: digits.slice(start, end), exponent };
+}
+
+/**
+ * The node's number equality (`numbers_equal`): the same text, or the same
+ * exact decimal value when both texts have one ({@link nodeExactDecimal}).
+ */
+export function nodeNumbersEqual(a: string, b: string): boolean {
+  if (a === b) return true;
+  const x = nodeExactDecimal(a);
+  const y = nodeExactDecimal(b);
+  return (
+    x !== null &&
+    y !== null &&
+    x.negative === y.negative &&
+    x.digits === y.digits &&
+    x.exponent === y.exponent
+  );
+}
+
+/** Past this many significant digits, a digit moves a double's rounding only as a non-zero tail (767 suffice). */
+const MAX_ROUNDING_DIGITS = 800;
+
+function bitLength(n: bigint): number {
+  return n.toString(2).length;
+}
+
+/**
+ * Rust's `str::parse::<f64>` of a JSON number's text (what the node's sort
+ * compares): the double nearest its exact value, ties to even, and
+ * ±`Infinity` past the largest. Computed in integers, so it does not depend
+ * on how JavaScript rounds a literal of more than 20 significant digits,
+ * which the language leaves open. `NaN` for text that is not a JSON number.
+ */
+export function parseF64(text: string): number {
+  const m = /^(-?)([0-9]+)(?:\.([0-9]+))?(?:[eE]([+-]?)([0-9]+))?$/.exec(text);
+  if (!m) return NaN;
+  const [, sign, whole, fraction = '', expSign = '', expDigits = '0'] = m;
+  const negative = sign === '-';
+  const signed = (x: number) => (negative ? -x : x);
+  const all = whole + fraction;
+  const start = skipZeros(all, 0, all.length);
+  if (start === all.length) return signed(0);
+  const end = dropZeros(all, start, all.length);
+  let digits = all.slice(start, end);
+
+  const expStart = skipZeros(expDigits, 0, expDigits.length);
+  // An exponent of 16 digits or more is far past a double's range either way.
+  if (expDigits.length - expStart > 15) return signed(expSign === '-' ? 0 : Infinity);
+  // The value is digits × 10^exponent.
+  let exponent =
+    (expSign === '-' ? -1 : 1) * Number(expDigits.slice(expStart) || '0') -
+    fraction.length +
+    (all.length - end);
+  if (digits.length - 1 + exponent >= 309) return signed(Infinity); // at least 1e309
+  if (digits.length + exponent <= -324) return signed(0); // below 1e-324, half the least subnormal
+  if (digits.length > MAX_ROUNDING_DIGITS) {
+    exponent += digits.length - (MAX_ROUNDING_DIGITS + 1);
+    digits = `${digits.slice(0, MAX_ROUNDING_DIGITS)}1`;
+  }
+
+  const num = BigInt(digits) * (exponent > 0 ? 10n ** BigInt(exponent) : 1n);
+  const den = exponent < 0 ? 10n ** BigInt(-exponent) : 1n;
+  // q = floor(num / (den × 2^e)), in [2^52, 2^53) for a normal double.
+  const quotient = (e: number): [bigint, bigint, bigint] => {
+    const [n, d] = e >= 0 ? [num, den << BigInt(e)] : [num << BigInt(-e), den];
+    return [n / d, n % d, d];
+  };
+  let e = Math.max(bitLength(num) - bitLength(den) - 53, -1074);
+  let [q, r, d] = quotient(e);
+  if (q >= 1n << 53n) {
+    e += 1;
+    [q, r, d] = quotient(e);
+  }
+  if (2n * r > d || (2n * r === d && (q & 1n) === 1n)) q += 1n;
+  if (q === 1n << 53n) {
+    q >>= 1n;
+    e += 1;
+  }
+  if (e > 971) return signed(Infinity);
+  const biased = q >= 1n << 52n ? BigInt(e + 1075) : 0n;
+  const view = new DataView(new ArrayBuffer(8));
+  view.setBigUint64(0, (negative ? 1n << 63n : 0n) | (biased << 52n) | (q & ((1n << 52n) - 1n)));
+  return view.getFloat64(0);
+}
+
+/**
+ * The node's filter equality (`json_values_equal`): numbers by their exact
+ * decimal value ({@link nodeNumbersEqual}: `1`, `1.0`, and `1e0` are
+ * equal), in arrays and objects too; objects by key; every other kind as
+ * `Value` compares it.
+ */
 export function nodeJsonEqual(a: NodeJson, b: NodeJson): boolean {
   if (a.t !== b.t) return false;
   switch (a.t) {
@@ -295,7 +441,7 @@ export function nodeJsonEqual(a: NodeJson, b: NodeJson): boolean {
     case 'bool':
       return a.v === (b as typeof a).v;
     case 'num':
-      return a.n === (b as typeof a).n;
+      return nodeNumbersEqual(a.n, (b as typeof a).n);
     case 'str':
       return a.v === (b as typeof a).v;
     case 'arr': {
@@ -310,6 +456,64 @@ export function nodeJsonEqual(a: NodeJson, b: NodeJson): boolean {
         if (y === undefined || !nodeJsonEqual(x, y)) return false;
       }
       return true;
+    }
+  }
+}
+
+/** The length of `text` in UTF-8 bytes (a lone surrogate, which no read value holds, as 3). */
+export function utf8Length(text: string): number {
+  let length = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c < 0x80) length += 1;
+    else if (c < 0x800) length += 2;
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        length += 4;
+        i++;
+      } else {
+        length += 3;
+      }
+    } else length += 3;
+  }
+  return length;
+}
+
+/** The length of a string in serde_json's text: quoted, with `"`, `\`, and control characters escaped. */
+function quotedLength(text: string): number {
+  let length = utf8Length(text) + 2;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c === 0x22 || c === 0x5c || c === 0x08 || c === 0x09 || c === 0x0a || c === 0x0c || c === 0x0d) {
+      length += 1; // `\"`, `\\`, `\b`, `\t`, `\n`, `\f`, `\r`
+    } else if (c < 0x20) {
+      length += 5; // `\u00XX`
+    }
+  }
+  return length;
+}
+
+/** The length in bytes of `serde_json::to_string(value)`: compact, numbers as their kept text. */
+export function nodeJsonTextLength(value: NodeJson): number {
+  switch (value.t) {
+    case 'null':
+      return 4;
+    case 'bool':
+      return value.v ? 4 : 5;
+    case 'num':
+      return value.n.length;
+    case 'str':
+      return quotedLength(value.v);
+    case 'arr': {
+      let length = 2 + Math.max(value.v.length - 1, 0);
+      for (const item of value.v) length += nodeJsonTextLength(item);
+      return length;
+    }
+    case 'obj': {
+      let length = 2 + Math.max(value.v.size - 1, 0);
+      for (const [k, v] of value.v) length += quotedLength(k) + 1 + nodeJsonTextLength(v);
+      return length;
     }
   }
 }
